@@ -1,0 +1,71 @@
+name: Build unsigned iOS IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-ios:
+    runs-on: macos-15
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: haish-agent-remote
+
+    steps:
+      - name: Check out Haish Remote
+        uses: actions/checkout@v4
+        with:
+          path: haish-agent-remote
+
+      - name: Check out shared Haish client sources
+        uses: actions/checkout@v4
+        with:
+          repository: haishihua/haish-agent
+          ref: 6f07dc16ec172a14bdbfd3b48392f514e2e8e036
+          path: haish-agent
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: haish-agent-remote/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and sync Capacitor
+        run: npm run mobile:sync
+
+      - name: Build unsigned iOS app
+        run: |
+          xcodebuild \
+            -project ios/App/App.xcodeproj \
+            -scheme App \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/haish-derived-data" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            build
+
+      - name: Package IPA
+        run: |
+          mkdir -p "$RUNNER_TEMP/haish-ipa/Payload"
+          cp -R "$RUNNER_TEMP/haish-derived-data/Build/Products/Release-iphoneos/App.app" \
+            "$RUNNER_TEMP/haish-ipa/Payload/"
+          cd "$RUNNER_TEMP/haish-ipa"
+          /usr/bin/zip -qry "$GITHUB_WORKSPACE/haish-agent-remote/Haish-unsigned.ipa" Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Haish-unsigned-${{ github.sha }}
+          path: haish-agent-remote/Haish-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14

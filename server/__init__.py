@@ -1,0 +1,2 @@
+"""Haish Remote adapter."""
+

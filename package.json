@@ -1,0 +1,33 @@
+{
+  "name": "haish-agent-remote",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "mobile:sync": "npm run build && cap sync",
+    "server": "python3 -m server.app serve",
+    "pair": "python3 -m server.app pair",
+    "test": "node --test tests/*.test.mjs && npm run test:server",
+    "test:server": "python3 -m unittest discover -s tests -p 'test_*.py'"
+  },
+  "dependencies": {
+    "@aparajita/capacitor-secure-storage": "8.0.0",
+    "@capacitor/barcode-scanner": "3.1.2",
+    "@capacitor/core": "8.4.3",
+    "@capacitor/ios": "8.4.3",
+    "lucide-react": "^0.468.0",
+    "lxgw-wenkai-screen-webfont": "^1.7.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.4.3",
+    "@vitejs/plugin-react": "^4.5.2",
+    "typescript": "5.9.3",
+    "vite": "^6.4.3"
+  }
+}

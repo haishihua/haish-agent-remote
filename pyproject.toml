@@ -1,0 +1,14 @@
+[project]
+name = "haish-agent-remote"
+version = "0.1.0"
+description = "Mobile UI and authenticated adapter for a local Haish Agent runtime."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "httpx",
+    "uvicorn",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
