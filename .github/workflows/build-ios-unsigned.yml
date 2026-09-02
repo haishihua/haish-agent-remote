@@ -37,6 +37,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Sync shared Haish branding
+        run: |
+          cp ../haish-agent/build/icon.png ios/App/App/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png
+          sips -z 192 192 ../haish-agent/build/icon.png --out src/assets/penguin_logo_user.png
+
       - name: Build and sync Capacitor
         run: npm run mobile:sync
 
