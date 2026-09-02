@@ -16,19 +16,19 @@ jobs:
 
     steps:
       - name: Check out Haish Remote
-        uses: actions/checkout@v4
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           path: haish-agent-remote
 
       - name: Check out shared Haish client sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: haishihua/haish-agent
           ref: 6f07dc16ec172a14bdbfd3b48392f514e2e8e036
           path: haish-agent
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 22
           cache: npm
@@ -63,7 +63,7 @@ jobs:
           /usr/bin/zip -qry "$GITHUB_WORKSPACE/haish-agent-remote/Haish-unsigned.ipa" Payload
 
       - name: Upload IPA
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: Haish-unsigned-${{ github.sha }}
           path: haish-agent-remote/Haish-unsigned.ipa
