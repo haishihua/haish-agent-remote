@@ -424,16 +424,12 @@ function PairingScreen({ runtimeOnline, onPaired }) {
           <p>Pair this device with the Haish app running on your computer.</p>
         </div>
         {api.isNative ? <>
-          <div className="runtime-card">
-            <div className="runtime-icon" aria-hidden="true"><ScanLine size={21} /></div>
-            <div><strong>Scan your computer</strong><span>Open Remote Control in the Haish desktop app</span></div>
-            <span className="status-dot" />
-          </div>
           {error ? <p className="form-error" role="alert">{error}</p> : null}
-          <button type="button" className="primary-button" disabled={busy} onClick={scan}>
+          <button type="button" className="primary-button pairing-scan-button" disabled={busy} onClick={scan}>
             {busy ? <LoaderCircle className="spin" size={20} /> : <ScanLine size={20} />}
             {busy ? 'Opening camera…' : 'Scan pairing QR code'}
           </button>
+          <p className="pairing-help">Open Remote Control in Haish on your computer, then scan its QR code.</p>
         </> : <>
           <div className={`runtime-card ${runtimeOnline ? 'online' : ''}`}>
             <div className="runtime-icon" aria-hidden="true"><Laptop size={20} /></div>

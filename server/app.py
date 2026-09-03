@@ -293,6 +293,11 @@ def create_app(*, data_dir: Path | None = None, dist_dir: Path | None = None) ->
             raise HTTPException(status_code=401, detail="Pair this device with Haish first.")
         return device
 
+    async def desktop_or_current_device(request: Request) -> dict[str, Any]:
+        if _is_loopback(request):
+            return {"device_id": "desktop"}
+        return await current_device(request)
+
     async def runtime_online() -> bool:
         try:
             async with httpx.AsyncClient(timeout=1.5, trust_env=False) as client:
@@ -342,11 +347,11 @@ def create_app(*, data_dir: Path | None = None, dist_dir: Path | None = None) ->
         return response
 
     @app.get("/remote/devices")
-    async def devices(_: dict[str, Any] = Depends(current_device)) -> JSONResponse:
+    async def devices(_: dict[str, Any] = Depends(desktop_or_current_device)) -> JSONResponse:
         return JSONResponse({"devices": store.list_devices()})
 
     @app.delete("/remote/devices/{device_id}")
-    async def revoke_device(device_id: str, _: dict[str, Any] = Depends(current_device)) -> JSONResponse:
+    async def revoke_device(device_id: str, _: dict[str, Any] = Depends(desktop_or_current_device)) -> JSONResponse:
         if not store.revoke(device_id):
             raise HTTPException(status_code=404, detail="Device not found.")
         return JSONResponse({"ok": True})

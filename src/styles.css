@@ -108,13 +108,16 @@ code { padding: 2px 6px; border: 1px solid var(--border); border-radius: 6px; ba
 .project-options span { display: grid; min-width: 0; gap: 3px; }
 .project-options small { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
 
-.pairing-shell, .app-loading { display: grid; min-height: 100dvh; padding: calc(28px + var(--safe-top)) 22px calc(24px + var(--safe-bottom)); place-items: center; font-family: var(--conversation-font); }
-.pairing-card { width: min(100%, 420px); }
-.pairing-brand { display: flex; margin-bottom: 32px; align-items: center; gap: 9px; color: var(--accent); }
-.pairing-brand span { font-family: "Nunito Sans", "SF Pro Rounded", "Quicksand", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 18px; font-weight: 800; letter-spacing: 0.01em; text-shadow: 0 1px 8px rgba(223, 169, 78, 0.18); }
-.brand-mark { display: block; width: 46px; height: 46px; flex: 0 0 46px; object-fit: contain; user-select: none; -webkit-user-drag: none; }
-.pairing-intro h1 { margin: 0; font-size: clamp(32px, 8vw, 40px); line-height: 1.05; letter-spacing: -0.05em; }
+.pairing-shell, .app-loading { display: grid; min-height: 100dvh; padding: calc(68px + var(--safe-top)) 24px calc(28px + var(--safe-bottom)); align-items: start; justify-items: center; font-family: var(--conversation-font); }
+.app-loading { place-items: center; }
+.pairing-card { width: min(100%, 380px); }
+.pairing-brand { display: flex; margin-bottom: 24px; align-items: center; gap: 9px; color: var(--accent); }
+.pairing-brand span { font-family: "Nunito Sans", "SF Pro Rounded", "Quicksand", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 17px; font-weight: 800; letter-spacing: 0.01em; text-shadow: 0 1px 8px rgba(223, 169, 78, 0.18); }
+.brand-mark { display: block; width: 42px; height: 42px; flex: 0 0 42px; object-fit: contain; user-select: none; -webkit-user-drag: none; }
+.pairing-intro h1 { margin: 0; font-size: clamp(30px, 8vw, 36px); line-height: 1.08; letter-spacing: -0.045em; }
 .pairing-intro p { margin: 12px 0 0; max-width: 35ch; color: var(--muted); font-size: 15px; line-height: 1.55; }
+.pairing-scan-button { min-height: 54px; margin-top: 30px; }
+.pairing-help { margin: 12px auto 0; max-width: 32ch; color: var(--muted); font-size: 12px; line-height: 1.5; text-align: center; }
 .runtime-card { display: grid; grid-template-columns: 42px minmax(0, 1fr) 10px; min-height: 66px; margin: 24px 0 22px; padding: 11px 14px 11px 11px; align-items: center; gap: 11px; border: 1px solid var(--border); border-radius: 16px; background: rgba(13, 16, 24, 0.74); }
 .runtime-icon { display: grid; width: 42px; height: 42px; place-items: center; border-radius: 12px; background: var(--surface-raised); color: var(--muted); }
 .runtime-card > div:nth-child(2) { display: grid; gap: 3px; }

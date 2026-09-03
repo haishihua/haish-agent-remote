@@ -92,6 +92,22 @@ class DeviceStoreTest(unittest.TestCase):
             response = client.post("/remote/pairing/exchange", json={"code": "1234-5678"})
             self.assertEqual(response.status_code, 422)
 
+    def test_loopback_desktop_can_list_and_revoke_paired_devices(self):
+        with TemporaryDirectory() as directory:
+            app = create_app(data_dir=Path(directory), dist_dir=Path(directory))
+            store = app.state.device_store
+            code = store.issue_pairing_code()
+            _, device = store.exchange(code, "iPhone")
+            client = TestClient(app)
+
+            response = client.get("/remote/devices")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["devices"][0]["name"], "iPhone")
+
+            response = client.delete(f"/remote/devices/{device['device_id']}")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(client.get("/remote/devices").json(), {"devices": []})
+
 
 if __name__ == "__main__":
     unittest.main()
