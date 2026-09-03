@@ -2,9 +2,11 @@
 
 ## 结论
 
-移动端继续使用当前仓库中的 React 界面，通过 Capacitor 生成 iOS 原生工程；以后在同一仓库增加 Android 工程。业务 UI、任务模型和 API 客户端只有一份，不创建独立 SwiftUI、Android 或移动端仓库。
+移动端继续使用当前仓库中的 React 界面，通过 Capacitor 生成 iOS 原生工程；以后可在同一仓库增加 Android 工程。业务 UI、任务模型和 API 客户端只有一份，不创建独立 SwiftUI、Android 或移动端仓库。
 
-第一阶段由 GitHub Actions 在 macOS Runner 上构建未签名 IPA，再由 iPhone 上的 SideStore 使用个人 Apple 账号签名安装。开发电脑不安装完整 Xcode。App Store、TestFlight、推送通知和多用户服务不在本阶段范围内。
+**iOS IPA 只通过 GitHub Actions 构建。** 开发 Mac 不承担 Xcode 编译、归档、导出或 IPA 打包职责；本地只允许做 Web 构建和 Capacitor 资源同步检查。GitHub Actions 的 macOS Runner 内部会使用 Apple 的 `xcodebuild` 完成真正的 iOS 编译，这是云端流水线实现细节，不是本地发布链路。
+
+第一阶段由 GitHub Actions 在 macOS Runner 上构建未签名 IPA，再由 iPhone 上的 SideStore 使用个人 Apple 账号签名安装。App Store、TestFlight、推送通知和多用户服务不在本阶段范围内。
 
 ## 唯一运行链路
 
@@ -13,7 +15,8 @@ iOS App（React + Capacitor）
         │ HTTPS + Bearer device token
         ▼
 https://47.97.24.242
-        │ Nginx + FRP server
+        │ Nginx 443 → 127.0.0.1:18766
+        │ FRP server 7000 ← encrypted tunnel
         ▼
 Mac 上的 FRP client
         │ loopback
@@ -24,7 +27,15 @@ Haish Remote adapter（127.0.0.1:8766）
 Haish Agent runtime（127.0.0.1）
 ```
 
-公网入口必须使用受系统信任的 HTTPS 证书。iOS 不允许 HTTP、自签名证书或关闭 ATS 的兼容路径。`47.97.24.242` 当前只有 HTTP，完成公网部署后才可用于真机连接。
+当前已验证的部署约束：
+
+- 公网服务器：`47.97.24.242`；
+- FRP server：TCP `7000`，需要云安全组放行；
+- Nginx：公网 `443` 转发到服务器本机 `127.0.0.1:18766`；
+- Mac FRP client：连接服务器 `7000`，将本机 `127.0.0.1:8766` 映射到服务器 `18766`；
+- adapter 和 Haish runtime：始终只监听 `127.0.0.1`；
+- `18766` 不应对公网开放，只供服务器本机 Nginx 访问；
+- 公网入口必须使用 iOS 信任的 HTTPS 证书，不使用 HTTP、自签名证书或关闭 ATS 的兼容路径。
 
 ## 仓库结构
 
@@ -35,11 +46,11 @@ haish-agent-remote/
 ├── tests/                  # 共用协议和 API 测试
 ├── docs/                   # 架构与部署文档
 ├── capacitor.config.ts     # Capacitor 唯一配置
-├── ios/                    # Xcode 工程，提交并维护
-└── android/                # 后续通过 Capacitor 增加
+├── ios/                    # Capacitor iOS 工程，供 GitHub Actions 使用
+└── .github/workflows/      # 唯一 IPA 构建入口
 ```
 
-Capacitor 只把 Vite 的 `dist/` 复制进原生应用。Python 服务和 Haish runtime 始终留在电脑端。
+`ios/` 是提交到仓库并由 CI 使用的 Capacitor 原生工程，不代表需要在开发 Mac 上安装或运行 Xcode。Capacitor 只把 Vite 的 `dist/` 复制进原生应用；Python 服务和 Haish runtime 始终留在电脑端。
 
 ## 配对协议
 
@@ -67,6 +78,95 @@ haish://pair?v=1&endpoint=https%3A%2F%2F47.97.24.242&code=12345678
 6. 收到 401 时删除本机凭证并回到扫码页；
 7. 用户主动退出时同时撤销服务端设备并删除 Keychain 凭证。
 
+## 已实现的配对与远程请求接口
+
+以下是当前 `server/app.py` 和移动端 `src/api.js` 的实际接口约定，修改接口或新增客户端时必须同步更新本节。
+
+### 配对接口
+
+| 接口 | 调用方 | 鉴权 | 行为 |
+| --- | --- | --- | --- |
+| `GET /remote/status` | Web、原生 App | 可选 | 返回 `paired`、`device`、`runtime_online` 和 `computer_model`；未配对也允许访问 |
+| `POST /remote/pairing/start` | 桌面端 | loopback 来源 | 生成 8 位一次性配对码和 `pairing_uri`；非本机请求返回 403 |
+| `POST /remote/pairing/exchange` | 手机或本地 Web | 无 | 校验配对码，创建设备并返回 token；无效、过期或已使用的配对码返回 400 |
+| `GET /remote/devices` | 桌面端、已配对设备 | loopback 或 Bearer/Cookie | 查看未撤销设备列表 |
+| `DELETE /remote/devices/{device_id}` | 桌面端、已配对设备 | loopback 或 Bearer/Cookie | 撤销指定设备 |
+| `POST /remote/logout` | 已配对设备 | Bearer/Cookie | 撤销当前设备并清除 Web Cookie；原生端随后清除 Keychain |
+
+桌面端必须通过 loopback 调用 `POST /remote/pairing/start`。服务端生成配对码后只在 SQLite 中保存配对码的 SHA-256 摘要，不保存明文配对码；配对码有效期为五分钟，成功交换在事务中标记为已使用，保证同一个配对码不能并发复用。
+
+`POST /remote/pairing/exchange` 根据 User-Agent 或 `sec-ch-ua-model` 记录设备名称，生成随机长期 token，并只保存 token 的 SHA-256 摘要。响应中的明文 token 只返回一次：原生 App 写入 Keychain，Web 端由服务端写入 `HttpOnly`、`Secure`（HTTPS 时）、`SameSite=Strict` Cookie。
+
+### 手机启动与请求流程
+
+```text
+1. App 启动
+   └─ Keychain 读取 endpoint + token
+      ├─ 凭证有效：GET /remote/status（Authorization: Bearer <token>）
+      │  ├─ 200：进入远程控制界面
+      │  └─ 401：删除 Keychain，回到扫码页
+      └─ 无凭证：显示扫码页
+
+2. 首次配对
+   └─ 扫描 haish://pair URI
+      └─ POST {"code":"12345678"} 到 URI 中的 HTTPS endpoint/remote/pairing/exchange
+         └─ 保存返回的 endpoint + token，再进入远程控制界面
+
+3. 手机远程操作
+   └─ HTTPS → Nginx 443 → FRP 18766 → adapter 127.0.0.1:8766
+      └─ adapter 校验 Bearer token，并按 allowlist 转发到本机 runtime
+```
+
+原生 App 的 `src/native-connection.js` 负责系统相机扫码、解析并严格校验 URI、使用 Keychain 保存连接，以及为每个请求生成绝对 HTTPS URL。`src/api.js` 负责附加 `Authorization: Bearer <token>`；收到 401 时自动清除原生凭证。Web 开发模式不使用原生存储，使用同源 Cookie。
+
+### 远程 API 转发与任务流
+
+除配对、状态、设备和退出接口外，远程设备访问 `/api/*` 必须先通过服务端的 `_ALLOWED_CORE_ROUTES` 白名单。当前移动端使用的核心接口包括：
+
+- `GET /api/projects?execution_mode=chat`：加载项目；
+- `GET /api/conversations/{id}`、`GET /api/conversations/{id}/tasks`：加载会话和任务；
+- `GET /api/tasks/{id}?event_view=runtime`、`GET /api/tasks/{id}/events`：加载任务状态和事件；
+- `GET /api/agents`、`GET /api/settings/llm`、`POST /api/llm/models`：加载运行配置；
+- `POST /api/conversations`：创建会话；
+- `POST /api/messages/images` 及会话图片预览接口：上传和查看图片；
+- `POST /api/tasks/{id}/inputs`：发送 steering 输入；
+- `POST /api/tasks/{id}/cancel`、`POST /api/conversations/{id}/tasks/cancel`：停止任务；
+- `GET /api/approvals/state`、相关 `resolve` 接口：处理工具审批、工作流审批和用户输入。
+
+启动任务使用单独的远程流式入口，而不是直接开放 runtime 的任务流接口：
+
+```text
+POST /remote/conversations/{conversation_id}/tasks
+Body: {
+  "message": "...",
+  "image_attachments": [],
+  "options": {
+    "execution_mode": "chat",
+    "use_history": true,
+    "...": "其他运行选项"
+  }
+}
+```
+
+adapter 校验设备后，将该请求转发为：
+
+```text
+POST http://127.0.0.1:<discovered-runtime-port>/api/conversations/{conversation_id}/tasks/stream
+```
+
+响应以 `application/x-ndjson` 流式返回，并设置 `Cache-Control: no-cache` 和 `X-Accel-Buffering: no`，避免 Nginx 缓冲任务事件。手机端持续读取 NDJSON，更新任务过程；任务结束、失败或连接断开后关闭流。
+
+adapter 发现 runtime 的顺序是：优先使用 `HAISH_UPSTREAM_URL`，否则读取 macOS/Linux 下最新的 `runtime.pid`。访问本机 runtime 的 `httpx` 客户端统一使用 `trust_env=False`，不读取系统代理环境变量，避免本地代理影响 loopback 请求。
+
+### 鉴权、错误和撤销行为
+
+- 无效或缺失 Bearer token/Cookie：需要鉴权的接口返回 401；原生客户端清除本地凭证并回到扫码页；
+- 已认证设备访问未列入白名单的 `/api/*`：返回 403，不允许把任意 runtime API 暴露到公网；
+- runtime 不在线：`/remote/status` 返回 `runtime_online: false`；上游错误由客户端显示为重连状态；
+- 桌面端管理设备接口通过 loopback 免设备鉴权，但公网请求仍必须使用有效设备凭证；
+- 撤销设备后，其旧 token 立即无法通过认证；
+- adapter、runtime 和手机包之间不共享 Cookie、配对码或 token 明文日志。
+
 ## Web 与原生边界
 
 - Web 开发模式继续通过 Vite proxy 访问同源 adapter；
@@ -86,18 +186,26 @@ haish://pair?v=1&endpoint=https%3A%2F%2F47.97.24.242&code=12345678
 
 推送通知需要 APNs 设备注册和服务端推送链路，等前台闭环通过后单独实现。
 
-## 公网服务器
+## 公网服务器与 Mac 端
 
 公网服务器负责 TLS 和字节转发，不理解会话、消息或工具调用。标准组件为：
 
-- Nginx：监听 443，安装 `47.97.24.242` 的受信任 IP 地址证书；
-- FRP server：接收 Mac 主动建立的加密隧道；
+- Nginx：监听 443，转发到 `127.0.0.1:18766`；
+- FRP server：监听 `0.0.0.0:7000`，接收 Mac 主动建立的隧道；
 - systemd：保证 Nginx、FRP 和证书续期常驻；
-- 防火墙：只开放 SSH、80/443 和 FRP 控制端口；
+- 云安全组：放行 TCP `7000`；来源可先用 `0.0.0.0/0` 排障，稳定后收紧到 Mac 的公网 IP/32；
+- 服务器系统防火墙：不需要开放 `18766`；
 - 限流：对 `/remote/pairing/exchange` 设置严格请求速率；
 - 日志：不记录 Authorization、配对码和二维码完整内容。
 
-Haish Remote adapter 和 Agent runtime 都必须继续绑定 `127.0.0.1`，不得直接监听公网网卡。
+Mac 上的 Clash/TUN 等网络接管可能把 FRP 流量导向虚拟接口。启动 FRP 前应确认：
+
+```bash
+route -n get 47.97.24.242
+nc -vz -G 5 47.97.24.242 7000
+```
+
+目标是使用真实网卡（通常为 `en0`），并能连通 TCP `7000`。FRP client 配置中的 token 必须与服务器一致；token 曾泄露时应重新生成并同时替换两端配置。
 
 电脑端启动 adapter 时必须设置：
 
@@ -109,24 +217,45 @@ HAISH_REMOTE_PUBLIC_ENDPOINT=https://47.97.24.242 python3 -m server.app serve
 
 ## GitHub Actions 与 SideStore 真机验证
 
-仓库内的 `.github/workflows/build-ios-unsigned.yml` 是唯一 iOS 构建入口。它只允许手动触发，不使用 Apple ID、签名证书或仓库 Secret。Remote UI 复用的桌面客户端模型和图标由 CI 从公开的 `haishihua/haish-agent` 仓库检出，并固定到已验证提交，避免云端构建依赖开发电脑目录或跟随 `master` 漂移：
+仓库内的 `.github/workflows/build-ios-unsigned.yml` 是**唯一 IPA 构建入口**。它只允许手动触发，不使用 Apple ID、签名证书或仓库 Secret。工作流在 GitHub 托管的 macOS Runner 中执行完整的依赖安装、Web 构建、Capacitor 同步、iOS 编译、IPA 打包和 artifact 上传。
 
-1. 将本仓库推送到 GitHub；
-2. 在仓库的 Actions 页面选择 `Build unsigned iOS IPA`；
-3. 点击 `Run workflow`；
-4. 构建完成后下载 `Haish-unsigned-<commit>` artifact 并解压；
-5. 在 iPhone 的 SideStore 中导入 `Haish-unsigned.ipa`；
-6. SideStore 使用个人开发证书签名并安装，Haish 随后出现在手机桌面；
-7. 在 iPhone 开启开发者模式，并在“VPN 与设备管理”中信任开发者；
-8. 免费签名有效期为七天，SideStore 必须在到期前刷新。
+本地发布的禁止事项：
 
-SideStore 需要使用 Apple 账号完成个人签名，这是免费安装的必要条件。不要把 Apple 账号、密码、会话、证书或 provisioning profile 写入仓库及 GitHub Actions。正式稳定分发时改为付费 Apple Developer 账号和 TestFlight，不改变 React/Capacitor 代码结构。
+- 不要在开发 Mac 上运行 `xcodebuild`；
+- 不要在开发 Mac 上执行 archive/export 或自行压缩 `Payload` 生成 IPA；
+- 不要把本地 `dist/`、`ios/App/App/public/` 或旧 `.haish/artifacts/Haish-unsigned.ipa` 当作发布产物；
+- 不要通过未推送的本地提交触发构建；GitHub Actions 只能构建 GitHub 上已经存在的提交。
+
+标准流程：
+
+1. 修改并测试移动端源码和文档；
+2. 提交并推送到远端 `main` 分支；
+3. 打开仓库的 **Actions** 页面；
+4. 选择 **Build unsigned iOS IPA**，在 `main` 上点击 **Run workflow**；
+5. 等待所有步骤成功，包括 `Build and sync Capacitor`、`Build unsigned iOS app`、`Package IPA` 和 `Upload IPA`；
+6. 下载当前 run 的 artifact `Haish-unsigned-<commit>` 并解压得到 `Haish-unsigned.ipa`；
+7. 将 IPA 导入 iPhone 的 SideStore；
+8. SideStore 使用个人 Apple 账号签名并安装；
+9. 在 iPhone 开启开发者模式，并在“VPN 与设备管理”中信任开发者；
+10. 免费签名通常需要在有效期到期前由 SideStore 刷新。
+
+artifact 是发布产物的唯一来源。安装前应确认 artifact 对应本次提交，而不是旧文件名相同的 IPA。SideStore 需要使用 Apple 账号完成个人签名，这是免费安装的必要条件；不要把 Apple 账号、密码、会话、证书或 provisioning profile 写入仓库及 GitHub Actions。
+
+本地只允许执行以下同步检查：
+
+```bash
+npm test
+npm run mobile:sync
+```
+
+`npm run mobile:sync` 只执行 Vite Web 构建和 Capacitor 资源同步，不编译 iOS、不运行 Xcode、不生成 IPA。开发 Mac 只有 Command Line Tools、无法运行 `xcodebuild` 是预期状态，不是项目故障。需要验证可安装包时，必须回到 GitHub Actions。
 
 ## 验收标准
 
 - `npm run build`、前端测试和服务端测试全部通过；
-- Capacitor 能成功同步 Web 资源并生成 iOS 工程；
-- GitHub Actions 能产出可由 SideStore 导入的 `Haish-unsigned.ipa`；
+- `npm run mobile:sync` 能成功同步 Web 资源；
+- GitHub Actions 能产出当前提交对应的 `Haish-unsigned-<commit>` artifact；
+- artifact 内的 Web 资源包含当前源码的最新 UI，而不是旧的 `Scan your computer` 等文案；
 - 未配对的 iOS App 只显示扫码入口；
 - 非标准二维码、HTTP endpoint 和非法配对码均被拒绝；
 - 首次扫码后能进入任务列表；
@@ -136,8 +265,12 @@ SideStore 需要使用 Apple 账号完成个人签名，这是免费安装的必
 - 公网入口通过 iOS 系统信任的 HTTPS 证书访问；
 - 4G/5G 与电脑不同网络时可创建、继续、审批和停止任务。
 
-## 当前外部阻塞
+## 当前状态
 
-- SideStore 尚未在目标 iPhone 上配置，因此还不能完成真机安装；
-- `47.97.24.242` 的 80 端口已有 Nginx，但 443 当前不可用；
-- 当前 SSH 身份无法登录该服务器，部署 HTTPS 与 FRP 前需要有效的 SSH 用户和认证方式。
+- GitHub Actions workflow：已配置为唯一 IPA 构建入口；
+- 最新移动端 UI：已通过 Actions 成功构建并验证 artifact 内容；
+- 公网 HTTPS：`https://47.97.24.242/remote/status` 已验证返回 `200`；
+- FRP：服务器 `7000` 与 Mac client 隧道已验证可用；
+- 本地 adapter：`127.0.0.1:8766` 正常；
+- SideStore 真机安装：仍需在目标 iPhone 上执行；
+- 签名：当前使用 SideStore 个人签名，不是 App Store/TestFlight 分发。

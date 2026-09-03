@@ -35,22 +35,54 @@ native app uses the versioned QR protocol and stores its Bearer device token in
 the platform secure store. Keep both the adapter and core runtime bound to
 `127.0.0.1`.
 
-## iOS
+## iOS build policy
 
-The existing React UI is packaged as a native iOS app with Capacitor. It does
-not load a hosted webpage and it does not bundle the Python adapter.
+The **only supported way to produce an installable iOS IPA is the GitHub Actions
+workflow** `.github/workflows/build-ios-unsigned.yml`.
 
-Run the `Build unsigned iOS IPA` workflow from the GitHub Actions page. It uses
-a GitHub-hosted macOS runner to build `Haish-unsigned.ipa`, so the development
-computer does not need a full Xcode installation. Import that IPA into
-SideStore on the iPhone; SideStore signs it with the personal development
-certificate and must refresh the free seven-day signing period.
+Do not run `xcodebuild`, archive/export commands, or an ad-hoc local IPA script
+on the development Mac. The checked-in `ios/` directory is the Capacitor native
+project consumed by the hosted GitHub macOS runner; it is not a local packaging
+entry point. The workflow performs the complete sequence in CI:
 
-For local web/Capacitor checks that do not compile native iOS code:
+1. checks out this repository;
+2. checks out the pinned shared Haish desktop source used for branding;
+3. installs dependencies with `npm ci`;
+4. runs `npm run mobile:sync` to build the Web UI and copy it into `ios/`;
+5. builds the unsigned iOS app on the GitHub-hosted macOS runner;
+6. packages and uploads `Haish-unsigned.ipa` as a workflow artifact.
+
+### Standard IPA release procedure
+
+1. Commit all mobile source and documentation changes.
+2. Push the commit to the remote `main` branch. GitHub Actions cannot build
+   unpushed local changes.
+3. Open the repository's **Actions** tab.
+4. Select **Build unsigned iOS IPA** and click **Run workflow** on `main`.
+5. Wait for every workflow step to pass.
+6. Download the artifact named `Haish-unsigned-<commit>` from that run and
+   extract `Haish-unsigned.ipa`.
+7. Import the IPA into SideStore on the iPhone. SideStore signs it with the
+   personal Apple account and installs it.
+
+The artifact is the source of truth. A stale `.haish/artifacts/Haish-unsigned.ipa`
+file on a development Mac must not be treated as the latest build unless it was
+downloaded from the current successful Actions run.
+
+### Local Capacitor command
 
 ```bash
 npm run mobile:sync
 ```
+
+This command is only a local Web build plus Capacitor asset synchronization for
+checking the generated files. It **does not compile an iOS app and does not
+produce an IPA**. IPA packaging remains GitHub Actions-only.
+
+The development Mac does not need a full Xcode installation. A local machine
+with only Command Line Tools is expected to be unable to run `xcodebuild`; this
+is not a project failure. If the GitHub workflow fails, diagnose the workflow
+logs and fix the source/configuration, then trigger the workflow again.
 
 The only supported native pairing payload is:
 
@@ -82,7 +114,7 @@ acceptance criteria.
 3. **需要更实时**：在 adapter 增加 WebSocket，仅承载事件推送；任务创建、审批和取消仍走现有 HTTP API，降低协议复杂度。
 4. **不要直接引入 node-pty/xterm.js**：Haish 当前是结构化 agent UI，不是远程 shell；终端能力会扩大权限和安全面。
 
-Overrides:
+## Configuration overrides
 
 - `HAISH_UPSTREAM_URL`: explicit core runtime URL.
 - `HAISH_RUNTIME_PID_FILE`: explicit runtime PID record.
@@ -95,3 +127,6 @@ Overrides:
 npm test
 npm run mobile:sync
 ```
+
+`npm run mobile:sync` is a synchronization check only. To verify a real iOS
+installable package, use the GitHub Actions workflow described above.
