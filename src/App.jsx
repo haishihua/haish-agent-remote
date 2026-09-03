@@ -424,7 +424,18 @@ function PairingScreen({ runtimeOnline, onPaired }) {
           <p>Pair this device with the Haish app running on your computer.</p>
         </div>
         {api.isNative ? <>
-          {error ? <p className="form-error" role="alert">{error}</p> : null}
+          <div className="pairing-visual" aria-hidden="true">
+            <div className="pairing-laptop"><span className="pairing-window"><i /><i /><i /><ScanLine size={54} /></span><b /></div>
+            <div className="pairing-phone"><span className="pairing-scan-frame"><ScanLine size={40} /></span><em /></div>
+          </div>
+          <div className="pairing-guide">
+            <div className="pairing-guide-title"><span />How to connect<span /></div>
+            <div className="pairing-step"><strong>1</strong><span>Open Remote Control in Haish<br />on your computer.</span></div>
+            <div className="pairing-step"><strong>2</strong><span>Scan the QR code with this device.</span></div>
+            <div className="pairing-step"><strong>3</strong><span>Wait for the connection to complete.</span></div>
+          </div>
+
+          {error ? <p className="form-error pairing-error" role="alert"><CircleAlert size={18} />{error}</p> : null}
           <button type="button" className="primary-button pairing-scan-button" disabled={busy} onClick={scan}>
             {busy ? <LoaderCircle className="spin" size={20} /> : <ScanLine size={20} />}
             {busy ? 'Opening camera…' : 'Scan pairing QR code'}
@@ -519,7 +530,7 @@ function ApprovalCard({ approvals, onResolved }) {
 function ConversationRow({ conversation, task, onOpen }) {
   const running = isTaskActuallyActive(task);
   return (
-    <button className="conversation-row" onClick={() => onOpen(conversation.conversation_id)}>
+    <button className="conversation-row" onClick={() => onOpen(conversation)}>
       <span className="conversation-title">{conversation.title || conversation.label}</span>
       {running ? <LoaderCircle className="spin conversation-running" size={17} aria-label="Running" /> : null}
     </button>
@@ -738,12 +749,13 @@ function MessageImage({ conversationId, image, onPreview }) {
   );
 }
 
-function ConversationDetail({ id, onBack, approvals, refreshApprovals, connection }) {
-  const [conversation, setConversation] = useState(null);
+function ConversationDetail({ id, initialConversation, onBack, approvals, refreshApprovals, connection }) {
+  const [conversation, setConversation] = useState(initialConversation || null);
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [liveRun, setLiveRun] = useState(null);
+  const [pendingUserMessage, setPendingUserMessage] = useState(null);
   const [composerImages, setComposerImages] = useState([]);
   const [previewImage, setPreviewImage] = useState(null);
   const [taskTraces, setTaskTraces] = useState({});
@@ -773,6 +785,7 @@ function ConversationDetail({ id, onBack, approvals, refreshApprovals, connectio
 
   useEffect(() => {
     setTaskTraces({});
+    setPendingUserMessage(null);
     loadedTraceIdsRef.current = new Set();
   }, [id]);
 
@@ -1018,13 +1031,16 @@ function ConversationDetail({ id, onBack, approvals, refreshApprovals, connectio
     try {
       if (running) {
         if (!activeTaskId) return;
+        setPendingUserMessage({ id: `pending-${Date.now()}`, text: nextMessage });
         await api.sendInput(activeTaskId, nextMessage);
         setMessage('');
         await refresh();
+        setPendingUserMessage(null);
         return;
       }
 
       localStreamRef.current = true;
+      setPendingUserMessage({ id: `pending-${Date.now()}`, text: nextMessage });
       setLiveRun({
         taskId: null,
         status: 'running',
@@ -1050,6 +1066,7 @@ function ConversationDetail({ id, onBack, approvals, refreshApprovals, connectio
           refresh();
         },
       );
+      setPendingUserMessage(null);
       await refresh();
       setLiveRun(null);
     } catch (nextError) {
@@ -1112,6 +1129,9 @@ function ConversationDetail({ id, onBack, approvals, refreshApprovals, connectio
               </div> : null}
             </article>;
           })}
+          {pendingUserMessage ? <article className="message user" aria-label="Your message">
+            <div className="message-body"><ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>{pendingUserMessage.text}</ReactMarkdown></div>
+          </article> : null}
           {liveRun && running ? <article className="message assistant" aria-label="Assistant message">
             <div className="message-body streaming">
               <TaskTraceDisclosure state={liveRun} running elapsed={liveElapsed} />
@@ -1194,12 +1214,18 @@ function SettingsScreen({ status, onLogout, onBack }) {
 
   const load = useCallback(async () => {
     try {
-      setDevices((await api.devices()).devices || []);
+      const listed = (await api.devices()).devices || [];
+      const current = status.device;
+      const merged = current && !listed.some((device) => device.device_id === current.device_id)
+        ? [current, ...listed]
+        : listed;
+      setDevices(merged);
       setError('');
     } catch (nextError) {
+      if (status.device) setDevices([status.device]);
       setError(nextError.message);
     }
-  }, []);
+  }, [status.device]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -1319,11 +1345,12 @@ export default function App() {
   async function createConversation(projectId) {
     const created = await api.createConversation(projectId);
     setSelectedId(created.conversation_id);
-    await loadTasks();
+    // The detail screen can render immediately; refresh the directory in the background.
+    loadTasks();
   }
 
-  function openConversation(conversationId) {
-    setSelectedId(conversationId);
+  function openConversation(conversation) {
+    setSelectedId(conversation.conversation_id);
   }
 
   function closeConversation() {
@@ -1341,7 +1368,8 @@ export default function App() {
   if (!initialized || !status) return <div className="app-loading"><LoaderCircle className="spin" /><span>Connecting to Haish…</span></div>;
   if (!status.paired) return <PairingScreen runtimeOnline={status.runtime_online} onPaired={loadStatus} />;
   const connection = runtimeConnectionState(status.runtime_online, runtimeOfflineSince);
-  if (selectedId) return <ConversationDetail id={selectedId} onBack={closeConversation} approvals={approvals} refreshApprovals={loadApprovals} connection={connection} />;
+  const selectedConversation = conversations.find((item) => item.conversation_id === selectedId) || null;
+  if (selectedId) return <ConversationDetail id={selectedId} initialConversation={selectedConversation} onBack={closeConversation} approvals={approvals} refreshApprovals={loadApprovals} connection={connection} />;
 
   const approvalCount = (approvals?.pending?.length || 0) + (approvals?.pending_workflow_approvals?.length || 0) + (approvals?.pending_user_inputs?.length || 0);
   const reconnecting = connection && !connection.timedOut;
