@@ -16,6 +16,33 @@ export function chatImageValidationError(file) {
   return '';
 }
 
+export function chatMessageText(content) {
+  const raw = typeof content === 'string'
+    ? content
+    : (Array.isArray(content) ? content : [])
+      .map((part) => part?.text || part?.content || '')
+      .filter(Boolean)
+      .join('\n');
+  return stripChatImageAugmentation(raw).text;
+}
+
+export function userMessageOccurrenceCount(messages, text) {
+  const target = String(text || '').trim();
+  return (Array.isArray(messages) ? messages : []).filter((message) => (
+    message?.role === 'user' && chatMessageText(message.content).trim() === target
+  )).length;
+}
+
+export function messageWithImageAttachments(message, imageAttachments) {
+  const paths = (Array.isArray(imageAttachments) ? imageAttachments : [])
+    .map((image) => String(image?.path || '').trim())
+    .filter(Boolean);
+  if (!paths.length) return String(message || '');
+  const markers = paths.map((path, index) => `[user attached image #${index + 1}: ${path}]`).join('\n');
+  const hint = 'The user attached the image(s) above. Inspect the image files before answering; do not infer their contents from filenames.';
+  return [String(message || '').trim(), markers, hint].filter(Boolean).join('\n\n');
+}
+
 export function messageImageRefs(message, task) {
   const restoredRefs = typeof message?.content === 'string'
     ? stripChatImageAugmentation(message.content).imageRefs

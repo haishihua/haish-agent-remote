@@ -74,3 +74,21 @@ test('image uploads and task starts use the desktop image attachment protocol', 
     globalThis.fetch = originalFetch;
   }
 });
+
+test('running task input carries uploaded image paths', async () => {
+  const originalFetch = globalThis.fetch;
+  let requestBody;
+  globalThis.fetch = async (_path, init = {}) => {
+    requestBody = JSON.parse(init.body);
+    return new Response(JSON.stringify({ ok: true }), { headers: { 'Content-Type': 'application/json' } });
+  };
+
+  try {
+    await api.sendInput('task-1', 'Inspect this', [{ path: '/tmp/shot.png' }]);
+    assert.equal(requestBody.mode, 'steering');
+    assert.match(requestBody.message, /^Inspect this/);
+    assert.match(requestBody.message, /\[user attached image #1: \/tmp\/shot\.png\]/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

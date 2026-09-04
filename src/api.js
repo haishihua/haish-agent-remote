@@ -1,4 +1,5 @@
 import { readNdjson } from './task-stream.js';
+import { messageWithImageAttachments } from './chat-images.js';
 import {
   clearNativeConnection,
   initializeNativeConnection,
@@ -136,9 +137,9 @@ export const api = {
     onOpen?.();
     await readNdjson(response, onEvent);
   },
-  sendInput: (taskId, message) => request(`/api/tasks/${encodeURIComponent(taskId)}/inputs`, {
+  sendInput: (taskId, message, imageAttachments = []) => request(`/api/tasks/${encodeURIComponent(taskId)}/inputs`, {
     method: 'POST',
-    body: JSON.stringify({ message, mode: 'steering' }),
+    body: JSON.stringify({ message: messageWithImageAttachments(message, imageAttachments), mode: 'steering' }),
   }),
   stopTask: (taskId) => request(`/api/tasks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' }),
   stopConversation: (conversationId) => request(`/api/conversations/${encodeURIComponent(conversationId)}/tasks/cancel`, { method: 'POST' }),

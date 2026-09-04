@@ -3,8 +3,11 @@ import test from 'node:test';
 
 import {
   CHAT_IMAGE_MAX_BYTES,
+  chatMessageText,
   chatImageValidationError,
+  messageWithImageAttachments,
   messageImageRefs,
+  userMessageOccurrenceCount,
 } from '../src/chat-images.js';
 
 test('chat images follow the desktop limits and message refs are deduplicated', () => {
@@ -22,4 +25,24 @@ test('legacy desktop image markers are restored after history reload', () => {
     content: 'Inspect this\n[user attached image #1: /tmp/restored.png]\nThe user attached the image(s) above.',
   };
   assert.deepEqual(messageImageRefs(message, {}).map((ref) => ref.path), ['/tmp/restored.png']);
+});
+
+test('identical user messages are matched by occurrence instead of text alone', () => {
+  const messages = [
+    { role: 'user', content: '你好' },
+    { role: 'assistant', content: '你好！' },
+    { role: 'user', content: '你好' },
+  ];
+  assert.equal(userMessageOccurrenceCount(messages, '你好'), 2);
+  assert.equal(userMessageOccurrenceCount(messages, '再见'), 0);
+});
+
+test('runtime instructions include image paths while the visible text stays clean', () => {
+  const augmented = messageWithImageAttachments('请看这张图', [
+    { path: '/tmp/shot.png' },
+    { path: '/tmp/detail.jpg' },
+  ]);
+  assert.match(augmented, /\[user attached image #1: \/tmp\/shot\.png\]/);
+  assert.match(augmented, /\[user attached image #2: \/tmp\/detail\.jpg\]/);
+  assert.equal(chatMessageText(augmented), '请看这张图');
 });

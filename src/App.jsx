@@ -29,8 +29,10 @@ import {
 import { api, runtimeConnectionState } from './api.js';
 import {
   CHAT_IMAGE_MAX_COUNT,
+  chatMessageText,
   chatImageValidationError,
   messageImageRefs,
+  userMessageOccurrenceCount,
 } from './chat-images.js';
 import penguinLogo from './assets/penguin_logo_user.png';
 import stopIcon from '../../haish-agent/app-web/assets/ui/icons/stop.png';
@@ -54,7 +56,6 @@ import {
   buildSubAgentTimelineItems,
   buildToolView,
 } from '../../haish-agent/app-web/src/features/chat/model/tool-view.js';
-import { stripChatImageAugmentation } from '../../haish-agent/app-web/src/features/chat/model/chat-text.js';
 import { ScrollToBottomButton } from './ScrollToBottomButton.jsx';
 import {
   THINKING_OPTIONS,
@@ -85,9 +86,7 @@ function formatDate(value) {
 }
 
 function textContent(content) {
-  if (typeof content === 'string') return stripChatImageAugmentation(content).text;
-  if (!Array.isArray(content)) return '';
-  return stripChatImageAugmentation(content.map((part) => part?.text || part?.content || '').filter(Boolean).join('\n')).text;
+  return chatMessageText(content);
 }
 
 function toolDisplayName(value) {
@@ -789,7 +788,7 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [liveRun, setLiveRun] = useState(null);
-  const [pendingUserMessage, setPendingUserMessage] = useState(null);
+  const [optimisticUserMessages, setOptimisticUserMessages] = useState([]);
   const [composerImages, setComposerImages] = useState([]);
   const [previewImage, setPreviewImage] = useState(null);
   const [taskTraces, setTaskTraces] = useState({});
@@ -803,8 +802,8 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
   const [showRunConfig, setShowRunConfig] = useState(false);
   const [composerExpanded, setComposerExpanded] = useState(false);
   const messageScrollRef = useRef(null);
-  const imageInputRef = useRef(null);
   const composerImagesRef = useRef([]);
+  const optimisticUserMessagesRef = useRef([]);
   const runConfigQuickRef = useRef(null);
   const localStreamRef = useRef(false);
   const liveRunRef = useRef(null);
@@ -812,6 +811,7 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
 
   useEffect(() => { liveRunRef.current = liveRun; }, [liveRun]);
   useEffect(() => { composerImagesRef.current = composerImages; }, [composerImages]);
+  useEffect(() => { optimisticUserMessagesRef.current = optimisticUserMessages; }, [optimisticUserMessages]);
 
   useEffect(() => () => {
     composerImagesRef.current.forEach((image) => {
@@ -821,7 +821,8 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
 
   useEffect(() => {
     setTaskTraces({});
-    setPendingUserMessage(null);
+    optimisticUserMessagesRef.current = [];
+    setOptimisticUserMessages([]);
     loadedTraceIdsRef.current = new Set();
   }, [id]);
 
@@ -1003,7 +1004,6 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
   }, [runConfigExpanded, showRunConfig]);
 
   async function attachImages(files) {
-    if (running) return;
     const available = Math.max(0, CHAT_IMAGE_MAX_COUNT - composerImagesRef.current.length);
     const drafts = Array.from(files || []).slice(0, available).map((file) => {
       const validationError = chatImageValidationError(file);
@@ -1056,22 +1056,35 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
   async function submit(event) {
     event.preventDefault();
     const nextMessage = message.trim();
-    if (!nextMessage || !conversation || composerImages.some((image) => image.uploading) || (!running && !runConfig)) return;
+    const imageAttachments = composerImages.filter((image) => image.imageId && !image.error).map((image) => ({
+      image_id: image.imageId,
+      path: image.path,
+      mime: image.mime,
+    }));
+    if ((!nextMessage && !imageAttachments.length) || !conversation || (running && !activeTaskId) || composerImages.some((image) => image.uploading) || (!running && !runConfig)) return;
+    const optimisticId = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const existingOccurrence = optimisticUserMessagesRef.current
+      .filter((item) => item.text === nextMessage)
+      .reduce((highest, item) => Math.max(highest, item.occurrence), 0);
+    const occurrence = Math.max(
+      userMessageOccurrenceCount(conversation.messages, nextMessage),
+      existingOccurrence,
+    ) + 1;
+    const optimisticMessage = { id: optimisticId, text: nextMessage, images: imageAttachments, occurrence };
+    optimisticUserMessagesRef.current = [...optimisticUserMessagesRef.current, optimisticMessage];
+    setOptimisticUserMessages(optimisticUserMessagesRef.current);
     setBusy(true);
     setError('');
     try {
       if (running) {
-        if (!activeTaskId) return;
-        setPendingUserMessage({ id: `pending-${Date.now()}`, text: nextMessage });
-        await api.sendInput(activeTaskId, nextMessage);
+        await api.sendInput(activeTaskId, nextMessage, imageAttachments);
         setMessage('');
+        clearComposerImages();
         await refresh();
-        setPendingUserMessage(null);
         return;
       }
 
       localStreamRef.current = true;
-      setPendingUserMessage({ id: `pending-${Date.now()}`, text: nextMessage });
       setLiveRun({
         taskId: null,
         status: 'running',
@@ -1079,11 +1092,6 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
         createdAt: Date.now(),
         firstTokenAt: 0,
       });
-      const imageAttachments = composerImages.filter((image) => image.imageId && !image.error).map((image) => ({
-        image_id: image.imageId,
-        path: image.path,
-        mime: image.mime,
-      }));
       await api.startTask(
         conversation,
         nextMessage,
@@ -1098,9 +1106,10 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
       );
       localStreamRef.current = false;
       await refresh();
-      setPendingUserMessage(null);
       setLiveRun(null);
     } catch (nextError) {
+      optimisticUserMessagesRef.current = optimisticUserMessagesRef.current.filter((item) => item.id !== optimisticId);
+      setOptimisticUserMessages(optimisticUserMessagesRef.current);
       setError(nextError.message);
     } finally {
       localStreamRef.current = false;
@@ -1129,8 +1138,8 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
   const visibleMessages = (conversation?.messages || []).filter((item) => !(
     running && liveRun && item.role !== 'user' && item.task_id === activeTaskId
   ));
-  const pendingMessagePersisted = pendingUserMessage && visibleMessages.some((item) => (
-    item.role === 'user' && textContent(item.content).trim() === pendingUserMessage.text
+  const visibleOptimisticMessages = optimisticUserMessages.filter((item) => (
+    userMessageOccurrenceCount(visibleMessages, item.text) < item.occurrence
   ));
 
   return (
@@ -1166,9 +1175,12 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
               </div> : null}
             </article>;
           })}
-          {pendingUserMessage && !pendingMessagePersisted ? <article className="message user" aria-label="Your message">
-            <div className="message-body"><ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>{pendingUserMessage.text}</ReactMarkdown></div>
-          </article> : null}
+          {visibleOptimisticMessages.map((item) => <article className="message user" aria-label="Your message" key={item.id}>
+            {item.images.length ? <div className="message-images" aria-label="Attached images">{item.images.map((image, index) => (
+              <MessageImage conversationId={id} image={image} key={image.image_id || image.path || index} onPreview={setPreviewImage} />
+            ))}</div> : null}
+            {item.text ? <div className="message-body"><ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>{item.text}</ReactMarkdown></div> : null}
+          </article>)}
           {liveRun && running ? <article className="message assistant" aria-label="Assistant message">
             <div className="message-body streaming">
               <TaskTraceDisclosure state={liveRun} running elapsed={liveElapsed} />
@@ -1229,18 +1241,20 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
             event.preventDefault();
             event.currentTarget.form?.requestSubmit();
           }} placeholder={running ? 'Add instructions…' : 'Continue this task…'} />
-          <input ref={imageInputRef} className="composer-file-input" type="file" accept="image/*" multiple tabIndex={-1} onChange={(event) => {
-            attachImages(event.target.files);
-            event.target.value = '';
-          }} />
-          <button type="button" className="composer-photo-button" onClick={() => imageInputRef.current?.click()} disabled={running || composerImages.length >= CHAT_IMAGE_MAX_COUNT} aria-label="Add photos from this device"><ImagePlus size={25} /></button>
+          <label className={`composer-photo-button ${composerImages.length >= CHAT_IMAGE_MAX_COUNT ? 'disabled' : ''}`} aria-label="Add photos from this device">
+            <ImagePlus size={25} aria-hidden="true" />
+            <input className="composer-file-input" type="file" accept="image/*" multiple disabled={composerImages.length >= CHAT_IMAGE_MAX_COUNT} onChange={(event) => {
+              attachImages(event.target.files);
+              event.target.value = '';
+            }} />
+          </label>
           {runConfig && !runConfigExpanded ? <button type="button" className="run-config-icon-button" onClick={() => setRunConfigExpanded(true)} disabled={running} aria-label={`Show run configuration, thinking ${selectedThinking?.label || 'unknown'}`} aria-expanded="false"><svg className="run-config-gauge" style={{ '--gauge-rotation': reasoningGaugeRotation }} viewBox="0 0 24 24" aria-hidden="true"><path className="run-config-gauge-arc" d="M3.34 19a10 10 0 1 1 17.32 0" /><g className="run-config-gauge-needle"><path className="run-config-gauge-pointer" d="M10.9 13.4 12.6 15.1 18.65 7.35Z" /><circle cx="12" cy="14" r="1.8" /></g></svg></button> : null}
-          {running && !message.trim() ? (
+          {running && !message.trim() && !composerImages.some((image) => image.imageId && !image.error) ? (
             <button type="button" className="send-button stop" onClick={stop} disabled={busy} aria-label="Stop task">
               {busy ? <span className="send-spinner" aria-hidden="true" /> : <span className="stop-icon" style={{ '--stop-icon': `url(${stopIcon})` }} aria-hidden="true" />}
             </button>
           ) : (
-            <button className="send-button" disabled={busy || composerImages.some((image) => image.uploading) || !message.trim() || (!running && !runConfig)} aria-label={running ? 'Add instruction' : 'Send'}>
+            <button className="send-button" disabled={busy || composerImages.some((image) => image.uploading) || (!message.trim() && !composerImages.some((image) => image.imageId && !image.error)) || (!running && !runConfig)} aria-label={running ? 'Add instruction' : 'Send'}>
               {busy ? <span className="send-spinner" aria-hidden="true" /> : <span className="send-glyph" aria-hidden="true" />}
             </button>
           )}
