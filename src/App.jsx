@@ -835,6 +835,7 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
   const [composerExpanded, setComposerExpanded] = useState(false);
   const [swipeOffset, setSwipeOffset] = useState(0);
   const messageScrollRef = useRef(null);
+  const messageInputRef = useRef(null);
   const photoInputRef = useRef(null);
   const swipeStartRef = useRef(null);
   const composerImagesRef = useRef([]);
@@ -870,6 +871,11 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
     swipeStartRef.current = null;
     setSwipeOffset(0);
     if (touch && isSwipeBackGesture(start, { x: touch.clientX, y: touch.clientY })) onBack();
+  }
+
+  function collapseComposer() {
+    setComposerExpanded(false);
+    messageInputRef.current?.blur();
   }
 
   useEffect(() => () => {
@@ -1221,7 +1227,7 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
           <span>{connection?.message || error}</span>
         </div> : null}
       </div>
-      <div className="message-region">
+      <div className="message-region" onClick={collapseComposer}>
         <div className="message-scroll" ref={messageScrollRef}>
           <ApprovalCard approvals={approvals} onResolved={refreshApprovals} />
           {visibleMessages.map((item) => {
@@ -1295,7 +1301,7 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
           ))}</div> : null}
           {composerImages.some((image) => image.error) ? <p className="composer-image-error" role="alert">{composerImages.find((image) => image.error)?.error}</p> : null}
           <label htmlFor="task-message" className="sr-only">Send instructions</label>
-          <textarea id="task-message" rows={1} value={message} onFocus={() => setComposerExpanded(true)} onChange={(event) => setMessage(event.target.value)} onPaste={(event) => {
+          <textarea ref={messageInputRef} id="task-message" rows={1} value={message} onFocus={() => setComposerExpanded(true)} onChange={(event) => setMessage(event.target.value)} onPaste={(event) => {
             const images = Array.from(event.clipboardData?.items || []).filter((item) => item.kind === 'file' && item.type.startsWith('image/')).map((item) => item.getAsFile()).filter(Boolean);
             if (!images.length) return;
             event.preventDefault();

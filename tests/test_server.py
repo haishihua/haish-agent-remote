@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from server.app import (
     DeviceStore,
     _computer_model,
+    _compact_project_listing,
     _pairing_uri,
     _public_endpoint,
     _remote_device_name,
@@ -68,6 +69,33 @@ class DeviceStoreTest(unittest.TestCase):
         self.assertTrue(_route_allowed("POST", "tasks/abc/cancel"))
         self.assertFalse(_route_allowed("GET", "settings/memory"))
         self.assertFalse(_route_allowed("DELETE", "conversations/abc"))
+
+    def test_project_listing_keeps_only_lightweight_current_task_summaries(self):
+        payload = {
+            "projects": [{
+                "project_id": "project-1",
+                "conversations": [{
+                    "conversation_id": "conversation-1",
+                    "last_task_id": "task-3",
+                    "tasks": [
+                        {"task_id": "task-1", "status": "done", "error": "large historical output"},
+                        {"task_id": "task-2", "status": "running", "stage": "working", "error": "large live output"},
+                        {"task_id": "task-3", "status": "done", "completed_at": "2026-09-04T10:00:00Z", "model": "gpt"},
+                    ],
+                }],
+            }],
+        }
+
+        compacted = _compact_project_listing(payload)
+        tasks = compacted["projects"][0]["conversations"][0]["tasks"]
+        self.assertEqual([task["task_id"] for task in tasks], ["task-2", "task-3"])
+        self.assertEqual(tasks[0], {"task_id": "task-2", "status": "running", "stage": "working"})
+        self.assertNotIn("model", tasks[1])
+        self.assertNotIn("error", tasks[1])
+
+    def test_project_listing_leaves_non_project_payload_unchanged(self):
+        payload = {"detail": "upstream error"}
+        self.assertIs(_compact_project_listing(payload), payload)
 
     def test_capacitor_origin_can_preflight_bearer_requests(self):
         with TemporaryDirectory() as directory:

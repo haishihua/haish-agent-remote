@@ -53,6 +53,17 @@ _ALLOWED_CORE_ROUTES: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
     )
 )
 
+_ACTIVE_TASK_STATUSES = {"queued", "running"}
+_PROJECT_LIST_TASK_FIELDS = (
+    "task_id",
+    "conversation_id",
+    "status",
+    "stage",
+    "created_at",
+    "updated_at",
+    "completed_at",
+)
+
 
 def _digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
@@ -272,6 +283,27 @@ def _route_allowed(method: str, path: str) -> bool:
     return any(method == allowed_method and pattern.fullmatch(path) for allowed_method, pattern in _ALLOWED_CORE_ROUTES)
 
 
+def _compact_project_listing(payload: Any) -> Any:
+    """Keep directory polling lightweight; conversation detail is fetched on demand."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("projects"), list):
+        return payload
+    for project in payload["projects"]:
+        if not isinstance(project, dict) or not isinstance(project.get("conversations"), list):
+            continue
+        for conversation in project["conversations"]:
+            if not isinstance(conversation, dict):
+                continue
+            last_task_id = conversation.get("last_task_id")
+            tasks = conversation.get("tasks") if isinstance(conversation.get("tasks"), list) else []
+            conversation["tasks"] = [
+                {field: task[field] for field in _PROJECT_LIST_TASK_FIELDS if field in task}
+                for task in tasks
+                if isinstance(task, dict)
+                and (task.get("task_id") == last_task_id or task.get("status") in _ACTIVE_TASK_STATUSES)
+            ]
+    return payload
+
+
 def create_app(*, data_dir: Path | None = None, dist_dir: Path | None = None) -> FastAPI:
     store = DeviceStore((data_dir or DEFAULT_DATA_DIR) / "remote.sqlite3")
     static_root = dist_dir or DEFAULT_DIST_DIR
@@ -438,6 +470,21 @@ def create_app(*, data_dir: Path | None = None, dist_dir: Path | None = None) ->
             for key, value in upstream_response.headers.items()
             if key.lower() in {"content-type", "cache-control", "etag", "content-disposition"}
         }
+
+        if request.method == "GET" and path == "projects" and upstream_response.is_success:
+            body = await upstream_response.aread()
+            await upstream_response.aclose()
+            await client.aclose()
+            try:
+                compacted = _compact_project_listing(json.loads(body))
+            except (TypeError, json.JSONDecodeError):
+                return Response(content=body, status_code=upstream_response.status_code, headers=response_headers)
+            compact_headers = {
+                key: value
+                for key, value in response_headers.items()
+                if key.lower() not in {"content-type", "etag"}
+            }
+            return JSONResponse(content=compacted, status_code=upstream_response.status_code, headers=compact_headers)
 
         async def body_iter():
             try:
