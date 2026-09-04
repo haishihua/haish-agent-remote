@@ -1192,14 +1192,6 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
     setComposerImages(nextImages);
   }
 
-  function clearComposerImages() {
-    composerImagesRef.current.forEach((image) => {
-      if (image.previewUrl) URL.revokeObjectURL(image.previewUrl);
-    });
-    composerImagesRef.current = [];
-    setComposerImages([]);
-  }
-
   async function submit(event) {
     event.preventDefault();
     const nextMessage = message.trim();
@@ -1218,15 +1210,30 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
       existingOccurrence,
     ) + 1;
     const optimisticMessage = { id: optimisticId, text: nextMessage, images: imageAttachments, occurrence };
+    const submittedComposerImages = composerImagesRef.current;
+    let accepted = false;
+    let releasedImages = false;
+    const releaseSubmittedImages = () => {
+      if (releasedImages) return;
+      releasedImages = true;
+      submittedComposerImages.forEach((image) => {
+        if (image.previewUrl) URL.revokeObjectURL(image.previewUrl);
+      });
+    };
     optimisticUserMessagesRef.current = [...optimisticUserMessagesRef.current, optimisticMessage];
     setOptimisticUserMessages(optimisticUserMessagesRef.current);
+    composerImagesRef.current = [];
+    setComposerImages([]);
+    setMessage('');
+    setComposerExpanded(false);
+    messageInputRef.current?.blur();
     setBusy(true);
     setError('');
     try {
       if (running) {
         await api.sendInput(activeTaskId, nextMessage, imageAttachments);
-        setMessage('');
-        clearComposerImages();
+        accepted = true;
+        releaseSubmittedImages();
         await refresh();
         return;
       }
@@ -1246,17 +1253,23 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
         taskOptionsForRunConfig(runConfig, providers),
         (streamEvent) => setLiveRun((current) => applyTaskStreamEvent(current, streamEvent)),
         () => {
+          accepted = true;
+          releaseSubmittedImages();
           setBusy(false);
-          setMessage('');
-          clearComposerImages();
         },
       );
       localStreamRef.current = false;
       await refresh();
       setLiveRun(null);
     } catch (nextError) {
-      optimisticUserMessagesRef.current = optimisticUserMessagesRef.current.filter((item) => item.id !== optimisticId);
-      setOptimisticUserMessages(optimisticUserMessagesRef.current);
+      if (!accepted) {
+        optimisticUserMessagesRef.current = optimisticUserMessagesRef.current.filter((item) => item.id !== optimisticId);
+        setOptimisticUserMessages(optimisticUserMessagesRef.current);
+        composerImagesRef.current = submittedComposerImages;
+        setComposerImages(submittedComposerImages);
+        setMessage(nextMessage);
+        if (!running) setLiveRun(null);
+      }
       setError(nextError.message);
     } finally {
       localStreamRef.current = false;
@@ -1383,7 +1396,7 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
           ))}</div> : null}
           {composerImages.some((image) => image.error) ? <p className="composer-image-error" role="alert">{composerImages.find((image) => image.error)?.error}</p> : null}
           <label htmlFor="task-message" className="sr-only">Send instructions</label>
-          <textarea ref={messageInputRef} id="task-message" rows={1} value={message} onFocus={() => setComposerExpanded(true)} onChange={(event) => setMessage(event.target.value)} onPaste={(event) => {
+          <textarea ref={messageInputRef} id="task-message" rows={1} value={message} disabled={busy} onFocus={() => setComposerExpanded(true)} onChange={(event) => setMessage(event.target.value)} onPaste={(event) => {
             const images = Array.from(event.clipboardData?.items || []).filter((item) => item.kind === 'file' && item.type.startsWith('image/')).map((item) => item.getAsFile()).filter(Boolean);
             if (!images.length) return;
             event.preventDefault();
@@ -1396,7 +1409,7 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
           <button
             type="button"
             className="composer-photo-button"
-            disabled={composerImages.length >= CHAT_IMAGE_MAX_COUNT}
+            disabled={busy || composerImages.length >= CHAT_IMAGE_MAX_COUNT}
             onClick={() => photoInputRef.current?.click()}
             aria-label="Choose photos from this device"
           >
