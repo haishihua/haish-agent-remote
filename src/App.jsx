@@ -833,11 +833,13 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
   const [runConfigExpanded, setRunConfigExpanded] = useState(false);
   const [showRunConfig, setShowRunConfig] = useState(false);
   const [composerExpanded, setComposerExpanded] = useState(false);
-  const [swipeOffset, setSwipeOffset] = useState(0);
   const messageScrollRef = useRef(null);
   const messageInputRef = useRef(null);
   const photoInputRef = useRef(null);
+  const detailScreenRef = useRef(null);
   const swipeStartRef = useRef(null);
+  const swipeOffsetRef = useRef(0);
+  const swipeTimerRef = useRef(null);
   const composerImagesRef = useRef([]);
   const optimisticUserMessagesRef = useRef([]);
   const runConfigQuickRef = useRef(null);
@@ -849,28 +851,107 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
   useEffect(() => { composerImagesRef.current = composerImages; }, [composerImages]);
   useEffect(() => { optimisticUserMessagesRef.current = optimisticUserMessages; }, [optimisticUserMessages]);
 
+  function setSwipeBackPosition(offset) {
+    swipeOffsetRef.current = offset;
+    detailScreenRef.current?.style.setProperty('--swipe-back-offset', `${offset}px`);
+  }
+
+  function clearSwipeBackTimer() {
+    if (swipeTimerRef.current) window.clearTimeout(swipeTimerRef.current);
+    swipeTimerRef.current = null;
+  }
+
+  function resetSwipeBackSurface() {
+    const surface = detailScreenRef.current;
+    if (!surface) return;
+    surface.classList.remove('swipe-tracking', 'swipe-settling', 'swipe-dismissing');
+    surface.style.removeProperty('--swipe-back-duration');
+  }
+
   function startSwipeBack(event) {
     if (event.touches.length !== 1 || previewImage || showRunConfig) return;
     const touch = event.touches[0];
     if (touch.clientX > SWIPE_BACK_EDGE_PX) return;
-    swipeStartRef.current = { x: touch.clientX, y: touch.clientY };
+    clearSwipeBackTimer();
+    resetSwipeBackSurface();
+    setSwipeBackPosition(0);
+    swipeStartRef.current = {
+      x: touch.clientX,
+      y: touch.clientY,
+      startedAt: performance.now(),
+      axis: null,
+    };
   }
 
   function moveSwipeBack(event) {
     const start = swipeStartRef.current;
     const touch = event.touches[0];
     if (!start || !touch) return;
+
+    const deltaX = touch.clientX - start.x;
+    const deltaY = Math.abs(touch.clientY - start.y);
+    if (!start.axis && Math.max(Math.abs(deltaX), deltaY) < 7) return;
+    if (!start.axis) {
+      if (deltaX > 0 && deltaX > deltaY * 1.15) start.axis = 'horizontal';
+      else if (deltaY > Math.abs(deltaX)) start.axis = 'vertical';
+    }
+    if (start.axis === 'vertical' || deltaX < 0) {
+      swipeStartRef.current = null;
+      return;
+    }
+    if (start.axis !== 'horizontal') return;
+
+    if (event.cancelable) event.preventDefault();
     const offset = swipeBackOffset(start, { x: touch.clientX, y: touch.clientY });
-    if (!offset && Math.abs(touch.clientY - start.y) > 14) swipeStartRef.current = null;
-    setSwipeOffset(offset);
+    detailScreenRef.current?.classList.add('swipe-tracking');
+    setSwipeBackPosition(offset);
   }
 
   function finishSwipeBack(event) {
     const start = swipeStartRef.current;
     const touch = event.changedTouches[0];
     swipeStartRef.current = null;
-    setSwipeOffset(0);
-    if (touch && isSwipeBackGesture(start, { x: touch.clientX, y: touch.clientY })) onBack();
+    const surface = detailScreenRef.current;
+    if (!start || !touch || !surface || start.axis !== 'horizontal') return;
+
+    const width = surface.getBoundingClientRect().width || window.innerWidth;
+    const complete = isSwipeBackGesture(
+      start,
+      { x: touch.clientX, y: touch.clientY },
+      { width, elapsedMs: performance.now() - start.startedAt },
+    );
+    const remaining = complete ? width - swipeOffsetRef.current : swipeOffsetRef.current;
+    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    const duration = reducedMotion ? 0 : Math.round(Math.min(210, Math.max(110, remaining * 0.55)));
+
+    surface.classList.remove('swipe-tracking');
+    surface.classList.add('swipe-settling');
+    surface.classList.toggle('swipe-dismissing', complete);
+    surface.style.setProperty('--swipe-back-duration', `${duration}ms`);
+    setSwipeBackPosition(complete ? width : 0);
+
+    const settle = () => {
+      swipeTimerRef.current = null;
+      if (complete) onBack();
+      else resetSwipeBackSurface();
+    };
+    if (duration === 0) settle();
+    else swipeTimerRef.current = window.setTimeout(settle, duration + 20);
+  }
+
+  function cancelSwipeBack() {
+    const surface = detailScreenRef.current;
+    swipeStartRef.current = null;
+    if (!surface || swipeOffsetRef.current === 0) return;
+    surface.classList.remove('swipe-tracking', 'swipe-dismissing');
+    surface.classList.add('swipe-settling');
+    surface.style.setProperty('--swipe-back-duration', '160ms');
+    setSwipeBackPosition(0);
+    clearSwipeBackTimer();
+    swipeTimerRef.current = window.setTimeout(() => {
+      swipeTimerRef.current = null;
+      resetSwipeBackSurface();
+    }, 180);
   }
 
   function collapseComposer() {
@@ -879,6 +960,7 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
   }
 
   useEffect(() => () => {
+    clearSwipeBackTimer();
     composerImagesRef.current.forEach((image) => {
       if (image.previewUrl) URL.revokeObjectURL(image.previewUrl);
     });
@@ -1209,12 +1291,12 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
 
   return (
     <main
-      className={`detail-screen ${swipeOffset ? 'swiping-back' : ''}`}
-      style={{ '--swipe-back-offset': `${swipeOffset}px` }}
+      className="detail-screen"
+      ref={detailScreenRef}
       onTouchStart={startSwipeBack}
       onTouchMove={moveSwipeBack}
       onTouchEnd={finishSwipeBack}
-      onTouchCancel={() => { swipeStartRef.current = null; setSwipeOffset(0); }}
+      onTouchCancel={cancelSwipeBack}
     >
       <div className="detail-top">
         <header className="detail-header">
