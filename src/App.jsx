@@ -3,12 +3,15 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   ArrowLeft,
+  ArrowRight,
   Check,
   ChevronDown,
   ChevronRight,
   CircleAlert,
   Folder,
+  ImagePlus,
   Laptop,
+  Link2,
   LoaderCircle,
   LockKeyhole,
   LogOut,
@@ -361,17 +364,34 @@ function TaskTrace({ state, running = false }) {
   );
 }
 
-function TaskTraceDisclosure({ state, running = false, elapsed = '' }) {
+function TaskTraceDisclosure({ state, running = false, elapsed = '', onLoad }) {
   const [expanded, setExpanded] = useState(false);
-  const hasTrace = running ? Boolean(state) : visibleTaskTraceSegments(state, false).length > 0 || state?.latestTodos?.length > 0;
+  const [loading, setLoading] = useState(false);
+  useEffect(() => {
+    if (state) setLoading(false);
+  }, [state]);
+  const hasTrace = running
+    ? Boolean(state)
+    : Boolean(onLoad && elapsed) || visibleTaskTraceSegments(state, false).length > 0 || state?.latestTodos?.length > 0;
   if (!hasTrace) return null;
+
+  function toggle() {
+    const nextExpanded = !expanded;
+    setExpanded(nextExpanded);
+    if (nextExpanded && !state && onLoad) {
+      setLoading(true);
+      Promise.resolve(onLoad()).catch(() => {}).finally(() => setLoading(false));
+    }
+  }
+
   return <>
     {elapsed ? running
       ? <div className="task-elapsed-pill" aria-label={`Elapsed time ${elapsed}`}>{elapsed}</div>
-      : <button type="button" className={`task-trace-toggle ${expanded ? 'expanded' : ''}`} aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
+      : <button type="button" className={`task-trace-toggle ${expanded ? 'expanded' : ''}`} aria-expanded={expanded} onClick={toggle}>
         <ChevronRight size={14} aria-hidden="true" /><span>{elapsed}</span>
       </button> : null}
-    {running || expanded ? <TaskTrace state={state} running={running} /> : null}
+    {running || (expanded && state) ? <TaskTrace state={state} running={running} /> : null}
+    {expanded && loading ? <div className="trace-loading" role="status"><LoaderCircle className="spin" size={14} /> Loading activity…</div> : null}
   </>;
 }
 
@@ -413,7 +433,7 @@ function PairingScreen({ runtimeOnline, onPaired }) {
   }
 
   return (
-    <main className="pairing-shell">
+    <main className={`pairing-shell ${api.isNative ? 'native' : ''}`}>
       <section className="pairing-card" aria-labelledby="pairing-title">
         <div className="pairing-brand">
           <img className="brand-mark" src={penguinLogo} alt="" draggable="false" />
@@ -421,13 +441,30 @@ function PairingScreen({ runtimeOnline, onPaired }) {
         </div>
         <div className="pairing-intro">
           <h1 id="pairing-title">Connect to Haish</h1>
-          <p>Pair this device with the Haish app running on your computer.</p>
+          <p>{api.isNative
+            ? 'Pair this device with the Haish app running on your computer.'
+            : 'Pair this desktop client with a computer running Haish Runtime.'}</p>
         </div>
-        {api.isNative ? <>
-          <div className="pairing-visual" aria-hidden="true">
-            <div className="pairing-laptop"><span className="pairing-window"><i /><i /><i /><ScanLine size={54} /></span><b /></div>
-            <div className="pairing-phone"><span className="pairing-scan-frame"><ScanLine size={40} /></span><em /></div>
+        {api.isNative ? <div className="pairing-visual" aria-hidden="true">
+          <div className="pairing-laptop"><span className="pairing-window"><i /><i /><i /><ScanLine size={54} /></span><b /></div>
+          <div className="pairing-phone"><span className="pairing-scan-frame"><ScanLine size={40} /></span><em /></div>
+        </div> : <div
+          className={`pairing-visual pairing-remote-visual ${runtimeOnline ? 'online' : ''}`}
+          role="img"
+          aria-label={runtimeOnline ? 'Haish Runtime is ready to pair with a remote client' : 'Waiting for Haish Runtime'}
+        >
+          <div className="pairing-endpoint pairing-runtime-endpoint">
+            <span className="pairing-endpoint-icon"><Laptop size={25} /></span>
+            <span><strong>Haish computer</strong><small>{runtimeOnline ? 'Runtime ready' : 'Runtime offline'}</small></span>
+            <i />
           </div>
+          <div className="pairing-link-rail"><span><Link2 size={20} /></span></div>
+          <div className="pairing-endpoint pairing-client-endpoint">
+            <span className="pairing-client-window"><i /><i /><i /></span>
+            <span><strong>Remote client</strong><small>Enter pairing code</small></span>
+          </div>
+        </div>}
+        {api.isNative ? <>
           <div className="pairing-guide">
             <div className="pairing-guide-title"><span />How to connect<span /></div>
             <div className="pairing-step"><strong>1</strong><span>Open Remote Control in Haish<br />on your computer.</span></div>
@@ -441,14 +478,12 @@ function PairingScreen({ runtimeOnline, onPaired }) {
             {busy ? 'Opening camera…' : 'Scan pairing QR code'}
           </button>
           <p className="pairing-help">Open Remote Control in Haish on your computer, then scan its QR code.</p>
-        </> : <>
-          <div className={`runtime-card ${runtimeOnline ? 'online' : ''}`}>
-            <div className="runtime-icon" aria-hidden="true"><Laptop size={20} /></div>
-            <div>
-              <strong>{runtimeOnline ? 'Computer found' : 'Waiting for computer'}</strong>
-              <span>{runtimeOnline ? 'Haish Runtime is ready' : 'Start Haish to continue'}</span>
-            </div>
-            <span className="status-dot" />
+        </> : <div className="pairing-web">
+          <div className="pairing-guide pairing-web-guide">
+            <div className="pairing-guide-title"><span />How to connect<span /></div>
+            <div className="pairing-step"><strong>1</strong><span>Run <code>npm run pair</code> on the Haish computer.</span></div>
+            <div className="pairing-step"><strong>2</strong><span>Enter the 8-digit code in this remote client.</span></div>
+            <div className="pairing-step"><strong>3</strong><span>Connect securely to finish pairing.</span></div>
           </div>
           <form className="pairing-form" onSubmit={submit}>
             <div className="field-heading"><label htmlFor="pair-code">Pairing code</label><span>8 digits</span></div>
@@ -463,15 +498,14 @@ function PairingScreen({ runtimeOnline, onPaired }) {
               placeholder="0000 0000"
               required
             />
-            <p className="field-help">Run <code>npm run pair</code> on your computer to get the code.</p>
             {error ? <p className="form-error" role="alert">{error}</p> : null}
             <button className="primary-button" disabled={busy || code.length !== 8}>
-              {busy ? <LoaderCircle className="spin" size={20} /> : <ShieldCheck size={20} />}
+              {busy ? <LoaderCircle className="spin" size={20} /> : <ArrowRight size={20} />}
               {busy ? 'Connecting…' : 'Connect securely'}
             </button>
           </form>
-        </>}
-        <p className="security-note"><ShieldCheck size={14} /> Paired devices can only access this Haish Runtime.</p>
+        </div>}
+        <p className="security-note"><ShieldCheck size={14} /> Only paired clients can access this Haish Runtime.</p>
       </section>
     </main>
   );
@@ -767,7 +801,9 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
   const [modelLoading, setModelLoading] = useState(false);
   const [runConfigExpanded, setRunConfigExpanded] = useState(false);
   const [showRunConfig, setShowRunConfig] = useState(false);
+  const [composerExpanded, setComposerExpanded] = useState(false);
   const messageScrollRef = useRef(null);
+  const imageInputRef = useRef(null);
   const composerImagesRef = useRef([]);
   const runConfigQuickRef = useRef(null);
   const localStreamRef = useRef(false);
@@ -790,17 +826,21 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
   }, [id]);
 
   const refresh = useCallback(async () => {
+    if (localStreamRef.current) return null;
     try {
-      setConversation(await api.conversation(id));
+      const nextConversation = await api.conversation(id);
+      setConversation(nextConversation);
       setError('');
+      return nextConversation;
     } catch (nextError) {
       setError(nextError.message);
+      return null;
     }
   }, [id]);
 
   useEffect(() => {
     refresh();
-    const timer = window.setInterval(refresh, 2000);
+    const timer = window.setInterval(refresh, 5000);
     return () => window.clearInterval(timer);
   }, [refresh]);
 
@@ -871,27 +911,18 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
     (conversation?.tasks || []).map((task) => [task.task_id, task]),
   ), [conversation]);
 
-  const traceTaskIds = useMemo(() => [...new Set(
-    (conversation?.messages || [])
-      .filter((item) => item.role !== 'user' && item.task_id)
-      .map((item) => item.task_id),
-  )], [conversation?.messages]);
-
-  useEffect(() => {
-    const pendingIds = traceTaskIds.filter((taskId) => !loadedTraceIdsRef.current.has(taskId));
-    if (!pendingIds.length) return undefined;
-    pendingIds.forEach((taskId) => loadedTraceIdsRef.current.add(taskId));
-    let cancelled = false;
-    Promise.all(pendingIds.map(async (taskId) => [taskId, taskStreamState(await api.task(taskId))]))
-      .then((entries) => {
-        if (!cancelled) setTaskTraces((current) => ({ ...current, ...Object.fromEntries(entries) }));
-      })
-      .catch((nextError) => {
-        pendingIds.forEach((taskId) => loadedTraceIdsRef.current.delete(taskId));
-        if (!cancelled) setError(nextError.message);
-      });
-    return () => { cancelled = true; };
-  }, [traceTaskIds.join('|')]);
+  const loadTaskTrace = useCallback(async (taskId) => {
+    if (!taskId || loadedTraceIdsRef.current.has(taskId)) return;
+    loadedTraceIdsRef.current.add(taskId);
+    try {
+      const task = await api.task(taskId);
+      setTaskTraces((current) => ({ ...current, [taskId]: taskStreamState(task) }));
+    } catch (nextError) {
+      loadedTraceIdsRef.current.delete(taskId);
+      setError(nextError.message);
+      throw nextError;
+    }
+  }, []);
 
   const activeTaskId = liveRun?.taskId || activeTask?.task_id || null;
   const running = isCurrentTaskRunning(liveRun, activeTask);
@@ -1063,11 +1094,11 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
           setBusy(false);
           setMessage('');
           clearComposerImages();
-          refresh();
         },
       );
-      setPendingUserMessage(null);
+      localStreamRef.current = false;
       await refresh();
+      setPendingUserMessage(null);
       setLiveRun(null);
     } catch (nextError) {
       setError(nextError.message);
@@ -1095,6 +1126,12 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
     .map((part) => /^\d/.test(part) ? part : `${part[0].toUpperCase()}${part.slice(1)}`)
     .join(' ');
   const reconnecting = connection && !connection.timedOut;
+  const visibleMessages = (conversation?.messages || []).filter((item) => !(
+    running && liveRun && item.role !== 'user' && item.task_id === activeTaskId
+  ));
+  const pendingMessagePersisted = pendingUserMessage && visibleMessages.some((item) => (
+    item.role === 'user' && textContent(item.content).trim() === pendingUserMessage.text
+  ));
 
   return (
     <main className="detail-screen">
@@ -1112,7 +1149,7 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
       <div className="message-region">
         <div className="message-scroll" ref={messageScrollRef}>
           <ApprovalCard approvals={approvals} onResolved={refreshApprovals} />
-          {conversation?.messages?.map((item) => {
+          {visibleMessages.map((item) => {
             const task = tasksById.get(item.task_id);
             const contentText = textContent(item.content);
             const images = item.role === 'user' ? messageImageRefs(item, task) : [];
@@ -1124,12 +1161,12 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
                 <MessageImage conversationId={id} image={image} key={image.image_id || image.path || index} onPreview={setPreviewImage} />
               ))}</div> : null}
               {item.role !== 'user' || contentText ? <div className="message-body">
-                {item.role !== 'user' ? <TaskTraceDisclosure state={taskTraces[item.task_id]} elapsed={elapsed} /> : null}
+                {item.role !== 'user' ? <TaskTraceDisclosure state={taskTraces[item.task_id]} elapsed={elapsed} onLoad={() => loadTaskTrace(item.task_id)} /> : null}
                 <ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>{contentText}</ReactMarkdown>
               </div> : null}
             </article>;
           })}
-          {pendingUserMessage ? <article className="message user" aria-label="Your message">
+          {pendingUserMessage && !pendingMessagePersisted ? <article className="message user" aria-label="Your message">
             <div className="message-body"><ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>{pendingUserMessage.text}</ReactMarkdown></div>
           </article> : null}
           {liveRun && running ? <article className="message assistant" aria-label="Assistant message">
@@ -1163,7 +1200,7 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
             </span>
           </div>
         </div> : null}
-        <form className={`composer ${runConfig && !runConfigExpanded ? 'has-config-icon' : ''}`} onSubmit={submit} onDragOver={(event) => {
+        <form className={`composer ${runConfig && !runConfigExpanded ? 'has-config-icon' : ''} ${composerExpanded ? 'expanded' : ''}`} onSubmit={submit} onDragOver={(event) => {
           if (Array.from(event.dataTransfer?.items || []).some((item) => item.kind === 'file')) event.preventDefault();
         }} onDrop={(event) => {
           const images = Array.from(event.dataTransfer?.files || []).filter((file) => file.type.startsWith('image/'));
@@ -1180,7 +1217,9 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
           ))}</div> : null}
           {composerImages.some((image) => image.error) ? <p className="composer-image-error" role="alert">{composerImages.find((image) => image.error)?.error}</p> : null}
           <label htmlFor="task-message" className="sr-only">Send instructions</label>
-          <textarea id="task-message" rows={1} value={message} onChange={(event) => setMessage(event.target.value)} onPaste={(event) => {
+          <textarea id="task-message" rows={1} value={message} onFocus={() => setComposerExpanded(true)} onBlur={(event) => {
+            if (!event.currentTarget.form?.contains(event.relatedTarget)) setComposerExpanded(false);
+          }} onChange={(event) => setMessage(event.target.value)} onPaste={(event) => {
             const images = Array.from(event.clipboardData?.items || []).filter((item) => item.kind === 'file' && item.type.startsWith('image/')).map((item) => item.getAsFile()).filter(Boolean);
             if (!images.length) return;
             event.preventDefault();
@@ -1190,14 +1229,19 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
             event.preventDefault();
             event.currentTarget.form?.requestSubmit();
           }} placeholder={running ? 'Add instructions…' : 'Continue this task…'} />
+          <input ref={imageInputRef} className="composer-file-input" type="file" accept="image/*" multiple tabIndex={-1} onChange={(event) => {
+            attachImages(event.target.files);
+            event.target.value = '';
+          }} />
+          <button type="button" className="composer-photo-button" onClick={() => imageInputRef.current?.click()} disabled={running || composerImages.length >= CHAT_IMAGE_MAX_COUNT} aria-label="Add photos from this device"><ImagePlus size={25} /></button>
           {runConfig && !runConfigExpanded ? <button type="button" className="run-config-icon-button" onClick={() => setRunConfigExpanded(true)} disabled={running} aria-label={`Show run configuration, thinking ${selectedThinking?.label || 'unknown'}`} aria-expanded="false"><svg className="run-config-gauge" style={{ '--gauge-rotation': reasoningGaugeRotation }} viewBox="0 0 24 24" aria-hidden="true"><path className="run-config-gauge-arc" d="M3.34 19a10 10 0 1 1 17.32 0" /><g className="run-config-gauge-needle"><path className="run-config-gauge-pointer" d="M10.9 13.4 12.6 15.1 18.65 7.35Z" /><circle cx="12" cy="14" r="1.8" /></g></svg></button> : null}
           {running && !message.trim() ? (
             <button type="button" className="send-button stop" onClick={stop} disabled={busy} aria-label="Stop task">
-              {busy ? <LoaderCircle className="spin" size={20} /> : <span className="stop-icon" style={{ '--stop-icon': `url(${stopIcon})` }} aria-hidden="true" />}
+              {busy ? <span className="send-spinner" aria-hidden="true" /> : <span className="stop-icon" style={{ '--stop-icon': `url(${stopIcon})` }} aria-hidden="true" />}
             </button>
           ) : (
             <button className="send-button" disabled={busy || composerImages.some((image) => image.uploading) || !message.trim() || (!running && !runConfig)} aria-label={running ? 'Add instruction' : 'Send'}>
-              {busy ? <LoaderCircle className="spin" size={20} /> : <span className="send-glyph" aria-hidden="true" />}
+              {busy ? <span className="send-spinner" aria-hidden="true" /> : <span className="send-glyph" aria-hidden="true" />}
             </button>
           )}
         </form>
@@ -1290,14 +1334,7 @@ export default function App() {
       const nextConversations = nextProjects.flatMap((project) => project.conversations || []);
       setConversations(nextConversations);
       setProjects(nextProjects);
-      const recentConversations = [...nextConversations]
-        .filter((item) => item.last_task_id)
-        .sort((left, right) => new Date(right.updated_at || 0) - new Date(left.updated_at || 0))
-        .slice(0, 16);
-      const latest = await Promise.all(recentConversations.map(async (item) => {
-        try { return await api.task(item.last_task_id); } catch { return null; }
-      }));
-      const nextTasks = Object.fromEntries(latest.filter(Boolean).map((task) => [task.task_id, task]));
+      const nextTasks = Object.fromEntries(nextConversations.flatMap((item) => item.tasks || []).map((task) => [task.task_id, task]));
       setTasks(nextTasks);
       setFatalError('');
     } catch (error) {
