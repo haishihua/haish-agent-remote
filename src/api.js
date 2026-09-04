@@ -66,11 +66,26 @@ async function request(path, init = {}, endpoint) {
   return response.status === 204 ? null : response.json();
 }
 
+export async function requestWithTimeout(path, timeoutMs = 8_000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await request(path, { signal: controller.signal });
+  } catch (error) {
+    if (!controller.signal.aborted) throw error;
+    const timeoutError = new Error('Connection timed out. Make sure Haish is running on your computer.');
+    timeoutError.status = 0;
+    throw timeoutError;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export const api = {
   isNative: isNativeApp,
   initialize: initializeNativeConnection,
   scanPairingCode,
-  status: () => request('/remote/status'),
+  status: () => requestWithTimeout('/remote/status'),
   pair: async (code, endpoint) => {
     const result = await request('/remote/pairing/exchange', {
       method: 'POST',

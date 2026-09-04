@@ -510,6 +510,37 @@ function PairingScreen({ runtimeOnline, onPaired }) {
   );
 }
 
+function ConnectionScreen({ error, retrying, onRetry }) {
+  const failed = Boolean(error);
+  return (
+    <main className={`connection-screen ${failed ? 'failed' : ''}`}>
+      <div className="connection-brand">
+        <img src={penguinLogo} alt="" draggable="false" />
+        <span>Haish Agent</span>
+      </div>
+      <section className="connection-panel" aria-live="polite" aria-busy={!failed || retrying}>
+        <div className="connection-visual" aria-hidden="true">
+          <span className="connection-device"><Laptop size={30} /></span>
+          <span className="connection-route"><i /><b>{failed ? <CircleAlert size={18} /> : <Link2 size={18} />}</b><i /></span>
+          <span className="connection-device phone"><Smartphone size={30} /></span>
+        </div>
+        <div className="connection-state-label">
+          <span />{failed ? (retrying ? 'Retrying' : 'Connection paused') : 'Secure connection'}
+        </div>
+        <h1>{failed ? 'Can’t reach your Mac' : 'Connecting to Haish'}</h1>
+        <p>{failed
+          ? 'Keep Haish open on your computer and check that this device has internet access.'
+          : 'Waking your remote workspace and syncing your tasks.'}</p>
+        {failed ? <button type="button" className="connection-retry" onClick={onRetry} disabled={retrying}>
+          <RefreshCw className={retrying ? 'spin' : ''} size={19} aria-hidden="true" />
+          {retrying ? 'Trying again…' : 'Try again'}
+        </button> : <div className="connection-progress" role="status"><span /><span /><span /></div>}
+      </section>
+      <p className="connection-security"><ShieldCheck size={15} aria-hidden="true" /> End-to-end access to your paired computer</p>
+    </main>
+  );
+}
+
 function ApprovalCard({ approvals, onResolved }) {
   const tool = approvals?.pending?.[0];
   const workflow = approvals?.pending_workflow_approvals?.[0];
@@ -1329,11 +1360,14 @@ export default function App() {
   const [fatalError, setFatalError] = useState('');
   const [runtimeOfflineSince, setRuntimeOfflineSince] = useState(0);
   const [initialized, setInitialized] = useState(false);
+  const [startupRetrying, setStartupRetrying] = useState(true);
+  const startupRequestRef = useRef(false);
 
   const loadStatus = useCallback(async () => {
     const next = await api.status();
     if (api.isNative && !next.paired) await api.forgetConnection();
     setStatus(next);
+    setFatalError('');
     return next;
   }, []);
 
@@ -1359,22 +1393,30 @@ export default function App() {
     }
   }, [loadStatus]);
 
-  useEffect(() => {
-    let active = true;
-    (async () => {
-      try {
-        const connection = await api.initialize();
-        if (!active) return;
-        if (api.isNative && !connection) setStatus({ paired: false, runtime_online: false });
-        else await loadStatus();
-      } catch (error) {
-        if (active) setFatalError(error.message);
-      } finally {
-        if (active) setInitialized(true);
-      }
-    })();
-    return () => { active = false; };
+  const connectAtStartup = useCallback(async () => {
+    if (startupRequestRef.current) return;
+    startupRequestRef.current = true;
+    setStartupRetrying(true);
+    try {
+      const connection = await api.initialize();
+      if (api.isNative && !connection) setStatus({ paired: false, runtime_online: false });
+      else await loadStatus();
+    } catch (error) {
+      setFatalError(error.message);
+    } finally {
+      startupRequestRef.current = false;
+      setInitialized(true);
+      setStartupRetrying(false);
+    }
   }, [loadStatus]);
+
+  useEffect(() => { connectAtStartup(); }, [connectAtStartup]);
+
+  useEffect(() => {
+    if (!initialized || status || startupRetrying) return undefined;
+    const timer = window.setTimeout(connectAtStartup, 4_000);
+    return () => window.clearTimeout(timer);
+  }, [connectAtStartup, initialized, startupRetrying, status]);
 
   useEffect(() => {
     if (status?.runtime_online === false) setRuntimeOfflineSince((current) => current || Date.now());
@@ -1416,7 +1458,7 @@ export default function App() {
     setStatus({ paired: false, runtime_online: false });
   }
 
-  if (!initialized || !status) return <div className="app-loading"><LoaderCircle className="spin" /><span>Connecting to Haish…</span></div>;
+  if (!initialized || !status) return <ConnectionScreen error={initialized ? fatalError : ''} retrying={startupRetrying} onRetry={connectAtStartup} />;
   if (!status.paired) return <PairingScreen runtimeOnline={status.runtime_online} onPaired={loadStatus} />;
   const connection = runtimeConnectionState(status.runtime_online, runtimeOfflineSince);
   const selectedConversation = conversations.find((item) => item.conversation_id === selectedId) || null;

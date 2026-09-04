@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { RECONNECT_TIMEOUT_MS, api, runtimeConnectionState } from '../src/api.js';
+import { RECONNECT_TIMEOUT_MS, api, requestWithTimeout, runtimeConnectionState } from '../src/api.js';
 
 test('runtime reconnecting state becomes a recoverable timeout after three polls', () => {
   const offlineSince = 10_000;
@@ -14,6 +14,21 @@ test('runtime reconnecting state becomes a recoverable timeout after three polls
     message: 'Unable to connect to Haish. Open the desktop app to retry.',
   });
   assert.equal(runtimeConnectionState(true, offlineSince, offlineSince + RECONNECT_TIMEOUT_MS), null);
+});
+
+test('startup status requests time out instead of leaving the app loading forever', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_path, init = {}) => new Promise((_resolve, reject) => {
+    init.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+  });
+
+  try {
+    await assert.rejects(requestWithTimeout('/remote/status', 5), {
+      message: 'Connection timed out. Make sure Haish is running on your computer.',
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('server errors become reconnecting state when the Haish runtime is offline', async () => {
