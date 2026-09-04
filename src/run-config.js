@@ -70,13 +70,22 @@ export function agentOptionsFromPayload(payload) {
 }
 
 export function resolveRunConfig(conversation, providers, agents) {
-  const provider = providers[0] || null;
-  const conversationAgentId = String(conversation?.agent_id || conversation?.profile_id || '').trim();
+  const tasks = Array.isArray(conversation?.tasks) ? conversation.tasks : [];
+  const latestTask = tasks.find((task) => task?.task_id === conversation?.last_task_id) || tasks.at(-1) || null;
+  const taskProvider = String(latestTask?.provider_key || latestTask?.provider || '').trim().toLowerCase().replaceAll('-', '_');
+  const taskModel = String(latestTask?.model || '').trim();
+  const provider = providers.find((item) => (
+    (item.requestProvider === taskProvider || item.provider === taskProvider)
+    && (!taskModel || item.defaultModelId === taskModel || item.models.some((model) => model.id === taskModel))
+  )) || providers.find((item) => item.requestProvider === taskProvider || item.provider === taskProvider)
+    || providers.find((item) => taskModel && (item.defaultModelId === taskModel || item.models.some((model) => model.id === taskModel)))
+    || providers[0] || null;
+  const conversationAgentId = String(latestTask?.agent_id || latestTask?.profile_id || conversation?.agent_id || conversation?.profile_id || '').trim();
   const agentId = conversationAgentId || agents[0]?.id || '';
   const thinking = THINKING_OPTIONS.some((item) => item.id === provider?.reasoningEffort)
     ? provider.reasoningEffort
     : 'high';
-  const modelId = provider?.defaultModelId || provider?.models[0]?.id || '';
+  const modelId = taskModel || provider?.defaultModelId || provider?.models[0]?.id || '';
   return { agentId, providerId: provider?.id || '', modelId, thinking };
 }
 

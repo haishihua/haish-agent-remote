@@ -5,6 +5,10 @@ export function isVisibleTaskTool(value) {
   return !HIDDEN_TIMELINE_TOOL_NAMES.has(String(value || '').trim().toLowerCase());
 }
 
+export function hasVisibleTaskTools(state) {
+  return Boolean(state?.segments?.some((item) => item.type === 'tool' && isVisibleTaskTool(item.name)));
+}
+
 function eventData(event) {
   return { ...((event?.payload && typeof event.payload === 'object') ? event.payload : {}), ...(event || {}) };
 }

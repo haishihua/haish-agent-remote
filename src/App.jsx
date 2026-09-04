@@ -68,6 +68,7 @@ import {
 import {
   applyTaskStreamEvent,
   formatElapsedDuration,
+  hasVisibleTaskTools,
   isCurrentTaskRunning,
   isVisibleTaskTool,
   taskStreamState,
@@ -366,32 +367,39 @@ function TaskTrace({ state, running = false }) {
 
 function TaskTraceDisclosure({ state, running = false, elapsed = '', onLoad }) {
   const [expanded, setExpanded] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const probeRef = useRef(null);
   useEffect(() => {
-    if (state) setLoading(false);
-  }, [state]);
-  const hasTrace = running
-    ? Boolean(state)
-    : Boolean(onLoad && elapsed) || visibleTaskTraceSegments(state, false).length > 0 || state?.latestTodos?.length > 0;
+    if (running || state || !onLoad || !probeRef.current) return undefined;
+    const probe = probeRef.current;
+    const load = () => Promise.resolve(onLoad()).catch(() => {});
+    if (!window.IntersectionObserver) {
+      load();
+      return undefined;
+    }
+    const observer = new IntersectionObserver(([entry]) => {
+      if (!entry.isIntersecting) return;
+      observer.disconnect();
+      load();
+    }, { rootMargin: '160px 0px' });
+    observer.observe(probe);
+    return () => observer.disconnect();
+  }, [onLoad, running, state]);
+  const hasTools = hasVisibleTaskTools(state);
+  if (!running && !state) return <span className="task-trace-probe" ref={probeRef} aria-hidden="true" />;
+  const hasTrace = running ? Boolean(state) : hasTools;
   if (!hasTrace) return null;
 
   function toggle() {
-    const nextExpanded = !expanded;
-    setExpanded(nextExpanded);
-    if (nextExpanded && !state && onLoad) {
-      setLoading(true);
-      Promise.resolve(onLoad()).catch(() => {}).finally(() => setLoading(false));
-    }
+    setExpanded((value) => !value);
   }
 
   return <>
-    {elapsed ? running
+    {elapsed && hasTools ? running
       ? <div className="task-elapsed-pill" aria-label={`Elapsed time ${elapsed}`}>{elapsed}</div>
       : <button type="button" className={`task-trace-toggle ${expanded ? 'expanded' : ''}`} aria-expanded={expanded} onClick={toggle}>
         <ChevronRight size={14} aria-hidden="true" /><span>{elapsed}</span>
       </button> : null}
     {running || (expanded && state) ? <TaskTrace state={state} running={running} /> : null}
-    {expanded && loading ? <div className="trace-loading" role="status"><LoaderCircle className="spin" size={14} /> Loading activity…</div> : null}
   </>;
 }
 

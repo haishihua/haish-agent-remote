@@ -48,6 +48,30 @@ test('an existing conversation keeps its backend agent and backend LLM defaults'
   });
 });
 
+test('an existing conversation inherits the provider and model used by its latest client task', () => {
+  const providers = providerOptionsFromSettings({
+    chat: { provider: 'custom', name: 'opencode_go', model: 'deepseek-v4-flash', reasoning_effort: 'high' },
+    profiles: [
+      { id: 'openai', provider: 'openai', model: 'gpt-5.6-sol', reasoning_effort: 'xhigh' },
+      { id: 'router', provider: 'custom', name: 'ai router', model: 'gpt-5.6-sol', reasoning_effort: 'medium' },
+    ],
+  });
+  const conversation = {
+    last_task_id: 'task-2',
+    tasks: [
+      { task_id: 'task-1', provider_key: 'openai', model: 'gpt-5.6-sol', agent_id: 'code' },
+      { task_id: 'task-2', provider_key: 'custom', model: 'gpt-5.6-sol', agent_id: 'simple' },
+    ],
+  };
+
+  assert.deepEqual(resolveRunConfig(conversation, providers, []), {
+    agentId: 'simple',
+    providerId: 'router',
+    modelId: 'gpt-5.6-sol',
+    thinking: 'medium',
+  });
+});
+
 test('official providers use canonical labels instead of stale profile names', () => {
   const providers = providerOptionsFromSettings({
     profiles: [{ provider: 'deepseek', id: 'deepseek', name: 'New LLM', model: 'deepseek-v4-flash' }],

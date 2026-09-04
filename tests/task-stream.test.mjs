@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   applyTaskStreamEvent,
   formatElapsedDuration,
+  hasVisibleTaskTools,
   isCurrentTaskRunning,
   isVisibleTaskTool,
   readNdjson,
@@ -19,6 +20,12 @@ test('internal todo and process polling tools stay out of the visible timeline',
   assert.equal(isVisibleTaskTool('read_file'), true);
   assert.equal(isVisibleTaskTool('todo_write'), false);
   assert.equal(isVisibleTaskTool('write_stdin'), false);
+});
+
+test('elapsed disclosure requires a visible tool call', () => {
+  assert.equal(hasVisibleTaskTools({ segments: [{ type: 'text', text: 'Hello' }] }), false);
+  assert.equal(hasVisibleTaskTools({ segments: [{ type: 'tool', name: 'write_stdin' }] }), false);
+  assert.equal(hasVisibleTaskTools({ segments: [{ type: 'tool', name: 'read_file' }] }), true);
 });
 
 test('stream deltas update live text and final answer replaces the trace text', () => {
