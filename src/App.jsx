@@ -57,6 +57,7 @@ import {
   buildToolView,
 } from '../../haish-agent/app-web/src/features/chat/model/tool-view.js';
 import { ScrollToBottomButton } from './ScrollToBottomButton.jsx';
+import { SWIPE_BACK_EDGE_PX, isSwipeBackGesture, swipeBackOffset } from './swipe-back.js';
 import {
   THINKING_OPTIONS,
   agentOptionsFromPayload,
@@ -832,7 +833,10 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
   const [runConfigExpanded, setRunConfigExpanded] = useState(false);
   const [showRunConfig, setShowRunConfig] = useState(false);
   const [composerExpanded, setComposerExpanded] = useState(false);
+  const [swipeOffset, setSwipeOffset] = useState(0);
   const messageScrollRef = useRef(null);
+  const photoInputRef = useRef(null);
+  const swipeStartRef = useRef(null);
   const composerImagesRef = useRef([]);
   const optimisticUserMessagesRef = useRef([]);
   const runConfigQuickRef = useRef(null);
@@ -843,6 +847,30 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
   useEffect(() => { liveRunRef.current = liveRun; }, [liveRun]);
   useEffect(() => { composerImagesRef.current = composerImages; }, [composerImages]);
   useEffect(() => { optimisticUserMessagesRef.current = optimisticUserMessages; }, [optimisticUserMessages]);
+
+  function startSwipeBack(event) {
+    if (event.touches.length !== 1 || previewImage || showRunConfig) return;
+    const touch = event.touches[0];
+    if (touch.clientX > SWIPE_BACK_EDGE_PX) return;
+    swipeStartRef.current = { x: touch.clientX, y: touch.clientY };
+  }
+
+  function moveSwipeBack(event) {
+    const start = swipeStartRef.current;
+    const touch = event.touches[0];
+    if (!start || !touch) return;
+    const offset = swipeBackOffset(start, { x: touch.clientX, y: touch.clientY });
+    if (!offset && Math.abs(touch.clientY - start.y) > 14) swipeStartRef.current = null;
+    setSwipeOffset(offset);
+  }
+
+  function finishSwipeBack(event) {
+    const start = swipeStartRef.current;
+    const touch = event.changedTouches[0];
+    swipeStartRef.current = null;
+    setSwipeOffset(0);
+    if (touch && isSwipeBackGesture(start, { x: touch.clientX, y: touch.clientY })) onBack();
+  }
 
   useEffect(() => () => {
     composerImagesRef.current.forEach((image) => {
@@ -1174,7 +1202,14 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
   ));
 
   return (
-    <main className="detail-screen">
+    <main
+      className={`detail-screen ${swipeOffset ? 'swiping-back' : ''}`}
+      style={{ '--swipe-back-offset': `${swipeOffset}px` }}
+      onTouchStart={startSwipeBack}
+      onTouchMove={moveSwipeBack}
+      onTouchEnd={finishSwipeBack}
+      onTouchCancel={() => { swipeStartRef.current = null; setSwipeOffset(0); }}
+    >
       <div className="detail-top">
         <header className="detail-header">
           <button className="icon-button ghost" onClick={onBack} aria-label="Back to conversations"><ArrowLeft size={22} /></button>
@@ -1260,9 +1295,7 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
           ))}</div> : null}
           {composerImages.some((image) => image.error) ? <p className="composer-image-error" role="alert">{composerImages.find((image) => image.error)?.error}</p> : null}
           <label htmlFor="task-message" className="sr-only">Send instructions</label>
-          <textarea id="task-message" rows={1} value={message} onFocus={() => setComposerExpanded(true)} onBlur={(event) => {
-            if (!event.currentTarget.form?.contains(event.relatedTarget)) setComposerExpanded(false);
-          }} onChange={(event) => setMessage(event.target.value)} onPaste={(event) => {
+          <textarea id="task-message" rows={1} value={message} onFocus={() => setComposerExpanded(true)} onChange={(event) => setMessage(event.target.value)} onPaste={(event) => {
             const images = Array.from(event.clipboardData?.items || []).filter((item) => item.kind === 'file' && item.type.startsWith('image/')).map((item) => item.getAsFile()).filter(Boolean);
             if (!images.length) return;
             event.preventDefault();
@@ -1272,13 +1305,19 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
             event.preventDefault();
             event.currentTarget.form?.requestSubmit();
           }} placeholder={running ? 'Add instructions…' : 'Continue this task…'} />
-          <label className={`composer-photo-button ${composerImages.length >= CHAT_IMAGE_MAX_COUNT ? 'disabled' : ''}`} aria-label="Add photos from this device">
+          <button
+            type="button"
+            className="composer-photo-button"
+            disabled={composerImages.length >= CHAT_IMAGE_MAX_COUNT}
+            onClick={() => photoInputRef.current?.click()}
+            aria-label="Choose photos from this device"
+          >
             <ImagePlus size={25} aria-hidden="true" />
-            <input className="composer-file-input" type="file" accept="image/*" multiple disabled={composerImages.length >= CHAT_IMAGE_MAX_COUNT} onChange={(event) => {
-              attachImages(event.target.files);
-              event.target.value = '';
-            }} />
-          </label>
+          </button>
+          <input ref={photoInputRef} className="composer-file-input" type="file" accept="image/*" multiple tabIndex={-1} aria-hidden="true" disabled={composerImages.length >= CHAT_IMAGE_MAX_COUNT} onChange={(event) => {
+            attachImages(event.target.files);
+            event.target.value = '';
+          }} />
           {runConfig && !runConfigExpanded ? <button type="button" className="run-config-icon-button" onClick={() => setRunConfigExpanded(true)} disabled={running} aria-label={`Show run configuration, thinking ${selectedThinking?.label || 'unknown'}`} aria-expanded="false"><svg className="run-config-gauge" style={{ '--gauge-rotation': reasoningGaugeRotation }} viewBox="0 0 24 24" aria-hidden="true"><path className="run-config-gauge-arc" d="M3.34 19a10 10 0 1 1 17.32 0" /><g className="run-config-gauge-needle"><path className="run-config-gauge-pointer" d="M10.9 13.4 12.6 15.1 18.65 7.35Z" /><circle cx="12" cy="14" r="1.8" /></g></svg></button> : null}
           {running && !message.trim() && !composerImages.some((image) => image.imageId && !image.error) ? (
             <button type="button" className="send-button stop" onClick={stop} disabled={busy} aria-label="Stop task">

@@ -26,6 +26,8 @@
 	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>Scan the pairing QR code shown by Haish on your computer.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Choose photos to include with messages sent from Haish.</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>

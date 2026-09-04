@@ -229,6 +229,7 @@ input::placeholder, textarea::placeholder { color: var(--muted-2); }
 .form-error { color: var(--danger); font-size: 13px; }
 
 .detail-screen { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; height: 100dvh; }
+.detail-screen.swiping-back { transform: translateX(var(--swipe-back-offset)); }
 .detail-top { position: relative; z-index: 30; background: var(--background); }
 .detail-header { display: grid; grid-template-columns: 48px minmax(0, 1fr) 48px; gap: 8px; min-height: calc(70px + var(--safe-top)); padding: calc(12px + var(--safe-top)) 10px 10px; align-items: center; border-bottom: 1px solid var(--border); }
 .detail-header .icon-button svg { transform: translateX(-7px); }
@@ -383,11 +384,11 @@ input::placeholder, textarea::placeholder { color: var(--muted-2); }
 .composer textarea { max-height: 132px; min-height: 48px; padding: 13px 11px; border: 0; border-radius: 12px; outline: 0; background: transparent; }
 .composer.expanded { grid-template-columns: 44px minmax(0, 1fr) 44px 48px; padding: 8px; border-color: rgba(138, 166, 209, 0.42); box-shadow: 0 -10px 32px rgba(0, 0, 0, 0.18); }
 .composer.expanded textarea { min-height: 82px; grid-column: 1 / -1; }
-.composer-file-input { position: absolute; inset: 0; width: 100%; height: 100%; min-height: 0; box-sizing: border-box; padding: 0; border: 0; opacity: 0; cursor: pointer; }
-.composer-photo-button { position: relative; display: none; width: 44px; height: 44px; padding: 0; overflow: hidden; place-items: center; align-self: end; border: 0; border-radius: 12px; background: transparent; color: var(--text); cursor: pointer; }
+.composer-file-input { position: fixed; width: 1px; height: 1px; min-height: 0; padding: 0; overflow: hidden; border: 0; opacity: 0; pointer-events: none; clip-path: inset(50%); }
+.composer-photo-button { display: none; width: 44px; height: 44px; padding: 0; place-items: center; align-self: end; border: 0; border-radius: 12px; background: transparent; color: var(--text); cursor: pointer; }
 .composer.expanded .composer-photo-button { display: grid; grid-column: 1 / 2; }
 .composer-photo-button:active { background: rgba(239, 191, 100, 0.1); color: var(--accent-strong); }
-.composer-photo-button.disabled { opacity: 0.35; cursor: default; }
+.composer-photo-button:disabled { opacity: 0.35; cursor: default; }
 .composer-images { display: flex; min-width: 0; padding: 3px 5px 1px; grid-column: 1 / -1; flex-wrap: wrap; gap: 8px; }
 .composer-image { position: relative; width: 56px; height: 56px; flex: 0 0 56px; overflow: hidden; border-radius: 8px; background: rgba(60, 60, 67, 0.4); box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.08); }
 .composer-image > button:first-child { display: block; width: 100%; height: 100%; padding: 0; border: 0; background: transparent; }
