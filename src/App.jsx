@@ -78,6 +78,10 @@ import {
   listTaskForConversation,
   runningConversationsFirst,
 } from './conversation-order.js';
+import {
+  orphanReplyAnchors,
+  orphanTaskReplies,
+} from './task-replies.js';
 
 const ACTIVE_STATUSES = new Set(['queued', 'running']);
 const MARKDOWN_PLUGINS = [remarkGfm];
@@ -822,6 +826,22 @@ function MessageImage({ conversationId, image, onPreview }) {
   );
 }
 
+// Cancelled and failed tasks never receive a persisted assistant message, so the
+// thread would keep the user message and drop the agent's work entirely. Render
+// the trace (lazily loaded) and the partial answer locally for those tasks.
+function AssistantReply({ task, state, onLoad }) {
+  const status = String(task.status || '').toLowerCase();
+  const answer = textContent(task.answer_text);
+  const elapsed = formatElapsedDuration(task.created_at, task.completed_at);
+  return <article className="message assistant" aria-label="Assistant message">
+    <div className="message-body">
+      <TaskTraceDisclosure state={state} elapsed={elapsed} onLoad={() => onLoad(task.task_id)} />
+      <span className={`task-reply-status ${status}`}>{status === 'failed' ? 'Failed' : 'Cancelled'}</span>
+      {answer ? <ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>{answer}</ReactMarkdown> : null}
+    </div>
+  </article>;
+}
+
 function ConversationDetail({ id, initialConversation, onBack, approvals, refreshApprovals, connection }) {
   const [conversation, setConversation] = useState(initialConversation || null);
   const [message, setMessage] = useState('');
@@ -1090,7 +1110,17 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
     try {
       if (activeTaskId) await api.stopTask(activeTaskId);
       else await api.stopConversation(conversation.conversation_id);
-      setLiveRun((current) => current ? { ...current, status: 'cancelled', completedAt: Date.now() } : current);
+      const cancelledAt = Date.now();
+      setLiveRun((current) => current ? { ...current, status: 'cancelled', completedAt: cancelledAt } : current);
+      const cancelledTaskId = activeTaskId || liveRunRef.current?.taskId;
+      if (cancelledTaskId) {
+        // The runtime never stores an assistant message for a cancelled task, so
+        // keep the streamed trace locally instead of flashing it away.
+        setTaskTraces((current) => (current[cancelledTaskId] ? current : {
+          ...current,
+          [cancelledTaskId]: { ...(liveRunRef.current || {}), taskId: cancelledTaskId, status: 'cancelled', completedAt: cancelledAt },
+        }));
+      }
       await refresh();
     } catch (nextError) {
       setError(nextError.message);
@@ -1309,6 +1339,14 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
   const visibleOptimisticMessages = optimisticUserMessages.filter((item) => (
     userMessageOccurrenceCount(visibleMessages, item.text) < item.occurrence
   ));
+  const orphanReplies = orphanTaskReplies(conversation);
+  const orphanReplyByAnchor = orphanReplyAnchors(visibleMessages, orphanReplies);
+  // Keep the live trace on screen between "stop" and the refreshed conversation
+  // snapshot that carries the local reply for the cancelled task.
+  const liveReplyPending = Boolean(liveRun && !running
+    && ['cancelled', 'failed'].includes(String(liveRun.status || '').toLowerCase())
+    && !orphanReplies.has(liveRun.taskId)
+    && !visibleMessages.some((item) => item.role !== 'user' && item.task_id === liveRun.taskId));
 
   return (
     <main
@@ -1333,14 +1371,17 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
       <div className="message-region" onClick={collapseComposer}>
         <div className="message-scroll" ref={messageScrollRef}>
           <ApprovalCard approvals={approvals} onResolved={refreshApprovals} />
-          {visibleMessages.map((item) => {
+          {visibleMessages.map((item, index) => {
             const task = tasksById.get(item.task_id);
             const contentText = textContent(item.content);
             const images = item.role === 'user' ? messageImageRefs(item, task) : [];
             const elapsed = item.role !== 'user' && task?.completed_at
               ? formatElapsedDuration(task.created_at, task.completed_at)
               : '';
-            return <article className={`message ${item.role === 'user' ? 'user' : 'assistant'}`} aria-label={item.role === 'user' ? 'Your message' : 'Assistant message'} key={item.message_id || item.id}>
+            const messageKey = item.message_id || item.id || `message-${index}`;
+            const orphanReply = orphanReplyByAnchor.get(messageKey);
+            return <React.Fragment key={messageKey}>
+              <article className={`message ${item.role === 'user' ? 'user' : 'assistant'}`} aria-label={item.role === 'user' ? 'Your message' : 'Assistant message'}>
               {images.length ? <div className="message-images" aria-label="Attached images">{images.map((image, index) => (
                 <MessageImage conversationId={id} image={image} key={image.image_id || image.path || index} onPreview={setPreviewImage} />
               ))}</div> : null}
@@ -1348,7 +1389,9 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
                 {item.role !== 'user' ? <TaskTraceDisclosure state={taskTraces[item.task_id]} elapsed={elapsed} onLoad={() => loadTaskTrace(item.task_id)} /> : null}
                 <ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>{contentText}</ReactMarkdown>
               </div> : null}
-            </article>;
+            </article>
+            {orphanReply ? <AssistantReply task={orphanReply} state={taskTraces[orphanReply.task_id]} onLoad={loadTaskTrace} /> : null}
+          </React.Fragment>;
           })}
           {visibleOptimisticMessages.map((item) => <article className="message user" aria-label="Your message" key={item.id}>
             {item.images.length ? <div className="message-images" aria-label="Attached images">{item.images.map((image, index) => (
@@ -1356,9 +1399,9 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
             ))}</div> : null}
             {item.text ? <div className="message-body"><ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>{item.text}</ReactMarkdown></div> : null}
           </article>)}
-          {liveRun && running ? <article className="message assistant" aria-label="Assistant message">
-            <div className="message-body streaming">
-              <TaskTraceDisclosure state={liveRun} running elapsed={liveElapsed} />
+          {liveRun && (running || liveReplyPending) ? <article className="message assistant" aria-label="Assistant message">
+            <div className={`message-body ${running ? 'streaming' : ''}`}>
+              <TaskTraceDisclosure state={liveRun} running={running} elapsed={liveElapsed} />
             </div>
           </article> : null}
           {!conversation ? <div className="center-state"><LoaderCircle className="spin" /></div> : null}
