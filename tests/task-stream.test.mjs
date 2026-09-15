@@ -5,6 +5,7 @@ import {
   formatElapsedDuration,
   hasVisibleTaskTools,
   isCurrentTaskRunning,
+  isFailureStatus,
   isVisibleTaskTool,
   readNdjson,
   taskStreamState,
@@ -13,6 +14,15 @@ import {
 test('terminal live task state overrides a stale running conversation snapshot', () => {
   assert.equal(isCurrentTaskRunning({ status: 'done' }, { status: 'running' }), false);
   assert.equal(isCurrentTaskRunning(null, { status: 'running' }), true);
+});
+
+test('failure statuses cover every stop the runtime reports, however they are spelled', () => {
+  assert.equal(isFailureStatus('cancelled'), true);
+  assert.equal(isFailureStatus('FAILED'), true);
+  assert.equal(isFailureStatus('error'), true);
+  assert.equal(isFailureStatus({ status: 'failed' }), true);
+  assert.equal(isFailureStatus('done'), false);
+  assert.equal(isFailureStatus(undefined), false);
 });
 
 test('internal todo and process polling tools stay out of the visible timeline', () => {
@@ -75,7 +85,8 @@ test('failed task keeps commentary separate from its final error', () => {
     ],
   });
 
-  assert.equal(state.text, 'Request failed: SSL error');
+  assert.equal(state.text, '我会先检查项目。');
+  assert.equal(state.error, 'Request failed: SSL error');
   assert.deepEqual(state.segments[0], {
     type: 'text',
     id: 'block-1',

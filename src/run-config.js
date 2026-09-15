@@ -69,24 +69,62 @@ export function agentOptionsFromPayload(payload) {
   })).filter((item) => item.id);
 }
 
+function normalizedModel(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function modelMatches(provider, modelId) {
+  const target = normalizedModel(modelId);
+  if (!target) return false;
+  const candidates = [provider?.defaultModelId, ...(provider?.models || []).map((item) => item.id)]
+    .map(normalizedModel)
+    .filter(Boolean);
+  return candidates.some((candidate) => candidate === target
+    || candidate.endsWith(`/${target}`)
+    || target.endsWith(`/${candidate}`));
+}
+
+function normalizedProviderKey(value) {
+  return String(value || '').trim().toLowerCase().replaceAll('-', '_');
+}
+
+function providerKeyMatches(provider, key) {
+  const target = normalizedProviderKey(key);
+  if (!target) return false;
+  return [provider?.id, provider?.requestProvider, provider?.provider, provider?.customProvider]
+    .some((value) => normalizedProviderKey(value) === target);
+}
+
+// `provider_key`, `model` and `reasoning_effort` live on the task (the runtime
+// stores nothing of the sort on the conversation), so the latest task is the only
+// record of what the conversation actually ran with. Custom providers all share
+// the generic `custom` key, which makes the model the sharper signal.
 export function resolveRunConfig(conversation, providers, agents) {
   const tasks = Array.isArray(conversation?.tasks) ? conversation.tasks : [];
   const latestTask = tasks.find((task) => task?.task_id === conversation?.last_task_id) || tasks.at(-1) || null;
-  const taskProvider = String(latestTask?.provider_key || latestTask?.provider || '').trim().toLowerCase().replaceAll('-', '_');
-  const taskModel = String(latestTask?.model || '').trim();
-  const provider = providers.find((item) => (
-    (item.requestProvider === taskProvider || item.provider === taskProvider)
-    && (!taskModel || item.defaultModelId === taskModel || item.models.some((model) => model.id === taskModel))
-  )) || providers.find((item) => item.requestProvider === taskProvider || item.provider === taskProvider)
-    || providers.find((item) => taskModel && (item.defaultModelId === taskModel || item.models.some((model) => model.id === taskModel)))
+  const taskProvider = latestTask?.provider_key || latestTask?.provider || '';
+  const taskModel = latestTask?.model || '';
+  const provider = providers.find((item) => providerKeyMatches(item, taskProvider) && modelMatches(item, taskModel))
+    || providers.find((item) => modelMatches(item, taskModel))
+    || providers.find((item) => providerKeyMatches(item, taskProvider))
     || providers[0] || null;
   const conversationAgentId = String(latestTask?.agent_id || latestTask?.profile_id || conversation?.agent_id || conversation?.profile_id || '').trim();
   const agentId = conversationAgentId || agents[0]?.id || '';
-  const thinking = THINKING_OPTIONS.some((item) => item.id === provider?.reasoningEffort)
-    ? provider.reasoningEffort
-    : 'high';
-  const modelId = taskModel || provider?.defaultModelId || provider?.models[0]?.id || '';
+  const thinking = [latestTask?.reasoning_effort, provider?.reasoningEffort]
+    .find((value) => THINKING_OPTIONS.some((item) => item.id === value)) || 'high';
+  const modelId = String(taskModel || provider?.defaultModelId || provider?.models[0]?.id || '').trim();
   return { agentId, providerId: provider?.id || '', modelId, thinking };
+}
+
+// The provider model list is fetched from the runtime and can lag behind the model
+// a task actually ran with (the runtime stores provider-prefixed ids such as
+// `vendor/model`), so keep the current selection in the list instead of letting it
+// silently fall back to another model.
+export function withCurrentModel(models, modelId) {
+  const list = Array.isArray(models) ? models : [];
+  const id = String(modelId || '').trim();
+  if (!id || list.some((item) => item.id === id)) return list;
+  return [{ id, label: id }, ...list];
 }
 
 export function taskOptionsForRunConfig(config, providers) {

@@ -6,6 +6,7 @@ import {
   providerOptionsFromSettings,
   resolveRunConfig,
   taskOptionsForRunConfig,
+  withCurrentModel,
 } from '../src/run-config.js';
 
 test('runtime config uses the configured provider selector and conversation agent', () => {
@@ -70,6 +71,47 @@ test('an existing conversation inherits the provider and model used by its lates
     modelId: 'gpt-5.6-sol',
     thinking: 'medium',
   });
+});
+
+test('prefixed backend model ids restore the matching provider and thinking level', () => {
+  const providers = providerOptionsFromSettings({
+    chat: { provider: 'custom', name: 'router-a', model: 'gpt-5.6-sol', reasoning_effort: 'low' },
+    profiles: [{ id: 'router-b', provider: 'custom', name: 'router-b', model: 'other-model', reasoning_effort: 'xhigh' }],
+  });
+
+  assert.deepEqual(resolveRunConfig({
+    last_task_id: 'task-1',
+    tasks: [{ task_id: 'task-1', provider_key: 'custom', model: 'vendor/gpt-5.6-sol', reasoning_effort: 'medium' }],
+  }, providers, []), {
+    agentId: '',
+    providerId: 'chat:custom:router-a',
+    modelId: 'vendor/gpt-5.6-sol',
+    thinking: 'medium',
+  });
+});
+
+test('profiles that share a provider key are told apart by the model the task ran with', () => {
+  const providers = providerOptionsFromSettings({
+    chat: { provider: 'custom', name: 'router-a', model: 'model-a', reasoning_effort: 'low' },
+    profiles: [{ id: 'router-b', provider: 'custom', name: 'router-b', model: 'model-b', reasoning_effort: 'xhigh' }],
+  });
+
+  assert.deepEqual(resolveRunConfig({
+    last_task_id: 'task-1',
+    tasks: [{ task_id: 'task-1', provider_key: 'custom', provider: 'Custom', model: 'model-b' }],
+  }, providers, []), {
+    agentId: '',
+    providerId: 'router-b',
+    modelId: 'model-b',
+    thinking: 'xhigh',
+  });
+});
+
+test('a model the runtime list does not know stays selectable', () => {
+  const models = [{ id: 'model-a', label: 'Model A' }];
+  assert.deepEqual(withCurrentModel(models, 'vendor/model-a'), [{ id: 'vendor/model-a', label: 'vendor/model-a' }, ...models]);
+  assert.deepEqual(withCurrentModel(models, 'model-a'), models);
+  assert.deepEqual(withCurrentModel(models, ''), models);
 });
 
 test('official providers use canonical labels instead of stale profile names', () => {

@@ -1,16 +1,16 @@
+import { isFailureStatus } from './task-stream.js';
+
 // Cancelled and failed tasks never receive a persisted assistant message on the
 // runtime side, so the phone would render a user message with no reply at all.
 // These helpers find those tasks and the user message each local reply belongs
 // to, so the thread can show the trace and the partial answer that do exist.
-
-const REPLYLESS_STATUSES = new Set(['cancelled', 'failed']);
 
 export function taskHasNoAssistantMessage(task) {
   return !task?.assistant_message_id;
 }
 
 export function isReplylessTask(task) {
-  return taskHasNoAssistantMessage(task) && REPLYLESS_STATUSES.has(String(task?.status || '').toLowerCase());
+  return taskHasNoAssistantMessage(task) && isFailureStatus(task?.status);
 }
 
 export function orphanTaskReplies(conversation) {

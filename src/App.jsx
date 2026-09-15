@@ -64,12 +64,14 @@ import {
   providerOptionsFromSettings,
   resolveRunConfig,
   taskOptionsForRunConfig,
+  withCurrentModel,
 } from './run-config.js';
 import {
   applyTaskStreamEvent,
   formatElapsedDuration,
   hasVisibleTaskTools,
   isCurrentTaskRunning,
+  isFailureStatus,
   isVisibleTaskTool,
   taskStreamState,
 } from './task-stream.js';
@@ -84,7 +86,25 @@ import {
 } from './task-replies.js';
 
 const ACTIVE_STATUSES = new Set(['queued', 'running']);
+const LAST_CONVERSATION_STORAGE_KEY = 'haish.remote.lastConversation.v1';
 const MARKDOWN_PLUGINS = [remarkGfm];
+
+function storedConversationId() {
+  try {
+    return window.localStorage?.getItem(LAST_CONVERSATION_STORAGE_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function saveStoredConversationId(id) {
+  try {
+    if (id) window.localStorage?.setItem(LAST_CONVERSATION_STORAGE_KEY, id);
+    else window.localStorage?.removeItem(LAST_CONVERSATION_STORAGE_KEY);
+  } catch {
+    // Storage can be unavailable in private WebViews; navigation still works.
+  }
+}
 
 function formatDate(value) {
   if (!value) return '';
@@ -826,24 +846,39 @@ function MessageImage({ conversationId, image, onPreview }) {
   );
 }
 
+// A cancelled or failed task carries the partial answer and the failure reason in
+// separate fields, and the reason is often repeated inside the answer, so show
+// each line once behind a status chip.
+function OutcomeReply({ status, text, error }) {
+  const state = String(status || '').trim().toLowerCase();
+  if (!isFailureStatus(state)) return null;
+  const content = [text, error]
+    .map((value) => textContent(value).trim())
+    .filter(Boolean)
+    .filter((value, index, values) => values.indexOf(value) === index)
+    .join('\n\n') || (state === 'cancelled' ? 'Task cancelled.' : 'Task failed.');
+  return <>
+    <span className={`task-reply-status ${state}`}>{state === 'cancelled' ? 'Cancelled' : 'Failed'}</span>
+    <ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>{content}</ReactMarkdown>
+  </>;
+}
+
 // Cancelled and failed tasks never receive a persisted assistant message, so the
 // thread would keep the user message and drop the agent's work entirely. Render
 // the trace (lazily loaded) and the partial answer locally for those tasks.
 function AssistantReply({ task, state, onLoad }) {
-  const status = String(task.status || '').toLowerCase();
-  const answer = textContent(task.answer_text);
   const elapsed = formatElapsedDuration(task.created_at, task.completed_at);
   return <article className="message assistant" aria-label="Assistant message">
     <div className="message-body">
       <TaskTraceDisclosure state={state} elapsed={elapsed} onLoad={() => onLoad(task.task_id)} />
-      <span className={`task-reply-status ${status}`}>{status === 'failed' ? 'Failed' : 'Cancelled'}</span>
-      {answer ? <ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>{answer}</ReactMarkdown> : null}
+      <OutcomeReply status={task.status} text={task.answer_text || state?.text} error={task.error || state?.error} />
     </div>
   </article>;
 }
 
-function ConversationDetail({ id, initialConversation, onBack, approvals, refreshApprovals, connection }) {
+function ConversationDetail({ id, projectName, initialConversation, onBack, approvals, refreshApprovals, connection }) {
   const [conversation, setConversation] = useState(initialConversation || null);
+  const [conversationHydrated, setConversationHydrated] = useState(false);
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -873,9 +908,11 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
   const runConfigQuickRef = useRef(null);
   const localStreamRef = useRef(false);
   const liveRunRef = useRef(null);
+  const runConfigRef = useRef(null);
   const loadedTraceIdsRef = useRef(new Set());
 
   useEffect(() => { liveRunRef.current = liveRun; }, [liveRun]);
+  useEffect(() => { runConfigRef.current = runConfig; }, [runConfig]);
   useEffect(() => { composerImagesRef.current = composerImages; }, [composerImages]);
   useEffect(() => { optimisticUserMessagesRef.current = optimisticUserMessages; }, [optimisticUserMessages]);
 
@@ -998,6 +1035,7 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
     setTaskTraces({});
     optimisticUserMessagesRef.current = [];
     setOptimisticUserMessages([]);
+    setConversationHydrated(false);
     loadedTraceIdsRef.current = new Set();
   }, [id]);
 
@@ -1006,6 +1044,7 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
     try {
       const nextConversation = await api.conversation(id);
       setConversation(nextConversation);
+      setConversationHydrated(true);
       setError('');
       return nextConversation;
     } catch (nextError) {
@@ -1038,12 +1077,12 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
   }, [id]);
 
   useEffect(() => {
-    if (!conversation || !providers.length || runConfig) return;
+    if (!conversationHydrated || !conversation || !providers.length || runConfig) return;
     setRunConfig(resolveRunConfig(conversation, providers, agents));
-  }, [agents, conversation, providers, runConfig]);
+  }, [agents, conversation, conversationHydrated, providers, runConfig]);
 
   useEffect(() => {
-    const provider = providers.find((item) => item.id === runConfig?.providerId);
+    const provider = providers.find((item) => item.id === runConfigRef.current?.providerId);
     if (!provider) {
       setModels([]);
       return undefined;
@@ -1061,7 +1100,7 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
           seen.add(modelId);
           return { id: modelId, label: String(typeof item === 'string' ? item : item?.label || modelId) };
         }).filter(Boolean);
-        const available = nextModels.length ? nextModels : provider.models;
+        const available = withCurrentModel(nextModels.length ? nextModels : provider.models, runConfigRef.current?.modelId);
         setModels(available);
         setRunConfig((current) => {
           if (!current || current.providerId !== provider.id || available.some((item) => item.id === current.modelId)) return current;
@@ -1070,7 +1109,7 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
         });
       })
       .catch(() => {
-        if (!cancelled) setModels(provider.models);
+        if (!cancelled) setModels(withCurrentModel(provider.models, runConfigRef.current?.modelId));
       })
       .finally(() => {
         if (!cancelled) setModelLoading(false);
@@ -1111,14 +1150,16 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
       if (activeTaskId) await api.stopTask(activeTaskId);
       else await api.stopConversation(conversation.conversation_id);
       const cancelledAt = Date.now();
-      setLiveRun((current) => current ? { ...current, status: 'cancelled', completedAt: cancelledAt } : current);
-      const cancelledTaskId = activeTaskId || liveRunRef.current?.taskId;
+      const cancelledRun = liveRunRef.current ? { ...liveRunRef.current, status: 'cancelled', completedAt: cancelledAt } : null;
+      liveRunRef.current = cancelledRun;
+      setLiveRun(cancelledRun);
+      const cancelledTaskId = activeTaskId || cancelledRun?.taskId;
       if (cancelledTaskId) {
         // The runtime never stores an assistant message for a cancelled task, so
         // keep the streamed trace locally instead of flashing it away.
         setTaskTraces((current) => (current[cancelledTaskId] ? current : {
           ...current,
-          [cancelledTaskId]: { ...(liveRunRef.current || {}), taskId: cancelledTaskId, status: 'cancelled', completedAt: cancelledAt },
+          [cancelledTaskId]: { ...(cancelledRun || {}), taskId: cancelledTaskId, status: 'cancelled', completedAt: cancelledAt },
         }));
       }
       await refresh();
@@ -1132,7 +1173,8 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
   useEffect(() => {
     const taskId = activeTask?.task_id;
     if (!taskId) {
-      if (!localStreamRef.current) setLiveRun(null);
+      // A finished failure keeps its bubble: it holds the only copy of the reply.
+      if (!localStreamRef.current && !isFailureStatus(liveRunRef.current?.status)) setLiveRun(null);
       return undefined;
     }
 
@@ -1238,7 +1280,8 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
       path: image.path,
       mime: image.mime,
     }));
-    if ((!nextMessage && !imageAttachments.length) || !conversation || (running && !activeTaskId) || composerImages.some((image) => image.uploading) || (!running && !runConfig)) return;
+    const steering = running;
+    if ((!nextMessage && !imageAttachments.length) || !conversation || (steering && !activeTaskId) || composerImages.some((image) => image.uploading) || (!steering && !runConfig)) return;
     const optimisticId = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const existingOccurrence = optimisticUserMessagesRef.current
       .filter((item) => item.text === nextMessage)
@@ -1268,7 +1311,7 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
     setBusy(true);
     setError('');
     try {
-      if (running) {
+      if (steering) {
         await api.sendInput(activeTaskId, nextMessage, imageAttachments);
         accepted = true;
         releaseSubmittedImages();
@@ -1277,19 +1320,25 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
       }
 
       localStreamRef.current = true;
-      setLiveRun({
+      const initialRun = {
         taskId: null,
         status: 'running',
         text: '',
         createdAt: Date.now(),
         firstTokenAt: 0,
-      });
+      };
+      liveRunRef.current = initialRun;
+      setLiveRun(initialRun);
       await api.startTask(
         conversation,
         nextMessage,
         imageAttachments,
         taskOptionsForRunConfig(runConfig, providers),
-        (streamEvent) => setLiveRun((current) => applyTaskStreamEvent(current, streamEvent)),
+        (streamEvent) => {
+          const nextRun = applyTaskStreamEvent(liveRunRef.current, streamEvent);
+          liveRunRef.current = nextRun;
+          setLiveRun(nextRun);
+        },
         () => {
           accepted = true;
           releaseSubmittedImages();
@@ -1297,17 +1346,55 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
         },
       );
       localStreamRef.current = false;
-      await refresh();
-      setLiveRun(null);
+      const nextConversation = await refresh();
+      const streamedRun = liveRunRef.current || {};
+      const streamedTask = nextConversation?.tasks?.find((task) => task.task_id === streamedRun.taskId);
+      const outcome = String(isFailureStatus(streamedRun.status)
+        ? streamedRun.status : streamedTask?.status || streamedRun.status || 'done').toLowerCase();
+      if (isFailureStatus(outcome)) {
+        const failedRun = {
+          ...streamedRun,
+          taskId: streamedRun.taskId || streamedTask?.task_id || null,
+          status: outcome,
+          text: textContent(streamedTask?.answer_text || streamedRun.text || ''),
+          error: streamedTask?.error || streamedRun.error || '',
+          activity: outcome === 'cancelled' ? 'Cancelled' : 'Failed',
+          completedAt: streamedRun.completedAt || Date.now(),
+        };
+        liveRunRef.current = failedRun;
+        setLiveRun(failedRun);
+      } else {
+        liveRunRef.current = null;
+        setLiveRun(null);
+      }
     } catch (nextError) {
-      if (!accepted) {
+      // A steering send or a task the runtime never accepted: the message is not
+      // queued anywhere, so hand the draft back instead of faking a reply for it.
+      if (steering || !accepted) {
         optimisticUserMessagesRef.current = optimisticUserMessagesRef.current.filter((item) => item.id !== optimisticId);
         setOptimisticUserMessages(optimisticUserMessagesRef.current);
         composerImagesRef.current = submittedComposerImages;
         setComposerImages(submittedComposerImages);
         setMessage(nextMessage);
-        if (!running) setLiveRun(null);
+        setError(nextError.message);
+        return;
       }
+      // The run was accepted and then the stream broke: keep the work that did
+      // arrive and report the failure underneath it.
+      const failedAt = Date.now();
+      const previousRun = liveRunRef.current || {};
+      const failedRun = {
+        ...previousRun,
+        status: 'failed',
+        text: textContent(previousRun.text || ''),
+        error: nextError.message,
+        activity: 'Failed',
+        createdAt: previousRun.createdAt || failedAt,
+        completedAt: failedAt,
+      };
+      liveRunRef.current = failedRun;
+      setLiveRun(failedRun);
+      releaseSubmittedImages();
       setError(nextError.message);
     } finally {
       localStreamRef.current = false;
@@ -1344,7 +1431,7 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
   // Keep the live trace on screen between "stop" and the refreshed conversation
   // snapshot that carries the local reply for the cancelled task.
   const liveReplyPending = Boolean(liveRun && !running
-    && ['cancelled', 'failed'].includes(String(liveRun.status || '').toLowerCase())
+    && isFailureStatus(liveRun.status)
     && !orphanReplies.has(liveRun.taskId)
     && !visibleMessages.some((item) => item.role !== 'user' && item.task_id === liveRun.taskId));
 
@@ -1360,7 +1447,7 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
       <div className="detail-top">
         <header className="detail-header">
           <button className="icon-button ghost" onClick={onBack} aria-label="Back to conversations"><ArrowLeft size={22} /></button>
-          <div><strong>{conversation?.title || 'Task'}</strong><span>{running ? (liveRun?.activity || activeTask?.stage || activeTask?.status || 'Running') : 'Ready to continue'}</span></div>
+          <div><strong>{conversation?.title || 'Task'}</strong><span>{projectName || 'Project'}</span></div>
           <span className="header-spacer" />
         </header>
         {connection || error ? <div className={`detail-error-banner ${reconnecting ? 'connecting' : ''}`} role={reconnecting ? 'status' : 'alert'}>
@@ -1402,6 +1489,7 @@ function ConversationDetail({ id, initialConversation, onBack, approvals, refres
           {liveRun && (running || liveReplyPending) ? <article className="message assistant" aria-label="Assistant message">
             <div className={`message-body ${running ? 'streaming' : ''}`}>
               <TaskTraceDisclosure state={liveRun} running={running} elapsed={liveElapsed} />
+              {!running ? <OutcomeReply status={liveRun.status} text={liveRun.text} error={liveRun.error} /> : null}
             </div>
           </article> : null}
           {!conversation ? <div className="center-state"><LoaderCircle className="spin" /></div> : null}
@@ -1552,6 +1640,7 @@ export default function App() {
   const [runtimeOfflineSince, setRuntimeOfflineSince] = useState(0);
   const [initialized, setInitialized] = useState(false);
   const [startupRetrying, setStartupRetrying] = useState(true);
+  const restoredConversationRef = useRef(false);
   const startupRequestRef = useRef(false);
 
   const loadStatus = useCallback(async () => {
@@ -1626,14 +1715,25 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [status?.paired, loadStatus, loadTasks, loadApprovals]);
 
+  useEffect(() => {
+    if (!status?.paired || loading || restoredConversationRef.current || selectedId || !conversations.length) return;
+    restoredConversationRef.current = true;
+    const lastId = storedConversationId();
+    if (lastId && conversations.some((item) => item.conversation_id === lastId)) setSelectedId(lastId);
+  }, [conversations, loading, selectedId, status?.paired]);
+
   async function createConversation(projectId) {
     const created = await api.createConversation(projectId);
+    restoredConversationRef.current = true;
+    saveStoredConversationId(created.conversation_id);
     setSelectedId(created.conversation_id);
     // The detail screen can render immediately; refresh the directory in the background.
     loadTasks();
   }
 
   function openConversation(conversation) {
+    restoredConversationRef.current = true;
+    saveStoredConversationId(conversation.conversation_id);
     setSelectedId(conversation.conversation_id);
   }
 
@@ -1645,6 +1745,7 @@ export default function App() {
   async function logout() {
     try { await api.logout(); } catch { /* Clear the local UI even if already revoked. */ }
     setSelectedId(null);
+    saveStoredConversationId('');
     setConversations([]);
     setStatus({ paired: false, runtime_online: false });
   }
@@ -1653,13 +1754,24 @@ export default function App() {
   if (!status.paired) return <PairingScreen runtimeOnline={status.runtime_online} onPaired={loadStatus} />;
   const connection = runtimeConnectionState(status.runtime_online, runtimeOfflineSince);
   const selectedConversation = conversations.find((item) => item.conversation_id === selectedId) || null;
-  if (selectedId) return <ConversationDetail id={selectedId} initialConversation={selectedConversation} onBack={closeConversation} approvals={approvals} refreshApprovals={loadApprovals} connection={connection} />;
+  const selectedProject = projects.find((project) => project.project_id === selectedConversation?.project_id);
+  // The list stays mounted behind the detail page so a swipe back reveals it
+  // instead of a blank screen; the detail is painted on top of the same tree.
+  const detail = selectedId ? <ConversationDetail
+    id={selectedId}
+    projectName={selectedProject?.name || 'Project'}
+    initialConversation={selectedConversation}
+    onBack={closeConversation}
+    approvals={approvals}
+    refreshApprovals={loadApprovals}
+    connection={connection}
+  /> : null;
 
   const approvalCount = (approvals?.pending?.length || 0) + (approvals?.pending_workflow_approvals?.length || 0) + (approvals?.pending_user_inputs?.length || 0);
   const reconnecting = connection && !connection.timedOut;
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${selectedId ? 'detail-open' : ''}`}>
       {connection || fatalError ? <div className={`offline-banner ${reconnecting ? 'connecting' : ''}`} role={reconnecting ? 'status' : 'alert'}>
         {reconnecting ? <RefreshCw className="spin" size={16} aria-hidden="true" /> : <CircleAlert size={16} aria-hidden="true" />}
         <span>{connection?.message || fatalError}</span>
@@ -1670,6 +1782,7 @@ export default function App() {
           <ConversationList projects={projects} conversations={conversations} tasks={tasks} status={status} loading={loading} onOpen={openConversation} onNew={createConversation} onSettings={() => setTab('settings')} />
         </>
       ) : <SettingsScreen status={status} onLogout={logout} onBack={() => setTab('tasks')} />}
+      {detail}
     </div>
   );
 }

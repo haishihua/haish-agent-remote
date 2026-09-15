@@ -1,4 +1,8 @@
 const RUNNING_STATUSES = new Set(['queued', 'running']);
+// A task that ends in one of these states never gets a persisted assistant
+// message, so both the live bubble and the thread have to render its partial
+// text plus the failure reason on their own.
+const FAILURE_STATUSES = new Set(['cancelled', 'failed', 'error']);
 const HIDDEN_TIMELINE_TOOL_NAMES = new Set(['todo_write', 'write_stdin']);
 
 export function isVisibleTaskTool(value) {
@@ -180,6 +184,10 @@ export function isTaskRunning(value) {
   return RUNNING_STATUSES.has(value?.status || value);
 }
 
+export function isFailureStatus(value) {
+  return FAILURE_STATUSES.has(String(value?.status || value || '').trim().toLowerCase());
+}
+
 export function isCurrentTaskRunning(liveRun, activeTask) {
   return isTaskRunning(liveRun ?? activeTask);
 }
@@ -268,10 +276,12 @@ export function applyTaskStreamEvent(current, event) {
   }
   if (type === 'run_finished') {
     const task = data.task || {};
+    const error = String(task.error || data.error || state.error || '');
     return {
       ...next,
       status: data.status || task.status || 'done',
-      text: String(task.answer_text || data.answer_text || task.error || data.error || state.text || ''),
+      text: String(task.answer_text || data.answer_text || state.text || ''),
+      error,
       completedAt: timeMs(task.completed_at || event?.created_at) || occurredAt,
     };
   }
@@ -288,13 +298,15 @@ export function taskStreamState(task) {
     latestTodos: null,
     createdAt: timeMs(task?.created_at),
     completedAt: timeMs(task?.completed_at),
+    error: String(task?.error || ''),
     firstTokenAt: 0,
   };
   for (const event of task?.events || []) state = applyTaskStreamEvent(state, event);
   return {
     ...state,
     status: task?.status || state.status,
-    text: String(task?.answer_text || task?.error || state.text || ''),
+    text: String(task?.answer_text || state.text || ''),
+    error: String(task?.error || state.error || ''),
     completedAt: timeMs(task?.completed_at) || state.completedAt,
   };
 }
