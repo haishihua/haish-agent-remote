@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { isSwipeBackGesture, swipeBackOffset } from '../src/swipe-back.js';
+import { isSwipeBackGesture, swipeBackAxis, swipeBackOffset } from '../src/swipe-back.js';
 
 test('swipe back accepts a deliberate drag from the left edge', () => {
   const start = { x: 18, y: 240 };
@@ -25,4 +25,14 @@ test('swipe back ignores drags away from the edge and rejects vertical completio
   assert.equal(swipeBackOffset({ x: 12, y: 100 }, { x: 4, y: 100 }), 0);
   assert.equal(isSwipeBackGesture({ x: 12, y: 100 }, { x: 34, y: 142 }), false);
   assert.equal(isSwipeBackGesture({ x: 80, y: 100 }, { x: 190, y: 105 }), false);
+});
+
+test('swipe axis decides within a few pixels so the scroll view cannot claim the pull', () => {
+  assert.equal(swipeBackAxis(2, 1), null);
+  assert.equal(swipeBackAxis(3, 3), null);
+  assert.equal(swipeBackAxis(5, 1), 'horizontal');
+  assert.equal(swipeBackAxis(64, 30), 'horizontal');
+  assert.equal(swipeBackAxis(20, 40), 'vertical');
+  assert.equal(swipeBackAxis(-24, 2), 'vertical');
+  assert.equal(swipeBackAxis(4, 4), 'vertical');
 });

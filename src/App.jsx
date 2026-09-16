@@ -57,7 +57,7 @@ import {
   buildToolView,
 } from '../../haish-agent/app-web/src/features/chat/model/tool-view.js';
 import { ScrollToBottomButton } from './ScrollToBottomButton.jsx';
-import { SWIPE_BACK_EDGE_PX, isSwipeBackGesture, swipeBackOffset } from './swipe-back.js';
+import { SWIPE_BACK_EDGE_PX, isSwipeBackGesture, swipeBackAxis, swipeBackOffset } from './swipe-back.js';
 import {
   THINKING_OPTIONS,
   agentOptionsFromPayload,
@@ -876,6 +876,121 @@ function AssistantReply({ task, state, onLoad }) {
   </article>;
 }
 
+function imageKey(image) {
+  return String(image?.image_id || image?.path || image?.mime || '');
+}
+
+function sameImageRefs(left, right) {
+  if (left === right) return true;
+  if (!left?.length && !right?.length) return true;
+  if (!left || !right || left.length !== right.length) return false;
+  return left.every((image, index) => imageKey(image) === imageKey(right[index]));
+}
+
+// A poll rebuilds the conversation object, so a row compares the values it paints
+// instead of their identity: untouched messages (and their markdown trees) stay put.
+const MessageRow = React.memo(function MessageRow({
+  conversationId,
+  role,
+  text,
+  images,
+  taskId,
+  traceState,
+  traceElapsed,
+  orphanReply,
+  orphanTraceState,
+  loadTaskTrace,
+  onPreviewImage,
+}) {
+  return <>
+    <article className={`message ${role === 'user' ? 'user' : 'assistant'}`} aria-label={role === 'user' ? 'Your message' : 'Assistant message'}>
+      {images.length ? <div className="message-images" aria-label="Attached images">{images.map((image, index) => (
+        <MessageImage conversationId={conversationId} image={image} key={image.image_id || image.path || index} onPreview={onPreviewImage} />
+      ))}</div> : null}
+      {role !== 'user' || text ? <div className="message-body">
+        {role !== 'user' ? <TaskTraceDisclosure state={traceState} elapsed={traceElapsed} onLoad={loadTaskTrace ? () => loadTaskTrace(taskId) : undefined} /> : null}
+        <ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>{text}</ReactMarkdown>
+      </div> : null}
+    </article>
+    {orphanReply ? <AssistantReply task={orphanReply} state={orphanTraceState} onLoad={loadTaskTrace} /> : null}
+  </>;
+}, (previous, next) => (
+  previous.conversationId === next.conversationId
+  && previous.role === next.role
+  && previous.text === next.text
+  && previous.taskId === next.taskId
+  && previous.traceState === next.traceState
+  && previous.traceElapsed === next.traceElapsed
+  && previous.orphanReply === next.orphanReply
+  && previous.orphanTraceState === next.orphanTraceState
+  && previous.loadTaskTrace === next.loadTaskTrace
+  && previous.onPreviewImage === next.onPreviewImage
+  && sameImageRefs(previous.images, next.images)
+));
+
+// Memoized so composer keystrokes, run-config changes and polled conversation
+// snapshots do not re-render the whole thread on the phone.
+const MessageThread = React.memo(function MessageThread({
+  conversationId,
+  messages,
+  optimisticMessages,
+  tasksById,
+  taskTraces,
+  orphanReplyByAnchor,
+  loadTaskTrace,
+  onPreviewImage,
+}) {
+  return <>
+    {messages.map((item, index) => {
+      const task = tasksById.get(item.task_id);
+      const key = item.message_id || item.id || `message-${index}`;
+      const orphanReply = orphanReplyByAnchor.get(key);
+      return <MessageRow
+        key={key}
+        conversationId={conversationId}
+        role={item.role === 'user' ? 'user' : 'assistant'}
+        text={textContent(item.content)}
+        images={item.role === 'user' ? messageImageRefs(item, task) : []}
+        taskId={item.task_id}
+        traceState={taskTraces[item.task_id]}
+        traceElapsed={item.role !== 'user' && task?.completed_at
+          ? formatElapsedDuration(task.created_at, task.completed_at)
+          : ''}
+        orphanReply={orphanReply}
+        orphanTraceState={orphanReply ? taskTraces[orphanReply.task_id] : undefined}
+        loadTaskTrace={loadTaskTrace}
+        onPreviewImage={onPreviewImage}
+      />;
+    })}
+    {optimisticMessages.map((item) => <article className="message user" aria-label="Your message" key={item.id}>
+      {item.images.length ? <div className="message-images" aria-label="Attached images">{item.images.map((image, index) => (
+        <MessageImage conversationId={conversationId} image={image} key={image.image_id || image.path || index} onPreview={onPreviewImage} />
+      ))}</div> : null}
+      {item.text ? <div className="message-body"><ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>{item.text}</ReactMarkdown></div> : null}
+    </article>)}
+  </>;
+});
+
+// The streamed answer ticks once a second; keeping that timer here means a tick
+// only redraws the live bubble instead of every message above it.
+const LiveRunBubble = React.memo(function LiveRunBubble({ liveRun, running }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!running) return undefined;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [running]);
+  const startedAt = liveRun?.completedAt ? liveRun.createdAt : liveRun?.firstTokenAt;
+  const elapsed = startedAt ? formatElapsedDuration(startedAt, liveRun.completedAt || now) : '';
+  return <article className="message assistant" aria-label="Assistant message">
+    <div className={`message-body ${running ? 'streaming' : ''}`}>
+      <TaskTraceDisclosure state={liveRun} running={running} elapsed={elapsed} />
+      {!running ? <OutcomeReply status={liveRun.status} text={liveRun.text} error={liveRun.error} /> : null}
+    </div>
+  </article>;
+});
+
 function ConversationDetail({ id, projectName, initialConversation, onBack, approvals, refreshApprovals, connection }) {
   const [conversation, setConversation] = useState(initialConversation || null);
   const [conversationHydrated, setConversationHydrated] = useState(false);
@@ -887,7 +1002,6 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
   const [composerImages, setComposerImages] = useState([]);
   const [previewImage, setPreviewImage] = useState(null);
   const [taskTraces, setTaskTraces] = useState({});
-  const [now, setNow] = useState(Date.now());
   const [agents, setAgents] = useState([]);
   const [providers, setProviders] = useState([]);
   const [runConfig, setRunConfig] = useState(null);
@@ -903,6 +1017,8 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
   const swipeStartRef = useRef(null);
   const swipeOffsetRef = useRef(0);
   const swipeTimerRef = useRef(null);
+  const swipeBlockedRef = useRef(false);
+  const swipeHandlersRef = useRef(null);
   const composerImagesRef = useRef([]);
   const optimisticUserMessagesRef = useRef([]);
   const runConfigQuickRef = useRef(null);
@@ -915,6 +1031,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
   useEffect(() => { runConfigRef.current = runConfig; }, [runConfig]);
   useEffect(() => { composerImagesRef.current = composerImages; }, [composerImages]);
   useEffect(() => { optimisticUserMessagesRef.current = optimisticUserMessages; }, [optimisticUserMessages]);
+  useEffect(() => { swipeBlockedRef.current = Boolean(previewImage || showRunConfig); }, [previewImage, showRunConfig]);
 
   function setSwipeBackPosition(offset) {
     swipeOffsetRef.current = offset;
@@ -934,7 +1051,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
   }
 
   function startSwipeBack(event) {
-    if (event.touches.length !== 1 || previewImage || showRunConfig) return;
+    if (event.touches.length !== 1 || swipeBlockedRef.current) return;
     const touch = event.touches[0];
     if (touch.clientX > SWIPE_BACK_EDGE_PX) return;
     clearSwipeBackTimer();
@@ -955,17 +1072,15 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
 
     const deltaX = touch.clientX - start.x;
     const deltaY = Math.abs(touch.clientY - start.y);
-    if (!start.axis && Math.max(Math.abs(deltaX), deltaY) < 7) return;
-    if (!start.axis) {
-      if (deltaX > 0 && deltaX > deltaY * 1.15) start.axis = 'horizontal';
-      else if (deltaY > Math.abs(deltaX)) start.axis = 'vertical';
-    }
-    if (start.axis === 'vertical' || deltaX < 0) {
+    if (!start.axis) start.axis = swipeBackAxis(deltaX, deltaY);
+    if (!start.axis) return;
+    if (start.axis !== 'horizontal') {
       swipeStartRef.current = null;
       return;
     }
-    if (start.axis !== 'horizontal') return;
 
+    // Non-passive listener: claiming the pull here is what stops the WebView from
+    // scrolling the thread and holding the touch stream back until it settles.
     if (event.cancelable) event.preventDefault();
     const offset = swipeBackOffset(start, { x: touch.clientX, y: touch.clientY });
     detailScreenRef.current?.classList.add('swipe-tracking');
@@ -1018,6 +1133,38 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
       resetSwipeBackSurface();
     }, 180);
   }
+
+  // React attaches its touch listeners passively, so `preventDefault()` in a
+  // synthetic touchmove never reaches the WebView: the scroll view keeps the
+  // gesture, touch delivery stalls until it settles, and the pull finishes long
+  // after the finger is gone. Own the listeners so a rightward pull is claimed —
+  // and scrolling blocked — from the first few pixels of movement.
+  useEffect(() => {
+    swipeHandlersRef.current = { start: startSwipeBack, move: moveSwipeBack, end: finishSwipeBack, cancel: cancelSwipeBack };
+  });
+
+  useEffect(() => {
+    const surface = detailScreenRef.current;
+    if (!surface) return undefined;
+    const forward = (name) => (event) => swipeHandlersRef.current?.[name]?.(event);
+    const handlers = {
+      start: forward('start'),
+      move: forward('move'),
+      end: forward('end'),
+      cancel: forward('cancel'),
+    };
+    surface.addEventListener('touchstart', handlers.start, { passive: true });
+    surface.addEventListener('touchmove', handlers.move, { passive: false });
+    surface.addEventListener('touchend', handlers.end, { passive: true });
+    surface.addEventListener('touchcancel', handlers.cancel, { passive: true });
+    return () => {
+      surface.removeEventListener('touchstart', handlers.start);
+      surface.removeEventListener('touchmove', handlers.move);
+      surface.removeEventListener('touchend', handlers.end);
+      surface.removeEventListener('touchcancel', handlers.cancel);
+      clearSwipeBackTimer();
+    };
+  }, []);
 
   function collapseComposer() {
     setComposerExpanded(false);
@@ -1196,13 +1343,6 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
       window.clearInterval(timer);
     };
   }, [activeTask?.task_id]);
-
-  useEffect(() => {
-    if (!running) return undefined;
-    setNow(Date.now());
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [running]);
 
   useEffect(() => {
     if (!running) return undefined;
@@ -1402,10 +1542,6 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
     }
   }
 
-  const liveElapsedStart = liveRun?.completedAt ? liveRun.createdAt : liveRun?.firstTokenAt;
-  const liveElapsed = liveElapsedStart
-    ? formatElapsedDuration(liveElapsedStart, liveRun.completedAt || now)
-    : '';
   const selectedThinking = THINKING_OPTIONS.find((item) => item.id === runConfig?.thinking);
   const selectedThinkingIndex = Math.max(0, THINKING_OPTIONS.findIndex((item) => item.id === runConfig?.thinking));
   const selectedThinkingRatio = selectedThinkingIndex / (THINKING_OPTIONS.length - 1);
@@ -1420,14 +1556,18 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
     .map((part) => /^\d/.test(part) ? part : `${part[0].toUpperCase()}${part.slice(1)}`)
     .join(' ');
   const reconnecting = connection && !connection.timedOut;
-  const visibleMessages = (conversation?.messages || []).filter((item) => !(
-    running && liveRun && item.role !== 'user' && item.task_id === activeTaskId
-  ));
-  const visibleOptimisticMessages = optimisticUserMessages.filter((item) => (
+  // Every state change on this screen re-renders it; the thread below is memoized
+  // so typing, the elapsed timer, polls and streamed events only redraw the parts
+  // they actually change.
+  const hidingLiveTask = Boolean(running && liveRun && activeTaskId);
+  const visibleMessages = useMemo(() => (conversation?.messages || []).filter((item) => !(
+    hidingLiveTask && item.role !== 'user' && item.task_id === activeTaskId
+  )), [activeTaskId, conversation, hidingLiveTask]);
+  const visibleOptimisticMessages = useMemo(() => optimisticUserMessages.filter((item) => (
     userMessageOccurrenceCount(visibleMessages, item.text) < item.occurrence
-  ));
-  const orphanReplies = orphanTaskReplies(conversation);
-  const orphanReplyByAnchor = orphanReplyAnchors(visibleMessages, orphanReplies);
+  )), [optimisticUserMessages, visibleMessages]);
+  const orphanReplies = useMemo(() => orphanTaskReplies(conversation), [conversation]);
+  const orphanReplyByAnchor = useMemo(() => orphanReplyAnchors(visibleMessages, orphanReplies), [orphanReplies, visibleMessages]);
   // Keep the live trace on screen between "stop" and the refreshed conversation
   // snapshot that carries the local reply for the cancelled task.
   const liveReplyPending = Boolean(liveRun && !running
@@ -1436,14 +1576,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
     && !visibleMessages.some((item) => item.role !== 'user' && item.task_id === liveRun.taskId));
 
   return (
-    <main
-      className="detail-screen"
-      ref={detailScreenRef}
-      onTouchStart={startSwipeBack}
-      onTouchMove={moveSwipeBack}
-      onTouchEnd={finishSwipeBack}
-      onTouchCancel={cancelSwipeBack}
-    >
+    <main className="detail-screen" ref={detailScreenRef}>
       <div className="detail-top">
         <header className="detail-header">
           <button className="icon-button ghost" onClick={onBack} aria-label="Back to conversations"><ArrowLeft size={22} /></button>
@@ -1458,40 +1591,17 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
       <div className="message-region" onClick={collapseComposer}>
         <div className="message-scroll" ref={messageScrollRef}>
           <ApprovalCard approvals={approvals} onResolved={refreshApprovals} />
-          {visibleMessages.map((item, index) => {
-            const task = tasksById.get(item.task_id);
-            const contentText = textContent(item.content);
-            const images = item.role === 'user' ? messageImageRefs(item, task) : [];
-            const elapsed = item.role !== 'user' && task?.completed_at
-              ? formatElapsedDuration(task.created_at, task.completed_at)
-              : '';
-            const messageKey = item.message_id || item.id || `message-${index}`;
-            const orphanReply = orphanReplyByAnchor.get(messageKey);
-            return <React.Fragment key={messageKey}>
-              <article className={`message ${item.role === 'user' ? 'user' : 'assistant'}`} aria-label={item.role === 'user' ? 'Your message' : 'Assistant message'}>
-              {images.length ? <div className="message-images" aria-label="Attached images">{images.map((image, index) => (
-                <MessageImage conversationId={id} image={image} key={image.image_id || image.path || index} onPreview={setPreviewImage} />
-              ))}</div> : null}
-              {item.role !== 'user' || contentText ? <div className="message-body">
-                {item.role !== 'user' ? <TaskTraceDisclosure state={taskTraces[item.task_id]} elapsed={elapsed} onLoad={() => loadTaskTrace(item.task_id)} /> : null}
-                <ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>{contentText}</ReactMarkdown>
-              </div> : null}
-            </article>
-            {orphanReply ? <AssistantReply task={orphanReply} state={taskTraces[orphanReply.task_id]} onLoad={loadTaskTrace} /> : null}
-          </React.Fragment>;
-          })}
-          {visibleOptimisticMessages.map((item) => <article className="message user" aria-label="Your message" key={item.id}>
-            {item.images.length ? <div className="message-images" aria-label="Attached images">{item.images.map((image, index) => (
-              <MessageImage conversationId={id} image={image} key={image.image_id || image.path || index} onPreview={setPreviewImage} />
-            ))}</div> : null}
-            {item.text ? <div className="message-body"><ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>{item.text}</ReactMarkdown></div> : null}
-          </article>)}
-          {liveRun && (running || liveReplyPending) ? <article className="message assistant" aria-label="Assistant message">
-            <div className={`message-body ${running ? 'streaming' : ''}`}>
-              <TaskTraceDisclosure state={liveRun} running={running} elapsed={liveElapsed} />
-              {!running ? <OutcomeReply status={liveRun.status} text={liveRun.text} error={liveRun.error} /> : null}
-            </div>
-          </article> : null}
+          <MessageThread
+            conversationId={id}
+            messages={visibleMessages}
+            optimisticMessages={visibleOptimisticMessages}
+            tasksById={tasksById}
+            taskTraces={taskTraces}
+            orphanReplyByAnchor={orphanReplyByAnchor}
+            loadTaskTrace={loadTaskTrace}
+            onPreviewImage={setPreviewImage}
+          />
+          {liveRun && (running || liveReplyPending) ? <LiveRunBubble liveRun={liveRun} running={running} /> : null}
           {!conversation ? <div className="center-state"><LoaderCircle className="spin" /></div> : null}
         </div>
         <ScrollToBottomButton scrollRef={messageScrollRef} resetKey={id} />
@@ -1642,6 +1752,8 @@ export default function App() {
   const [startupRetrying, setStartupRetrying] = useState(true);
   const restoredConversationRef = useRef(false);
   const startupRequestRef = useRef(false);
+  const directorySignatureRef = useRef('');
+  const approvalsSignatureRef = useRef('');
 
   const loadStatus = useCallback(async () => {
     const next = await api.status();
@@ -1651,14 +1763,27 @@ export default function App() {
     return next;
   }, []);
 
+  // The 5s poll used to hand every row a fresh object even when nothing changed,
+  // so the list (and the screen sitting on top of it) re-rendered while the user
+  // was typing. Compare the payload the UI renders and keep the old state when it
+  // is identical.
   const loadApprovals = useCallback(async () => {
-    try { setApprovals(await api.approvals()); } catch { /* Pairing screen handles auth. */ }
+    try {
+      const nextApprovals = await api.approvals();
+      const signature = JSON.stringify(nextApprovals);
+      if (signature === approvalsSignatureRef.current) return;
+      approvalsSignatureRef.current = signature;
+      setApprovals(nextApprovals);
+    } catch { /* Pairing screen handles auth. */ }
   }, []);
 
   const loadTasks = useCallback(async () => {
     try {
       const projectsResponse = await api.projects();
       const nextProjects = projectsResponse.projects || [];
+      const signature = JSON.stringify(nextProjects);
+      if (signature === directorySignatureRef.current) return;
+      directorySignatureRef.current = signature;
       const nextConversations = nextProjects.flatMap((project) => project.conversations || []);
       setConversations(nextConversations);
       setProjects(nextProjects);
@@ -1747,6 +1872,8 @@ export default function App() {
     setSelectedId(null);
     saveStoredConversationId('');
     setConversations([]);
+    directorySignatureRef.current = '';
+    approvalsSignatureRef.current = '';
     setStatus({ paired: false, runtime_online: false });
   }
 

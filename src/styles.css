@@ -242,6 +242,10 @@ input::placeholder, textarea::placeholder { color: var(--muted-2); }
   overscroll-behavior-x: none;
 }
 .app-shell.detail-open > :not(.detail-screen) { pointer-events: none; }
+/* The directory keeps animating behind an open conversation even though it is
+   fully covered: 3 status spinners alone cost more main-thread time than the
+   whole thread. Pause them while covered, but not mid-swipe, when the list shows. */
+.app-shell.detail-open:not(:has(.detail-screen.swipe-tracking)) > :not(.detail-screen) * { animation-play-state: paused; }
 .detail-top { touch-action: none; }
 .detail-screen.swipe-tracking { transition: none; will-change: transform; }
 .detail-screen.swipe-settling { transition: transform var(--swipe-back-duration) cubic-bezier(0.22, 1, 0.36, 1); will-change: transform; }
