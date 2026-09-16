@@ -1808,7 +1808,6 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
       </div>
       <div className="message-region" onClick={collapseComposer}>
         <div className="message-scroll" ref={messageScrollRef}>
-          <ApprovalCard approvals={approvals} onResolved={refreshApprovals} />
           <MessageThread
             conversationId={id}
             messages={visibleMessages}
@@ -1819,6 +1818,10 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
             loadTaskTrace={loadTaskTrace}
             onPreviewImage={setPreviewImage}
           />
+          {/* 卡片属于线程最新的一端，不属于历史之前：详情页一挂载就滚到最新消息并跟着它走，
+              把卡片摆在整段历史之前等于一进来就被滚出视野（看起来只闪了一下就没了）。
+              桌面端同样把审批行排在所有消息之后。 */}
+          <ApprovalCard approvals={approvals} onResolved={refreshApprovals} />
           {liveRun && (running || liveReplyPending) ? <LiveRunBubble liveRun={liveRun} running={running} /> : null}
           {!conversation ? <div className="center-state"><LoaderCircle className="spin" /></div> : null}
         </div>
