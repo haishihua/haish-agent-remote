@@ -76,10 +76,18 @@ import {
   taskStreamState,
 } from './task-stream.js';
 import {
+  CONVERSATION_PREVIEW_LIMIT,
   isTaskActuallyActive,
   listTaskForConversation,
-  runningConversationsFirst,
+  orderConversations,
+  orderProjects,
 } from './conversation-order.js';
+import {
+  DEFAULT_PREVIEW,
+  nextExtraVisible,
+  previewRows,
+  previewWhenHidden,
+} from './list-preview.js';
 import {
   orphanReplyAnchors,
   orphanTaskReplies,
@@ -634,9 +642,38 @@ function ConversationRow({ conversation, task, onOpen }) {
   );
 }
 
-function ProjectGroup({ project, tasks, onOpen, onNew }) {
+// "Show more" is view state, not user data: it lives with the section that owns
+// the list, and folding that section away drops the expansion so reopening it
+// shows the default three rows again — the desktop panel resets the same way.
+function useConversationPreview(listVisible) {
+  const [extraVisible, setExtraVisible] = useState(DEFAULT_PREVIEW);
+  useEffect(() => {
+    setExtraVisible((previous) => previewWhenHidden(previous, listVisible));
+  }, [listVisible]);
+  return [extraVisible, setExtraVisible];
+}
+
+// The list every section shares: ordered like the desktop sidebar, three rows by
+// default, "Show more" adds three at a time, and once the last row is visible the
+// button turns into "Show less". While a search is running every match stays
+// visible — the cap is a browsing default, not a filter.
+function ConversationPreviewList({ conversations, tasks, extraVisible, onExtraVisibleChange, onOpen, previewLimit = CONVERSATION_PREVIEW_LIMIT }) {
+  const ordered = orderConversations(conversations, tasks);
+  const { visible, hiddenCount, showToggle } = previewRows(ordered, extraVisible, previewLimit);
+  return <>
+    {visible.map((conversation) => <ConversationRow key={conversation.conversation_id} conversation={conversation} task={listTaskForConversation(conversation, tasks)} onOpen={onOpen} />)}
+    {showToggle ? <button
+      type="button"
+      className="conversation-show-more"
+      onClick={() => onExtraVisibleChange((current) => nextExtraVisible(current, hiddenCount))}
+    >{hiddenCount > 0 ? 'Show more' : 'Show less'}</button> : null}
+  </>;
+}
+
+function ProjectGroup({ project, tasks, onOpen, onNew, previewLimit }) {
   const [open, setOpen] = useState(true);
-  const orderedConversations = runningConversationsFirst(project.conversations, tasks);
+  const [extraVisible, setExtraVisible] = useConversationPreview(open);
+  const conversations = project.conversations || [];
   return (
     <section className="project-group">
       <div className="project-heading">
@@ -652,8 +689,21 @@ function ProjectGroup({ project, tasks, onOpen, onNew }) {
         <button className="row-action" onClick={() => onNew(project.project_id)} aria-label={`Create a task in ${project.name}`}><SquarePen size={20} /></button>
       </div>
       {open ? <div className="conversation-list">
-        {orderedConversations.map((conversation) => <ConversationRow key={conversation.conversation_id} conversation={conversation} task={listTaskForConversation(conversation, tasks)} onOpen={onOpen} />)}
-        {!project.conversations.length ? <p className="project-empty">No conversations yet</p> : null}
+        <ConversationPreviewList conversations={conversations} tasks={tasks} extraVisible={extraVisible} onExtraVisibleChange={setExtraVisible} onOpen={onOpen} previewLimit={previewLimit} />
+        {!conversations.length ? <p className="project-empty">No conversations yet</p> : null}
+      </div> : null}
+    </section>
+  );
+}
+
+function PinnedGroup({ conversations, tasks, onOpen, previewLimit }) {
+  const [open, setOpen] = useState(true);
+  const [extraVisible, setExtraVisible] = useConversationPreview(open);
+  return (
+    <section className="pinned-group">
+      <button className="section-toggle" onClick={() => setOpen((value) => !value)} aria-expanded={open}><Pin size={15} />Pinned<span>{conversations.length}</span><ChevronDown className="disclosure" size={16} /></button>
+      {open ? <div className="pinned-list">
+        <ConversationPreviewList conversations={conversations} tasks={tasks} extraVisible={extraVisible} onExtraVisibleChange={setExtraVisible} onOpen={onOpen} previewLimit={previewLimit} />
       </div> : null}
     </section>
   );
@@ -746,7 +796,6 @@ function RunConfigSheet({ config, agentLabel, agents, providers, models, modelLo
 
 function ConversationList({ projects, conversations, tasks, status, loading, onOpen, onNew, onSettings }) {
   const [query, setQuery] = useState('');
-  const [pinnedOpen, setPinnedOpen] = useState(true);
   const [showProjectPicker, setShowProjectPicker] = useState(false);
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const pinned = conversations.filter((conversation) => conversation.pinned && (!normalizedQuery || `${conversation.title} ${conversation.label}`.toLocaleLowerCase().includes(normalizedQuery)));
@@ -761,6 +810,9 @@ function ConversationList({ projects, conversations, tasks, status, loading, onO
       conversations: (project.conversations || []).filter((conversation) => !conversation.pinned && (projectMatches || !normalizedQuery || `${conversation.title} ${conversation.label}`.toLocaleLowerCase().includes(normalizedQuery))),
     };
   }).filter((project) => !normalizedQuery || project.conversations.length || `${project.name} ${project.workspace_path || ''}`.toLocaleLowerCase().includes(normalizedQuery));
+  // Projects follow the desktop rule too: pinned first, then the stored order.
+  const orderedProjects = orderProjects(visibleProjects);
+  const previewLimit = normalizedQuery ? Number.POSITIVE_INFINITY : CONVERSATION_PREVIEW_LIMIT;
 
   function startNew() {
     if (projects.length <= 1) onNew(projects[0]?.project_id);
@@ -782,9 +834,9 @@ function ConversationList({ projects, conversations, tasks, status, loading, onO
         <div className="empty-state"><Folder size={30} /><h2>No conversations yet</h2><p>Create a task and it will appear on your computer.</p></div>
       ) : null}
       <div className="directory-list">
-        {pinned.length ? <section className="pinned-group"><button className="section-toggle" onClick={() => setPinnedOpen((value) => !value)} aria-expanded={pinnedOpen}><Pin size={15} />Pinned<span>{pinned.length}</span><ChevronDown className="disclosure" size={16} /></button>{pinnedOpen ? <div className="pinned-list">{pinned.map((conversation) => <ConversationRow key={conversation.conversation_id} conversation={conversation} task={listTaskForConversation(conversation, tasks)} onOpen={onOpen} />)}</div> : null}</section> : null}
-        {visibleProjects.map((project) => <ProjectGroup key={project.project_id} project={project} tasks={tasks} onOpen={onOpen} onNew={onNew} />)}
-        {ungrouped.length ? <ProjectGroup project={{ project_id: '', name: 'Other conversations', conversations: ungrouped }} tasks={tasks} onOpen={onOpen} onNew={onNew} /> : null}
+        {pinned.length ? <PinnedGroup conversations={pinned} tasks={tasks} onOpen={onOpen} previewLimit={previewLimit} /> : null}
+        {orderedProjects.map((project) => <ProjectGroup key={project.project_id} project={project} tasks={tasks} onOpen={onOpen} onNew={onNew} previewLimit={previewLimit} />)}
+        {ungrouped.length ? <ProjectGroup project={{ project_id: '', name: 'Other conversations', conversations: ungrouped }} tasks={tasks} onOpen={onOpen} onNew={onNew} previewLimit={previewLimit} /> : null}
         {!loading && query && !pinned.length && !visibleProjects.length && !ungrouped.length ? <p className="no-results">No matching conversations</p> : null}
       </div>
       <div className="new-task-dock"><button className="new-task-button" onClick={startNew}><span className="new-task-icon"><Plus size={20} /></span><span>New task</span></button></div>

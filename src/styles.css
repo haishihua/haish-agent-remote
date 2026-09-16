@@ -90,6 +90,11 @@ code { padding: 2px 6px; border: 1px solid var(--border); border-radius: 6px; ba
 .conversation-title { overflow: hidden; font-size: 14px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
 .conversation-running { color: #8fb3ff; }
 .project-empty, .no-results { margin: 0; padding: 16px; color: var(--muted-2); font-size: 13px; }
+/* The desktop panel folds every list to three rows and reveals three more per
+   tap; this is the phone-sized version of that button. */
+.conversation-show-more { display: block; width: 100%; margin: 2px 0 6px; padding: 10px 8px; border: 0; border-radius: 10px; background: transparent; color: var(--muted); font-size: 13px; font-weight: 650; text-align: left; transition: background 160ms ease, color 160ms ease; }
+.conversation-show-more:hover { background: rgba(239, 191, 100, 0.055); color: var(--text); }
+.conversation-show-more:active { background: color-mix(in srgb, var(--surface-raised) 82%, var(--accent)); }
 .no-results { padding: 50px 0; text-align: center; }
 
 .new-task-dock { position: fixed; z-index: 20; right: 0; bottom: 0; left: 0; width: min(100%, 480px); margin: 0 auto; padding: 16px 14px calc(14px + var(--safe-bottom)); background: linear-gradient(180deg, transparent, rgba(6, 7, 12, 0.94) 30%); }
