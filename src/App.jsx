@@ -34,6 +34,12 @@ import {
   messageImageRefs,
   userMessageOccurrenceCount,
 } from './chat-images.js';
+import {
+  hasNativePhotoPicker,
+  isPhotoPickerCancellation,
+  pickImagesFromLibrary,
+  remainingImageSlots,
+} from './photo-picker.js';
 import penguinLogo from './assets/penguin_logo_user.png';
 import stopIcon from '../../haish-agent/app-web/assets/ui/icons/stop.png';
 import toolIcon from '../../haish-agent/app-web/assets/ui/icons/tool.png';
@@ -95,6 +101,8 @@ import {
 
 const ACTIVE_STATUSES = new Set(['queued', 'running']);
 const LAST_CONVERSATION_STORAGE_KEY = 'haish.remote.lastConversation.v1';
+// Pressing and holding the image button keeps the old system sheet (camera, files) reachable.
+const PHOTO_LONG_PRESS_MS = 450;
 const MARKDOWN_PLUGINS = [remarkGfm];
 
 function storedConversationId() {
@@ -1065,6 +1073,8 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
   const messageScrollRef = useRef(null);
   const messageInputRef = useRef(null);
   const photoInputRef = useRef(null);
+  const photoLongPressRef = useRef(false);
+  const photoLongPressTimerRef = useRef(0);
   const detailScreenRef = useRef(null);
   const swipeStartRef = useRef(null);
   const swipeOffsetRef = useRef(0);
@@ -1456,6 +1466,36 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
     }));
   }
 
+  function beginPhotoLongPress() {
+    window.clearTimeout(photoLongPressTimerRef.current);
+    photoLongPressTimerRef.current = window.setTimeout(() => {
+      photoLongPressTimerRef.current = 0;
+      photoLongPressRef.current = true;
+      photoInputRef.current?.click();
+    }, PHOTO_LONG_PRESS_MS);
+  }
+
+  function cancelPhotoLongPress() {
+    window.clearTimeout(photoLongPressTimerRef.current);
+    photoLongPressTimerRef.current = 0;
+  }
+
+  async function openPhotoPicker() {
+    if (busy || composerImagesRef.current.length >= CHAT_IMAGE_MAX_COUNT) return;
+    if (hasNativePhotoPicker()) {
+      try {
+        const files = await pickImagesFromLibrary({
+          limit: remainingImageSlots(composerImagesRef.current.length, CHAT_IMAGE_MAX_COUNT),
+        });
+        if (files?.length) await attachImages(files);
+        return;
+      } catch (nextError) {
+        if (isPhotoPickerCancellation(nextError)) return;
+      }
+    }
+    photoInputRef.current?.click();
+  }
+
   function removeComposerImage(imageId) {
     const image = composerImagesRef.current.find((item) => item.id === imageId);
     if (image?.previewUrl) URL.revokeObjectURL(image.previewUrl);
@@ -1711,8 +1751,20 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
             type="button"
             className="composer-photo-button"
             disabled={busy || composerImages.length >= CHAT_IMAGE_MAX_COUNT}
-            onClick={() => photoInputRef.current?.click()}
+            onClick={() => {
+              if (photoLongPressRef.current) {
+                photoLongPressRef.current = false;
+                return;
+              }
+              openPhotoPicker();
+            }}
+            onPointerDown={beginPhotoLongPress}
+            onPointerUp={cancelPhotoLongPress}
+            onPointerCancel={cancelPhotoLongPress}
+            onPointerLeave={cancelPhotoLongPress}
+            onContextMenu={(event) => event.preventDefault()}
             aria-label="Choose photos from this device"
+            title="Pick photos — press and hold for camera or files"
           >
             <ImagePlus size={25} aria-hidden="true" />
           </button>

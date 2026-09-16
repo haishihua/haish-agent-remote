@@ -211,6 +211,18 @@ adapter 发现 runtime 的顺序是：优先使用 `HAISH_UPSTREAM_URL`，否则
 - App 前台轮询和 NDJSON 流式任务保持现有协议；
 - iOS 进入后台后不维持永久网络连接，重新回到前台时立即同步状态。
 
+### 相册选图：一次点击直接进系统选择器
+
+WKWebView 对 `<input type="file" accept="image/*">` 只会弹出系统的 `Photo Library / Take Photo / Choose Files` 动作表，用户还得再点一下才能进相册。所以 App 内自带了一个 Capacitor 插件 `PhotoPicker`（`ios/App/App/PhotoPickerPlugin.swift`，直接编译进 App target）：
+
+- 插件用 `PHPickerViewController` 以 `.pageSheet` 呈现，就是半覆盖的“选择照片”面板，一次点击落到相册网格；
+- `filter = .images`、`selectionLimit` 取输入框剩余可添加张数（最多 4 张）、`preferredAssetRepresentationMode = .compatible`，HEIC 相片按 JPEG 返回，和现有 `image/png|jpeg|webp|gif` 白名单兼容；
+- 选到的相片复制到临时目录，再用 `portablePath(fromLocalURL:)` 交给 Web 层 `fetch()` 成 `File` 走原有上传流程（`POST /api/messages/images`）；
+- 相册面板被划掉没选图时按 `code = "cancelled"` 拒绝，界面什么都不做；
+- 长按同一个按钮仍然回落到系统的文件选择器，拍照 / 从“文件”里选图都还在；
+- 插件类名就是 JS 插件 id（`PhotoPicker`），Capacitor 会惰性加载；`AppDelegate` 里保留一处 `PhotoPicker.self` 引用，避免 Release 构建把它 strip 掉；
+- 浏览器（Web）下没有原生插件，按钮行为不变（直接打开文件选择器）。
+
 推送通知需要 APNs 设备注册和服务端推送链路，等前台闭环通过后单独实现。
 
 ## 公网服务器与 Mac 端
@@ -288,6 +300,7 @@ npm run mobile:sync
 - 首次扫码后能进入任务列表；
 - 强制结束并重新打开 App 后无需再次扫码；
 - Mac 或隧道离线时显示离线状态，恢复后自动同步；
+- 点输入框左侧的图片按钮直接弹出半覆盖的“选择照片”面板（不再先出现 `Photo Library / Take Photo / Choose Files` 动作表），选完直接上传，按钮自动禁用满 4 张；
 - 电脑端撤销设备后，手机下一次请求回到配对页；
 - 公网入口通过 iOS 系统信任的 HTTPS 证书访问；
 - 4G/5G 与电脑不同网络时可创建、继续、审批和停止任务。

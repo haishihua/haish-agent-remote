@@ -416,7 +416,7 @@ input::placeholder, textarea::placeholder { color: var(--muted-2); }
 .composer.expanded { grid-template-columns: 44px minmax(0, 1fr) 44px 48px; padding: 8px; border-color: rgba(138, 166, 209, 0.42); box-shadow: 0 -10px 32px rgba(0, 0, 0, 0.18); }
 .composer.expanded textarea { min-height: 82px; grid-column: 1 / -1; }
 .composer-file-input { position: fixed; width: 1px; height: 1px; min-height: 0; padding: 0; overflow: hidden; border: 0; opacity: 0; pointer-events: none; clip-path: inset(50%); }
-.composer-photo-button { display: none; width: 44px; height: 44px; padding: 0; place-items: center; align-self: end; border: 0; border-radius: 12px; background: transparent; color: var(--text); cursor: pointer; }
+.composer-photo-button { display: none; width: 44px; height: 44px; padding: 0; place-items: center; align-self: end; border: 0; border-radius: 12px; background: transparent; color: var(--text); cursor: pointer; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 .composer.expanded .composer-photo-button { display: grid; grid-column: 1 / 2; }
 .composer-photo-button:active { background: rgba(239, 191, 100, 0.1); color: var(--accent-strong); }
 .composer-photo-button:disabled { opacity: 0.35; cursor: default; }

@@ -7,6 +7,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+        // Capacitor loads bridged plugins by class name, which a release build's dead-code
+        // stripping cannot see, so keep the app-local photo picker plugin linked in.
+        _ = PhotoPicker.self
         // Override point for customization after application launch.
         return true
     }
