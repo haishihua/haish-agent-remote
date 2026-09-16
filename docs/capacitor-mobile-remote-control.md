@@ -131,7 +131,7 @@ haish://pair?v=1&endpoint=https%3A%2F%2F47.97.24.242&code=12345678
 - `POST /api/messages/images` 及会话图片预览接口：上传和查看图片；
 - `POST /api/tasks/{id}/inputs`：发送 steering 输入；
 - `POST /api/tasks/{id}/cancel`、`POST /api/conversations/{id}/tasks/cancel`：停止任务；
-- `GET /api/approvals/state`、相关 `resolve` 接口：处理工具审批、工作流审批和用户输入。
+- `GET /api/approvals/state`：轮询待处理审批；三个 `resolve` 接口不在白名单内，改由 adapter 经实时 socket 下发（见上文）。
 
 启动任务使用单独的远程流式入口，而不是直接开放 runtime 的任务流接口：
 
@@ -161,6 +161,17 @@ GET ws://127.0.0.1:<discovered-runtime-port>/api/events/ws   (Origin: haish://ap
 ```
 
 adapter 把 `task.event` 里的 `event` 逐条转成 NDJSON 行返回给手机；`task.error` 和 `ok:false` 的 `command.result` 用它们自己的 `status` / `detail` 返回普通 HTTP 错误（只放行 4xx/5xx，避免用成功状态包一个错误体），所以启动失败（会话不存在、已有任务在跑、参数非法）依旧是手机端直接提示的错误。socket 由 adapter 持有：手机中途断线不会拆掉 runtime 的 run，adapter 继续读到 `task.end`，任务仍会落到持久化的 `done` / `failed` / `cancelled`，手机重连后轮询这个标准状态即可。如果 20 秒内没有收到第一个事件，adapter 返回 504，但同样不关 socket——runtime 可能只是启动慢，让它跑完，手机仍按标准状态收尾。
+
+审批与用户输入的 resolve 走同一条实时 socket：runtime 已删除 `POST /api/approvals/{id}/resolve`、`POST /api/workflow-approvals/{id}/resolve`、`POST /api/user-inputs/{id}/resolve` 三个 HTTP 接口，adapter 保留手机的 HTTP 契约并在内部转换：
+
+```text
+POST /api/approvals/{request_id}/resolve            ← 手机（请求体与旧接口相同）
+→ {"type":"approval.resolve","request_id":"...","approval_id":"...","approval_kind":"tool|workflow|user_input","payload":{...}}
+← {"type":"command.result","request_id":"...","ok":true,"result":{"ok":true}}
+← {"type":"command.result","request_id":"...","ok":false,"status":404,"detail":"Approval request not found or already resolved."}
+```
+
+每条 resolve 使用一次短连接、只等待自己 `request_id` 的 `command.result`：runtime 的 `status` / `detail` 原样返回给手机（例如重复处理已解决的审批得到 404），15 秒没有结果返回 504，runtime 不在线返回 503。
 
 adapter 发现 runtime 的顺序是：优先使用 `HAISH_UPSTREAM_URL`，否则读取 macOS/Linux 下最新的 `runtime.pid`。访问本机 runtime 的 `httpx` 客户端统一使用 `trust_env=False`，实时 WebSocket 客户端同样禁用环境代理，避免本地代理影响 loopback 请求。
 

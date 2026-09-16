@@ -230,6 +230,12 @@ class RemoteProxyTest(unittest.TestCase):
         self.assertTrue(_route_allowed("GET", "conversations/abc/messages/images/preview"))
         self.assertFalse(_route_allowed("POST", "projects"))
         self.assertTrue(_route_allowed("POST", "tasks/abc/cancel"))
+        self.assertTrue(_route_allowed("GET", "approvals/state"))
+        # Resolve routes live on the realtime socket inside the adapter now, so the
+        # proxy must not expose them to a deleted runtime route.
+        self.assertFalse(_route_allowed("POST", "approvals/abc/resolve"))
+        self.assertFalse(_route_allowed("POST", "workflow-approvals/abc/resolve"))
+        self.assertFalse(_route_allowed("POST", "user-inputs/abc/resolve"))
         self.assertFalse(_route_allowed("GET", "settings/memory"))
         self.assertFalse(_route_allowed("DELETE", "conversations/abc"))
 
@@ -424,6 +430,129 @@ class RemoteTaskStartTest(unittest.TestCase):
             self.assertEqual(json.loads(line)["type"], "run_started")
             self.assertTrue(runtime.completed.wait(timeout=10))
             self.assertTrue(runtime.closed_cleanly.wait(timeout=10))
+
+
+class RemoteApprovalResolveTest(unittest.TestCase):
+    """The runtime deleted its HTTP resolve routes together with the NDJSON ones.
+
+    The phone keeps its contract: the adapter turns each resolve call into an
+    ``approval.resolve`` command on the realtime socket and reports the runtime's
+    verdict back as HTTP, status and detail included.
+    """
+
+    def _client(self, directory: Path):
+        app = create_app(data_dir=directory, dist_dir=directory)
+        store = app.state.device_store
+        token, _ = store.exchange(store.issue_pairing_code(), "iPhone")
+        return TestClient(app), {"Authorization": f"Bearer {token}"}
+
+    def _resolve(self, path: str, payload: dict, script):
+        with TemporaryDirectory() as directory, FakeRuntimeSocket(script) as runtime, patch(
+            "server.app.discover_upstream",
+            return_value=runtime.upstream(),
+        ):
+            client, headers = self._client(Path(directory))
+            response = client.post(path, json=payload, headers=headers)
+        return response, runtime
+
+    def test_tool_approval_resolve_uses_the_realtime_socket(self):
+        response, runtime = self._resolve(
+            "/api/approvals/approval-1/resolve",
+            {"decision": "allow_once"},
+            lambda request_id: [command_result(request_id, result={"ok": True})],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"ok": True})
+        command = runtime.commands[0]
+        self.assertEqual(command["type"], "approval.resolve")
+        self.assertEqual(command["approval_kind"], "tool")
+        self.assertEqual(command["approval_id"], "approval-1")
+        self.assertEqual(command["payload"], {"decision": "allow_once"})
+        self.assertTrue(command["request_id"])
+
+    def test_workflow_approval_resolve_keeps_the_decision_and_feedback(self):
+        response, runtime = self._resolve(
+            "/api/workflow-approvals/flow-1/resolve",
+            {"decision": "reject", "feedback": "Too risky"},
+            lambda request_id: [command_result(request_id, result={"ok": True})],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(runtime.commands[0]["approval_kind"], "workflow")
+        self.assertEqual(runtime.commands[0]["payload"], {"decision": "reject", "feedback": "Too risky"})
+
+    def test_user_input_resolve_keeps_the_answers(self):
+        answers = [{"question_id": "question-1", "kind": "freeform", "text": "Ship it"}]
+        response, runtime = self._resolve(
+            "/api/user-inputs/input-1/resolve",
+            {"answers": answers},
+            lambda request_id: [command_result(request_id, result={"ok": True})],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(runtime.commands[0]["approval_kind"], "user_input")
+        self.assertEqual(runtime.commands[0]["payload"], {"answers": answers})
+
+    def test_resolve_reports_the_runtime_verdict_with_its_status(self):
+        response, _ = self._resolve(
+            "/api/approvals/approval-1/resolve",
+            {"decision": "allow_once"},
+            lambda request_id: [
+                command_result(
+                    request_id,
+                    ok=False,
+                    status=404,
+                    detail="Approval request not found or already resolved.",
+                ),
+            ],
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "Approval request not found or already resolved.")
+
+    def test_resolve_reports_a_stopped_runtime(self):
+        with TemporaryDirectory() as directory:
+            client, headers = self._client(Path(directory))
+            with patch(
+                "server.app.discover_upstream",
+                side_effect=RuntimeError("Haish runtime was not found. Start the desktop app or set HAISH_UPSTREAM_URL."),
+            ):
+                response = client.post(
+                    "/api/approvals/approval-1/resolve",
+                    json={"decision": "allow_once"},
+                    headers=headers,
+                )
+
+            self.assertEqual(response.status_code, 503)
+            self.assertIn("runtime was not found", response.json()["detail"])
+
+    def test_resolve_times_out_when_the_runtime_stays_silent(self):
+        with TemporaryDirectory() as directory, FakeRuntimeSocket(lambda _request_id: []) as runtime, patch(
+            "server.app.discover_upstream",
+            return_value=runtime.upstream(),
+        ), patch("server.app.REALTIME_COMMAND_TIMEOUT_SECONDS", 0.5):
+            client, headers = self._client(Path(directory))
+            response = client.post(
+                "/api/approvals/approval-1/resolve",
+                json={"decision": "allow_once"},
+                headers=headers,
+            )
+
+            self.assertEqual(response.status_code, 504)
+            self.assertIn("did not answer", response.json()["detail"])
+
+    def test_resolve_requires_a_paired_device(self):
+        with TemporaryDirectory() as directory:
+            client = TestClient(create_app(data_dir=Path(directory), dist_dir=Path(directory)))
+            for path in (
+                "/api/approvals/approval-1/resolve",
+                "/api/workflow-approvals/flow-1/resolve",
+                "/api/user-inputs/input-1/resolve",
+            ):
+                with self.subTest(path=path):
+                    response = client.post(path, json={"decision": "allow_once"})
+                    self.assertEqual(response.status_code, 401)
 
 
 if __name__ == "__main__":

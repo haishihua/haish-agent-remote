@@ -31,12 +31,14 @@ PAIRING_TTL_SECONDS = 5 * 60
 DEFAULT_DATA_DIR = Path(os.getenv("HAISH_REMOTE_DATA_DIR", "~/.haish-remote")).expanduser()
 DEFAULT_DIST_DIR = Path(__file__).resolve().parents[1] / "dist"
 
-# The runtime owns task streams on its realtime WebSocket. The legacy task NDJSON
-# endpoints are gone, so the adapter bridges that socket to the mobile NDJSON
-# contract instead of proxying an HTTP route.
+# The runtime owns task streams, approval events and every resolve command on its
+# realtime WebSocket. The legacy NDJSON task endpoints and the HTTP resolve routes
+# are gone, so the adapter bridges that socket to the mobile contract instead of
+# proxying an HTTP route.
 REALTIME_EVENTS_PATH = "/api/events/ws"
 REALTIME_ORIGIN = "haish://app"
 REALTIME_START_TIMEOUT_SECONDS = 20.0
+REALTIME_COMMAND_TIMEOUT_SECONDS = 15.0
 NDJSON_HEADERS = {
     "content-type": "application/x-ndjson",
     "cache-control": "no-cache",
@@ -62,9 +64,8 @@ _ALLOWED_CORE_ROUTES: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("POST", r"tasks/[^/]+/inputs"),
         ("POST", r"conversations/[^/]+/tasks/cancel"),
         ("GET", r"approvals/state"),
-        ("POST", r"approvals/[^/]+/resolve"),
-        ("POST", r"workflow-approvals/[^/]+/resolve"),
-        ("POST", r"user-inputs/[^/]+/resolve"),
+        # Tool, workflow and user-input approvals resolve over the realtime socket
+        # inside the adapter, so they must not be proxied to deleted HTTP routes.
     )
 )
 
@@ -311,7 +312,7 @@ def _realtime_error_detail(value: Any) -> Any:
     """Keep the runtime's error body shape so the phone can read it verbatim."""
     if isinstance(value, (str, list, dict)) and value:
         return value
-    return "The Haish runtime rejected the task."
+    return "The Haish runtime rejected the request."
 
 
 def _realtime_status(value: Any) -> int:
@@ -329,12 +330,79 @@ def _realtime_status(value: Any) -> int:
 
 
 class TaskStreamError(Exception):
-    """The runtime rejected a task stream before any event was produced."""
+    """The runtime rejected a realtime command before it could produce a result."""
 
     def __init__(self, status: int, detail: Any) -> None:
         super().__init__(str(detail))
         self.status = status
         self.detail = detail
+
+
+async def run_realtime_command(command: dict[str, Any]) -> Any:
+    """Run one command on the runtime realtime socket and return its ``result``.
+
+    The runtime deleted the HTTP resolve routes together with the task NDJSON
+    endpoints, so approvals keep their phone contract by travelling as
+    ``approval.resolve`` over the same socket task streams use. Broadcasts and
+    other requesters' frames are skipped by ``request_id``, exactly like the task
+    bridge skips them.
+    """
+    request_id = str(command.get("request_id") or "")
+    try:
+        url = realtime_events_url()
+    except RuntimeError as error:
+        # The runtime is stopped or restarting: report it like the HTTP proxy does.
+        raise TaskStreamError(503, str(error)) from error
+    try:
+        async with websockets.connect(
+            url,
+            origin=REALTIME_ORIGIN,
+            proxy=None,
+            open_timeout=REALTIME_COMMAND_TIMEOUT_SECONDS,
+            close_timeout=2.0,
+            max_size=None,
+        ) as socket:
+            await socket.send(json.dumps(command, ensure_ascii=False))
+            while True:
+                raw = await asyncio.wait_for(socket.recv(), timeout=REALTIME_COMMAND_TIMEOUT_SECONDS)
+                message = json.loads(raw)
+                if not isinstance(message, dict) or str(message.get("request_id") or "") != request_id:
+                    continue
+                kind = str(message.get("type") or "")
+                if kind == "command.result":
+                    if message.get("ok") is False:
+                        raise TaskStreamError(_realtime_status(message.get("status")), _realtime_error_detail(message.get("detail")))
+                    return message.get("result")
+                if kind == "task.error":
+                    raise TaskStreamError(_realtime_status(message.get("status")), _realtime_error_detail(message.get("detail")))
+    except TaskStreamError:
+        raise
+    except asyncio.TimeoutError as error:
+        raise TaskStreamError(504, "The Haish runtime did not answer the request.") from error
+    except Exception as error:  # noqa: BLE001 - the transport boundary reports producer failures.
+        raise TaskStreamError(502, f"Runtime realtime stream failed: {error}") from error
+
+
+async def _resolve_realtime_approval(request: Request, *, approval_id: str, approval_kind: str) -> JSONResponse:
+    """Keep the phone's HTTP resolve contract while the runtime answers on the socket."""
+    try:
+        payload = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        payload = None
+    if not isinstance(payload, dict):
+        return JSONResponse(content={"detail": "Request body must be a JSON object."}, status_code=400)
+    command = {
+        "type": "approval.resolve",
+        "request_id": uuid4().hex,
+        "approval_id": approval_id,
+        "approval_kind": approval_kind,
+        "payload": payload,
+    }
+    try:
+        await run_realtime_command(command)
+    except TaskStreamError as error:
+        return JSONResponse(content={"detail": error.detail}, status_code=error.status)
+    return JSONResponse(content={"ok": True})
 
 
 class RealtimeTaskStream:
@@ -586,6 +654,32 @@ def create_app(*, data_dir: Path | None = None, dist_dir: Path | None = None) ->
         except TaskStreamError as error:
             return JSONResponse(content={"detail": error.detail}, status_code=error.status)
         return StreamingResponse(stream.body_lines(first), status_code=200, headers=NDJSON_HEADERS)
+
+    # The runtime removed the HTTP resolve routes; the phone keeps its endpoints but
+    # the adapter sends approval.resolve over the realtime socket.
+    @app.post("/api/approvals/{request_id}/resolve")
+    async def resolve_tool_approval(
+        request_id: str,
+        request: Request,
+        _: dict[str, Any] = Depends(current_device),
+    ) -> JSONResponse:
+        return await _resolve_realtime_approval(request, approval_id=request_id, approval_kind="tool")
+
+    @app.post("/api/workflow-approvals/{request_id}/resolve")
+    async def resolve_workflow_approval(
+        request_id: str,
+        request: Request,
+        _: dict[str, Any] = Depends(current_device),
+    ) -> JSONResponse:
+        return await _resolve_realtime_approval(request, approval_id=request_id, approval_kind="workflow")
+
+    @app.post("/api/user-inputs/{request_id}/resolve")
+    async def resolve_user_input(
+        request_id: str,
+        request: Request,
+        _: dict[str, Any] = Depends(current_device),
+    ) -> JSONResponse:
+        return await _resolve_realtime_approval(request, approval_id=request_id, approval_kind="user_input")
 
     @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     async def proxy_core(

@@ -111,7 +111,7 @@ acceptance criteria.
 
 1. **当前**：保留 HTTP + NDJSON 业务协议，通过 `47.97.24.242` 的 HTTPS/FRP 入口跨网络访问。
 2. **配对**：桌面端展示 adapter 返回的版本化 `pairing_uri` 二维码；手机只接受 HTTPS endpoint。
-3. **任务启动传输**：runtime 已删除 NDJSON 任务流 HTTP 接口，任务流只走 `/api/events/ws` 实时 WebSocket；adapter 持有该 socket 并转成 NDJSON 给手机，审批、取消、继续输入仍是 HTTP。
+3. **任务与审批传输**：runtime 已删除 NDJSON 任务流与 HTTP resolve 接口，任务流、审批/用户输入都只走 `/api/events/ws` 实时 WebSocket；adapter 持有该 socket 并转成手机现有的 HTTP/NDJSON 契约，取消与继续输入仍是 HTTP 代理。
 4. **不要直接引入 node-pty/xterm.js**：Haish 当前是结构化 agent UI，不是远程 shell；终端能力会扩大权限和安全面。
 
 ## Configuration overrides
