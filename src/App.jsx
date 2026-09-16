@@ -63,7 +63,18 @@ import {
   buildToolView,
 } from '../../haish-agent/app-web/src/features/chat/model/tool-view.js';
 import { ScrollToBottomButton } from './ScrollToBottomButton.jsx';
-import { SWIPE_BACK_EDGE_PX, isSwipeBackGesture, swipeBackAxis, swipeBackOffset } from './swipe-back.js';
+import {
+  SWIPE_BACK_CANCEL_EASING,
+  SWIPE_BACK_EDGE_PX,
+  SWIPE_BACK_TRACK_MS,
+  isSwipeBackInFlight,
+  setSwipeBackInFlight,
+  swipeBackAxis,
+  swipeBackOffset,
+  swipeBackProgress,
+  swipeBackRelease,
+  swipeBackVelocity,
+} from './swipe-back.js';
 import {
   THINKING_OPTIONS,
   agentOptionsFromPayload,
@@ -1036,7 +1047,10 @@ const LiveRunBubble = React.memo(function LiveRunBubble({ liveRun, running }) {
   useEffect(() => {
     if (!running) return undefined;
     setNow(Date.now());
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    const timer = window.setInterval(() => {
+      if (isSwipeBackInFlight()) return;
+      setNow(Date.now());
+    }, 1000);
     return () => window.clearInterval(timer);
   }, [running]);
   const startedAt = liveRun?.completedAt ? liveRun.createdAt : liveRun?.firstTokenAt;
@@ -1076,7 +1090,11 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
   const detailScreenRef = useRef(null);
   const swipeStartRef = useRef(null);
   const swipeOffsetRef = useRef(0);
-  const swipeTimerRef = useRef(null);
+  const swipeAnimationRef = useRef(null);
+  const swipeSettleRef = useRef(null);
+  const swipeFrameRef = useRef(0);
+  const swipePendingRef = useRef(null);
+  const swipeDeferredRefreshRef = useRef(false);
   const swipeBlockedRef = useRef(false);
   const swipeHandlersRef = useRef(null);
   const composerImagesRef = useRef([]);
@@ -1093,105 +1111,203 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
   useEffect(() => { optimisticUserMessagesRef.current = optimisticUserMessages; }, [optimisticUserMessages]);
   useEffect(() => { swipeBlockedRef.current = Boolean(previewImage || showRunConfig); }, [previewImage, showRunConfig]);
 
-  function setSwipeBackPosition(offset) {
-    swipeOffsetRef.current = offset;
-    detailScreenRef.current?.style.setProperty('--swipe-back-offset', `${offset}px`);
+  function clearSwipeBackFrame() {
+    if (swipeFrameRef.current) window.cancelAnimationFrame(swipeFrameRef.current);
+    swipeFrameRef.current = 0;
+    swipePendingRef.current = null;
   }
 
-  function clearSwipeBackTimer() {
-    if (swipeTimerRef.current) window.clearTimeout(swipeTimerRef.current);
-    swipeTimerRef.current = null;
+  // Hands the surface back to CSS and forgets the pull: used when the touch turns out to
+  // belong to the thread, when it is cancelled, and when the screen unmounts.
+  function stopSwipeBackMotion() {
+    clearSwipeBackFrame();
+    swipeAnimationRef.current?.cancel();
+    swipeAnimationRef.current = null;
+    swipeSettleRef.current?.cancel();
+    swipeSettleRef.current = null;
+    detailScreenRef.current?.classList.remove('swipe-armed', 'swipe-dismissing');
+    swipeStartRef.current = null;
+    swipeOffsetRef.current = 0;
+    setSwipeBackInFlight(false);
   }
 
-  function resetSwipeBackSurface() {
+  function setSwipeBackProgress(progress) {
+    const animation = swipeAnimationRef.current;
+    if (!animation) return;
+    animation.currentTime = Math.min(1, Math.max(0, progress)) * SWIPE_BACK_TRACK_MS;
+  }
+
+  function flushDeferredSwipeBackRefresh() {
+    if (!swipeDeferredRefreshRef.current) return;
+    swipeDeferredRefreshRef.current = false;
+    refresh();
+  }
+
+  function beginSwipeBack(event) {
     const surface = detailScreenRef.current;
-    if (!surface) return;
-    surface.classList.remove('swipe-tracking', 'swipe-settling', 'swipe-dismissing');
-    surface.style.removeProperty('--swipe-back-duration');
-  }
-
-  function startSwipeBack(event) {
-    if (event.touches.length !== 1 || swipeBlockedRef.current) return;
+    if (!surface || event.touches.length !== 1 || swipeBlockedRef.current) return;
     const touch = event.touches[0];
     if (touch.clientX > SWIPE_BACK_EDGE_PX) return;
-    clearSwipeBackTimer();
-    resetSwipeBackSurface();
-    setSwipeBackPosition(0);
+    stopSwipeBackMotion();
+    // Promote the surface before the finger moves, so the first tracked frame does not
+    // have to build the layer too, and let the directory behind it keep animating.
+    surface.classList.add('swipe-armed');
     swipeStartRef.current = {
       x: touch.clientX,
       y: touch.clientY,
-      startedAt: performance.now(),
-      axis: null,
+      time: event.timeStamp,
+      lastX: touch.clientX,
+      lastY: touch.clientY,
+      lastTime: event.timeStamp,
+      velocity: 0,
+      width: surface.getBoundingClientRect().width || window.innerWidth,
+      claimed: false,
     };
+  }
+
+  // The pull runs on a Web Animations timeline instead of a CSS custom property: moving an
+  // animation's time only reaches the compositor, while writing `--swipe-back-offset` on
+  // every touch move recalculates style for the whole message list underneath.
+  function claimSwipeBack() {
+    const surface = detailScreenRef.current;
+    if (!surface) return;
+    const animation = surface.animate(
+      [{ transform: 'translate3d(0%, 0px, 0px)' }, { transform: 'translate3d(100%, 0px, 0px)' }],
+      { duration: SWIPE_BACK_TRACK_MS, easing: 'linear', fill: 'both' },
+    );
+    animation.pause();
+    animation.currentTime = 0;
+    swipeAnimationRef.current = animation;
+    setSwipeBackInFlight(true);
+  }
+
+  function applySwipeBack(point) {
+    const start = swipeStartRef.current;
+    if (!start) return;
+    start.velocity = swipeBackVelocity(start.velocity, {
+      deltaX: point.x - start.lastX,
+      deltaMs: point.time - start.lastTime,
+    });
+    start.lastX = point.x;
+    start.lastY = point.y;
+    start.lastTime = point.time;
+    const offset = swipeBackOffset(start, { x: point.x, y: point.y });
+    swipeOffsetRef.current = offset;
+    setSwipeBackProgress(swipeBackProgress(offset, start.width));
+  }
+
+  function flushSwipeBack() {
+    swipeFrameRef.current = 0;
+    const point = swipePendingRef.current;
+    swipePendingRef.current = null;
+    if (!point || !swipeStartRef.current?.claimed) return;
+    applySwipeBack(point);
   }
 
   function moveSwipeBack(event) {
     const start = swipeStartRef.current;
     const touch = event.touches[0];
     if (!start || !touch) return;
-
-    const deltaX = touch.clientX - start.x;
-    const deltaY = Math.abs(touch.clientY - start.y);
-    if (!start.axis) start.axis = swipeBackAxis(deltaX, deltaY);
-    if (!start.axis) return;
-    if (start.axis !== 'horizontal') {
-      swipeStartRef.current = null;
+    const point = { x: touch.clientX, y: touch.clientY, time: event.timeStamp };
+    if (!start.claimed) {
+      const axis = swipeBackAxis(point.x - start.x, point.y - start.y);
+      if (!axis) return;
+      if (axis !== 'horizontal') {
+        // A drag that leaves the cone belongs to the thread; let the scroll have it.
+        stopSwipeBackMotion();
+        return;
+      }
+      start.claimed = true;
+      claimSwipeBack();
+      // Non-passive listener: claiming the pull here is what stops the WebView from
+      // scrolling the thread and holding the touch stream back until it settles. The pull
+      // also follows the finger on the frame that claims it — waiting for the next one is
+      // what reads as lag at the start.
+      if (event.cancelable) event.preventDefault();
+      applySwipeBack(point);
       return;
     }
-
-    // Non-passive listener: claiming the pull here is what stops the WebView from
-    // scrolling the thread and holding the touch stream back until it settles.
     if (event.cancelable) event.preventDefault();
-    const offset = swipeBackOffset(start, { x: touch.clientX, y: touch.clientY });
-    detailScreenRef.current?.classList.add('swipe-tracking');
-    setSwipeBackPosition(offset);
+    // Touch moves can arrive faster than the display refreshes; take one sample per frame.
+    swipePendingRef.current = point;
+    if (!swipeFrameRef.current) swipeFrameRef.current = window.requestAnimationFrame(flushSwipeBack);
+  }
+
+  // Replaces the tracking animation with a one-shot settle: the page keeps moving from
+  // where the finger left it, over the time the remaining distance needs at that speed.
+  function settleSwipeBack(step, complete, duration, easing) {
+    const surface = detailScreenRef.current;
+    if (!surface) return null;
+    const settle = surface.animate(
+      [{ transform: `translate3d(${step * 100}%, 0px, 0px)` }, { transform: `translate3d(${complete ? 100 : 0}%, 0px, 0px)` }],
+      { duration, easing, fill: 'both' },
+    );
+    swipeAnimationRef.current?.cancel();
+    swipeAnimationRef.current = null;
+    swipeSettleRef.current = settle;
+    surface.classList.remove('swipe-armed');
+    surface.classList.toggle('swipe-dismissing', complete);
+    return settle;
   }
 
   function finishSwipeBack(event) {
     const start = swipeStartRef.current;
-    const touch = event.changedTouches[0];
     swipeStartRef.current = null;
-    const surface = detailScreenRef.current;
-    if (!start || !touch || !surface || start.axis !== 'horizontal') return;
-
-    const width = surface.getBoundingClientRect().width || window.innerWidth;
-    const complete = isSwipeBackGesture(
-      start,
-      { x: touch.clientX, y: touch.clientY },
-      { width, elapsedMs: performance.now() - start.startedAt },
-    );
-    const remaining = complete ? width - swipeOffsetRef.current : swipeOffsetRef.current;
+    clearSwipeBackFrame();
+    if (!start?.claimed) {
+      stopSwipeBackMotion();
+      return;
+    }
+    const touch = event.changedTouches?.[0];
+    if (touch) {
+      // Fold the last sample in, so a flick that ended between two frames still counts.
+      start.velocity = swipeBackVelocity(start.velocity, {
+        deltaX: touch.clientX - start.lastX,
+        deltaMs: event.timeStamp - start.lastTime,
+      });
+      swipeOffsetRef.current = swipeBackOffset(start, { x: touch.clientX, y: touch.clientY });
+    }
+    const release = swipeBackRelease({
+      offset: swipeOffsetRef.current,
+      width: start.width,
+      velocity: start.velocity,
+    });
     const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-    const duration = reducedMotion ? 0 : Math.round(Math.min(210, Math.max(110, remaining * 0.55)));
-
-    surface.classList.remove('swipe-tracking');
-    surface.classList.add('swipe-settling');
-    surface.classList.toggle('swipe-dismissing', complete);
-    surface.style.setProperty('--swipe-back-duration', `${duration}ms`);
-    setSwipeBackPosition(complete ? width : 0);
-
-    const settle = () => {
-      swipeTimerRef.current = null;
-      if (complete) onBack();
-      else resetSwipeBackSurface();
+    const duration = reducedMotion ? 0 : release.durationMs;
+    const settle = settleSwipeBack(release.step, release.complete, duration, release.easing);
+    const finish = () => {
+      if (release.complete) {
+        // Leave the settle holding its last frame: onBack() unmounts this surface on the
+        // next render, so nothing may snap back into view in between.
+        swipeSettleRef.current = null;
+        setSwipeBackInFlight(false);
+        onBack();
+        return;
+      }
+      stopSwipeBackMotion();
+      flushDeferredSwipeBackRefresh();
     };
-    if (duration === 0) settle();
-    else swipeTimerRef.current = window.setTimeout(settle, duration + 20);
+    if (!settle || duration <= 0) finish();
+    else settle.onfinish = finish;
   }
 
   function cancelSwipeBack() {
-    const surface = detailScreenRef.current;
+    const start = swipeStartRef.current;
     swipeStartRef.current = null;
-    if (!surface || swipeOffsetRef.current === 0) return;
-    surface.classList.remove('swipe-tracking', 'swipe-dismissing');
-    surface.classList.add('swipe-settling');
-    surface.style.setProperty('--swipe-back-duration', '160ms');
-    setSwipeBackPosition(0);
-    clearSwipeBackTimer();
-    swipeTimerRef.current = window.setTimeout(() => {
-      swipeTimerRef.current = null;
-      resetSwipeBackSurface();
-    }, 180);
+    clearSwipeBackFrame();
+    if (!start?.claimed) {
+      stopSwipeBackMotion();
+      return;
+    }
+    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    const { step } = swipeBackRelease({ offset: swipeOffsetRef.current, width: start.width });
+    const settle = settleSwipeBack(step, false, reducedMotion ? 0 : 180, SWIPE_BACK_CANCEL_EASING);
+    const finish = () => {
+      stopSwipeBackMotion();
+      flushDeferredSwipeBackRefresh();
+    };
+    if (!settle || reducedMotion) finish();
+    else settle.onfinish = finish;
   }
 
   // React attaches its touch listeners passively, so `preventDefault()` in a
@@ -1200,7 +1316,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
   // after the finger is gone. Own the listeners so a rightward pull is claimed —
   // and scrolling blocked — from the first few pixels of movement.
   useEffect(() => {
-    swipeHandlersRef.current = { start: startSwipeBack, move: moveSwipeBack, end: finishSwipeBack, cancel: cancelSwipeBack };
+    swipeHandlersRef.current = { start: beginSwipeBack, move: moveSwipeBack, end: finishSwipeBack, cancel: cancelSwipeBack };
   });
 
   useEffect(() => {
@@ -1222,9 +1338,10 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
       surface.removeEventListener('touchmove', handlers.move);
       surface.removeEventListener('touchend', handlers.end);
       surface.removeEventListener('touchcancel', handlers.cancel);
-      clearSwipeBackTimer();
     };
   }, []);
+
+  useEffect(() => () => stopSwipeBackMotion(), []);
 
   function collapseComposer() {
     setComposerExpanded(false);
@@ -1232,7 +1349,6 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
   }
 
   useEffect(() => () => {
-    clearSwipeBackTimer();
     composerImagesRef.current.forEach((image) => {
       if (image.previewUrl) URL.revokeObjectURL(image.previewUrl);
     });
@@ -1262,7 +1378,15 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
 
   useEffect(() => {
     refresh();
-    const timer = window.setInterval(refresh, 5000);
+    // A poll rebuilds and re-renders the whole thread; while a pull is on the way that
+    // work would land mid-gesture, so it waits for the surface to settle.
+    const timer = window.setInterval(() => {
+      if (isSwipeBackInFlight()) {
+        swipeDeferredRefreshRef.current = true;
+        return;
+      }
+      refresh();
+    }, 5000);
     return () => window.clearInterval(timer);
   }, [refresh]);
 
@@ -1397,7 +1521,10 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
     }
 
     hydrateActiveTask();
-    const timer = window.setInterval(hydrateActiveTask, 2000);
+    const timer = window.setInterval(() => {
+      if (isSwipeBackInFlight()) return;
+      hydrateActiveTask();
+    }, 2000);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
@@ -1936,6 +2063,8 @@ export default function App() {
     loadTasks();
     loadApprovals();
     const timer = window.setInterval(() => {
+      // The directory poll parses megabytes of JSON; never start it mid-gesture.
+      if (isSwipeBackInFlight()) return;
       loadStatus().catch((error) => setFatalError(error.message));
       loadTasks();
       loadApprovals();

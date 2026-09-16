@@ -225,6 +225,18 @@ WKWebView 对 `<input type="file" accept="image/*">` 只会弹出系统的 `Phot
 - `AppDelegate` 里保留一处 `PhotoPicker.self` 引用，避免 Release 构建把它 strip 掉；
 - 浏览器（Web）下没有原生插件，按钮行为不变（直接打开文件选择器）。
 
+### 会话详情的右滑返回
+
+原生容器的返回手势只有 `WKWebView.allowsBackForwardNavigationGestures` 一条路，它靠 history 快照兜底：iOS 16 起 WebKit 对“没有用户手势创建的 `pushState` 条目”会在返回时直接跳过、不派发 `popstate`（WebKit bug 248303 是刻意加固，不是 bug），而且划动过程中看到的是进入详情时的旧列表。所以右滑返回按主流混合 App（Ionic `ion-router-outlet` 的 swipe-to-go-back）的标准做法完全在 WebView 里做，逻辑集中在 `src/swipe-back.js`：
+
+- 左侧 50px 内按下才开始判定；判定用平移识别器：位移过 8px 且方向落在水平轴 40° 锥角内才认领手势，垂直或向左一律让给消息列表滚动；
+- 进度 = 位移 / 屏宽，写成一条 0→100% 线性 Web Animations 动画的 `currentTime`（`surface.animate()` 后 `pause()`，等价于 Ionic 的 `progressStep`）。之前是把偏移写进 CSS 变量 `--swipe-back-offset` 再让 `transform` 去读，每次 touchmove 都要让整棵消息列表重算样式；改动画时间只更新合成器，不碰样式；
+- touchmove 按帧合并（一个 rAF 一帧最多写一次），认领手势的那一帧就已经跟着手指走；
+- 松手按速度决定去向：> 0.2 px/ms 或过了半屏就完成返回，其余回弹；时长取“剩余距离 / 速度”（速度下限 0.5 px/ms，90–340ms），和手指最后的速度连续；
+- 手势进行中会话轮询（5s）、任务快照（2s）、列表轮询（5s）和秒表 tick 全部暂停，结束后补一次刷新（`isSwipeBackInFlight()`）——交互式转场期间不做后台重建，这是原生 App 的常规做法；
+- 按下就加 `swipe-armed` 提升图层（`will-change: transform`），被盖住的目录从这时起恢复动画（`:has(.detail-screen.swipe-armed)`），`prefers-reduced-motion` 下直接切页不做动画；
+- `tests/swipe-back.test.mjs` 覆盖阈值、锥角、进度、速度平滑和松手判定这些纯数学部分。
+
 推送通知需要 APNs 设备注册和服务端推送链路，等前台闭环通过后单独实现。
 
 ## 公网服务器与 Mac 端
