@@ -148,15 +148,21 @@ Body: {
 }
 ```
 
-adapter 校验设备后，将该请求转发为：
+adapter 校验设备后，用 runtime 的实时 WebSocket 启动任务（runtime 已删除旧的 NDJSON 任务流 HTTP 接口，任务流只存在于 `/api/events/ws`）：
 
 ```text
-POST http://127.0.0.1:<discovered-runtime-port>/api/conversations/{conversation_id}/tasks/stream
+GET ws://127.0.0.1:<discovered-runtime-port>/api/events/ws   (Origin: haish://app)
+→ {"type":"task.start","request_id":"...","operation":"start","conversation_id":"...","payload":{ message, image_attachments, options, ... }}
+← {"type":"command.result","request_id":"...","ok":true}
+← {"type":"task.event","request_id":"...","event":{...}}
+← {"type":"task.end","request_id":"..."}
+← {"type":"command.result","request_id":"...","ok":false,"status":409,"detail":"..."}
+← {"type":"task.error","request_id":"...","status":409,"detail":"..."}
 ```
 
-响应以 `application/x-ndjson` 流式返回，并设置 `Cache-Control: no-cache` 和 `X-Accel-Buffering: no`，避免 Nginx 缓冲任务事件。手机端持续读取 NDJSON，更新任务过程；任务结束、失败或连接断开后关闭流。
+adapter 把 `task.event` 里的 `event` 逐条转成 NDJSON 行返回给手机；`task.error` 和 `ok:false` 的 `command.result` 用它们自己的 `status` / `detail` 返回普通 HTTP 错误（只放行 4xx/5xx，避免用成功状态包一个错误体），所以启动失败（会话不存在、已有任务在跑、参数非法）依旧是手机端直接提示的错误。socket 由 adapter 持有：手机中途断线不会拆掉 runtime 的 run，adapter 继续读到 `task.end`，任务仍会落到持久化的 `done` / `failed` / `cancelled`，手机重连后轮询这个标准状态即可。如果 20 秒内没有收到第一个事件，adapter 返回 504，但同样不关 socket——runtime 可能只是启动慢，让它跑完，手机仍按标准状态收尾。
 
-adapter 发现 runtime 的顺序是：优先使用 `HAISH_UPSTREAM_URL`，否则读取 macOS/Linux 下最新的 `runtime.pid`。访问本机 runtime 的 `httpx` 客户端统一使用 `trust_env=False`，不读取系统代理环境变量，避免本地代理影响 loopback 请求。
+adapter 发现 runtime 的顺序是：优先使用 `HAISH_UPSTREAM_URL`，否则读取 macOS/Linux 下最新的 `runtime.pid`。访问本机 runtime 的 `httpx` 客户端统一使用 `trust_env=False`，实时 WebSocket 客户端同样禁用环境代理，避免本地代理影响 loopback 请求。
 
 ### 鉴权、错误和撤销行为
 

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  isTaskActuallyActive,
   listTaskForConversation,
   runningConversationsFirst,
 } from '../src/conversation-order.js';
@@ -46,5 +47,23 @@ test('task map is used when a project conversation has no embedded task list', (
   assert.deepEqual(
     runningConversationsFirst(conversations, tasks).map((item) => item.conversation_id),
     ['running', 'idle'],
+  );
+});
+
+test('every runtime terminal status releases the phone, only queued and running stay active', () => {
+  for (const status of ['done', 'failed', 'cancelled']) {
+    assert.equal(isTaskActuallyActive({ task_id: 'task-1', status }), false, status);
+  }
+  assert.equal(isTaskActuallyActive({ task_id: 'task-1', status: 'queued' }), true);
+  assert.equal(isTaskActuallyActive({ task_id: 'task-1', status: 'running' }), true);
+
+  const conversations = ['done', 'failed', 'cancelled'].map((status, index) => ({
+    conversation_id: `idle-${status}`,
+    sort_order: index,
+    tasks: [{ task_id: `task-${status}`, status }],
+  }));
+  assert.deepEqual(
+    runningConversationsFirst(conversations).map((item) => item.conversation_id),
+    ['idle-done', 'idle-failed', 'idle-cancelled'],
   );
 });

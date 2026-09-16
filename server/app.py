@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+from collections.abc import AsyncIterator
 import hashlib
 import json
 import os
@@ -21,12 +23,25 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 import uvicorn
+import websockets
 
 
 COOKIE_NAME = "haish_remote_device"
 PAIRING_TTL_SECONDS = 5 * 60
 DEFAULT_DATA_DIR = Path(os.getenv("HAISH_REMOTE_DATA_DIR", "~/.haish-remote")).expanduser()
 DEFAULT_DIST_DIR = Path(__file__).resolve().parents[1] / "dist"
+
+# The runtime owns task streams on its realtime WebSocket. The legacy task NDJSON
+# endpoints are gone, so the adapter bridges that socket to the mobile NDJSON
+# contract instead of proxying an HTTP route.
+REALTIME_EVENTS_PATH = "/api/events/ws"
+REALTIME_ORIGIN = "haish://app"
+REALTIME_START_TIMEOUT_SECONDS = 20.0
+NDJSON_HEADERS = {
+    "content-type": "application/x-ndjson",
+    "cache-control": "no-cache",
+    "x-accel-buffering": "no",
+}
 
 _ALLOWED_CORE_ROUTES: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
     (method, re.compile(pattern))
@@ -283,6 +298,170 @@ def _route_allowed(method: str, path: str) -> bool:
     return any(method == allowed_method and pattern.fullmatch(path) for allowed_method, pattern in _ALLOWED_CORE_ROUTES)
 
 
+def realtime_events_url() -> str:
+    """Realtime WebSocket URL of the discovered runtime (it shares the HTTP port)."""
+    parsed = urlsplit(discover_upstream())
+    scheme = "wss" if parsed.scheme == "https" else "ws"
+    # Keep whatever base path the runtime is configured behind, exactly like the
+    # HTTP proxy does, so both transports address the same runtime.
+    return f"{scheme}://{parsed.netloc}{parsed.path.rstrip('/')}{REALTIME_EVENTS_PATH}"
+
+
+def _realtime_error_detail(value: Any) -> Any:
+    """Keep the runtime's error body shape so the phone can read it verbatim."""
+    if isinstance(value, (str, list, dict)) and value:
+        return value
+    return "The Haish runtime rejected the task."
+
+
+def _realtime_status(value: Any) -> int:
+    """Pass the runtime's failure status through; anything else is a broken runtime.
+
+    Only 4xx/5xx may reach the phone as the status of this response: a success
+    status wrapped around an error body would make the phone read NDJSON that
+    is not there instead of showing the runtime's failure.
+    """
+    try:
+        status = int(value)
+    except (TypeError, ValueError):
+        return 502
+    return status if 400 <= status <= 599 else 502
+
+
+class TaskStreamError(Exception):
+    """The runtime rejected a task stream before any event was produced."""
+
+    def __init__(self, status: int, detail: Any) -> None:
+        super().__init__(str(detail))
+        self.status = status
+        self.detail = detail
+
+
+class RealtimeTaskStream:
+    """Bridge a runtime realtime task stream to the mobile NDJSON contract.
+
+    The runtime keeps the run inside the realtime socket: a dropped socket tears the
+    run down. The adapter therefore owns the socket and keeps draining it until the
+    runtime reports ``task.end``, even when the phone disconnects, so the run always
+    reaches its persisted ``done`` / ``failed`` / ``cancelled`` status. The phone
+    reads whatever events it is still connected for and polls that status afterwards.
+    """
+
+    def __init__(self, *, conversation_id: str, payload: dict[str, Any]) -> None:
+        self.conversation_id = conversation_id
+        self.payload = payload
+        self.request_id = uuid4().hex
+        self.messages: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self.forwarding = True
+        self.worker: asyncio.Task[None] | None = None
+
+    @property
+    def command(self) -> dict[str, Any]:
+        return {
+            "type": "task.start",
+            "request_id": self.request_id,
+            "operation": "start",
+            "conversation_id": self.conversation_id,
+            "payload": self.payload,
+        }
+
+    async def open(self) -> dict[str, Any]:
+        """Return the first runtime event, or raise ``TaskStreamError`` for a start failure."""
+        self.worker = asyncio.create_task(self._pump())
+        try:
+            first = await asyncio.wait_for(self.messages.get(), timeout=REALTIME_START_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError as error:
+            # Stop forwarding but keep the socket: the runtime may still be starting
+            # the run, and a terminal status is what the phone needs in the end.
+            self.forwarding = False
+            raise TaskStreamError(504, "The Haish runtime did not answer the task stream.") from error
+        if first["kind"] == "event":
+            return first
+        # A rejected command, or a stream that ended before its first event, never
+        # started a run, so the socket has nothing left to drain for the phone.
+        await self.abandon()
+        if first["kind"] == "error":
+            raise TaskStreamError(first["status"], first["detail"])
+        raise TaskStreamError(502, "The Haish runtime ended the task stream before it started.")
+
+    async def body_lines(self, first: dict[str, Any]) -> AsyncIterator[str]:
+        """Yield NDJSON event lines for the phone until the runtime ends the stream."""
+        try:
+            item = first
+            while item["kind"] == "event":
+                yield json.dumps(item["event"], ensure_ascii=False) + "\n"
+                item = await self.messages.get()
+        finally:
+            # The phone is gone or the stream is over. A mid-stream failure ends the
+            # response without inventing a terminal event: the phone polls the task
+            # status the runtime persisted for it.
+            self.forwarding = False
+
+    async def abandon(self) -> None:
+        """Drop the bridge when the runtime is not going to stream this task."""
+        self.forwarding = False
+        if self.worker is not None:
+            self.worker.cancel()
+            await asyncio.gather(self.worker, return_exceptions=True)
+
+    async def _emit(self, item: dict[str, Any]) -> None:
+        if self.forwarding:
+            await self.messages.put(item)
+
+    def _error_item(self, message: dict[str, Any]) -> dict[str, Any]:
+        """Runtime failures keep their status and body shape for the phone."""
+        return {
+            "kind": "error",
+            "status": _realtime_status(message.get("status")),
+            "detail": _realtime_error_detail(message.get("detail")),
+        }
+
+    def _owns(self, message: dict[str, Any]) -> bool:
+        return str(message.get("request_id") or "") == self.request_id
+
+    async def _pump(self) -> None:
+        try:
+            async with websockets.connect(
+                realtime_events_url(),
+                origin=REALTIME_ORIGIN,
+                proxy=None,
+                open_timeout=REALTIME_START_TIMEOUT_SECONDS,
+                close_timeout=2.0,
+                max_size=None,
+            ) as socket:
+                await socket.send(json.dumps(self.command))
+                async for raw in socket:
+                    message = json.loads(raw)
+                    if not isinstance(message, dict) or not self._owns(message):
+                        # Approval broadcasts carry no request_id and belong to the
+                        # phone's HTTP polling, not to this task stream.
+                        continue
+                    kind = str(message.get("type") or "")
+                    if kind == "task.event":
+                        await self._emit({"kind": "event", "event": message.get("event")})
+                        continue
+                    if kind == "command.result" and message.get("ok") is False:
+                        # The runtime acks task.start before streaming; a rejected
+                        # command carries the same status/detail the phone renders.
+                        await self._emit(self._error_item(message))
+                        return
+                    if kind == "task.error":
+                        await self._emit(self._error_item(message))
+                        return
+                    if kind == "task.end":
+                        return
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:  # noqa: BLE001 - the transport boundary reports producer failures.
+            await self._emit({
+                "kind": "error",
+                "status": 502,
+                "detail": f"Runtime realtime stream failed: {error}",
+            })
+        finally:
+            await self._emit({"kind": "end"})
+
+
 def _compact_project_listing(payload: Any) -> Any:
     """Keep directory polling lightweight; conversation detail is fetched on demand."""
     if not isinstance(payload, dict) or not isinstance(payload.get("projects"), list):
@@ -401,44 +580,12 @@ def create_app(*, data_dir: Path | None = None, dist_dir: Path | None = None) ->
         payload: TaskStartRequest,
         _: dict[str, Any] = Depends(current_device),
     ) -> Response:
-        client = httpx.AsyncClient(timeout=None, trust_env=False)
+        stream = RealtimeTaskStream(conversation_id=conversation_id, payload=payload.model_dump())
         try:
-            request = client.build_request(
-                "POST",
-                f"{discover_upstream()}/api/conversations/{conversation_id}/tasks/stream",
-                json=payload.model_dump(),
-            )
-            response = await client.send(request, stream=True)
-            if not response.is_success:
-                body = await response.aread()
-                await response.aclose()
-                await client.aclose()
-                try:
-                    content = json.loads(body or b"{}")
-                except json.JSONDecodeError:
-                    content = {"detail": body.decode("utf-8", errors="replace") or "The Haish runtime rejected the task."}
-                return JSONResponse(content=content, status_code=response.status_code)
-        except Exception:
-            await client.aclose()
-            raise
-
-        async def body_iter():
-            try:
-                async for chunk in response.aiter_bytes():
-                    yield chunk
-            finally:
-                await response.aclose()
-                await client.aclose()
-
-        return StreamingResponse(
-            body_iter(),
-            status_code=response.status_code,
-            headers={
-                "content-type": response.headers.get("content-type", "application/x-ndjson"),
-                "cache-control": "no-cache",
-                "x-accel-buffering": "no",
-            },
-        )
+            first = await stream.open()
+        except TaskStreamError as error:
+            return JSONResponse(content={"detail": error.detail}, status_code=error.status)
+        return StreamingResponse(stream.body_lines(first), status_code=200, headers=NDJSON_HEADERS)
 
     @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     async def proxy_core(
@@ -448,7 +595,12 @@ def create_app(*, data_dir: Path | None = None, dist_dir: Path | None = None) ->
     ) -> Response:
         if not _route_allowed(request.method, path):
             raise HTTPException(status_code=403, detail="This core endpoint is not available to remote devices.")
-        upstream = f"{discover_upstream()}/api/{path}"
+        try:
+            upstream = f"{discover_upstream()}/api/{path}"
+        except RuntimeError as error:
+            # The runtime is stopped or restarting; report it like the task start
+            # does so the phone shows its reconnect state instead of a 500.
+            return JSONResponse(content={"detail": str(error)}, status_code=503)
         if request.url.query:
             upstream += f"?{request.url.query}"
         body = await request.body()

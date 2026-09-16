@@ -265,3 +265,12 @@ test('NDJSON reader emits complete events across response chunks', async () => {
   assert.deepEqual(events.map((event) => event.type), ['run_started', 'llm_answer_delta']);
   assert.equal(events[1].payload.delta, 'Hi');
 });
+
+test('only the runtime run_finished event finishes the live task', () => {
+  let state = applyTaskStreamEvent(null, { type: 'run_started', task_id: 'task-1' });
+  state = applyTaskStreamEvent(state, { type: 'final_answer', payload: { content: 'All done.' } });
+  assert.equal(state.status, 'running');
+
+  state = applyTaskStreamEvent(state, { type: 'run_finished', payload: { status: 'done', task: { task_id: 'task-1', status: 'done' } } });
+  assert.equal(state.status, 'done');
+});
