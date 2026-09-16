@@ -1982,6 +1982,7 @@ export default function App() {
   const [startupRetrying, setStartupRetrying] = useState(true);
   const restoredConversationRef = useRef(false);
   const startupRequestRef = useRef(false);
+  const detailOpenRef = useRef(false);
   const directorySignatureRef = useRef('');
   const approvalsSignatureRef = useRef('');
 
@@ -2058,16 +2059,22 @@ export default function App() {
     else setRuntimeOfflineSince(0);
   }, [status?.runtime_online]);
 
+  useEffect(() => { detailOpenRef.current = Boolean(selectedId); }, [selectedId]);
+
   useEffect(() => {
     if (!status?.paired) return undefined;
     loadTasks();
     loadApprovals();
     const timer = window.setInterval(() => {
-      // The directory poll parses megabytes of JSON; never start it mid-gesture.
+      // A pull owns the thread while it is on its way: no background work may start
+      // under the finger.
       if (isSwipeBackInFlight()) return;
       loadStatus().catch((error) => setFatalError(error.message));
-      loadTasks();
       loadApprovals();
+      // The directory payload is ~3.5 MB and hands every row a fresh object; behind an
+      // open detail none of that is visible, and the parse would land on the main thread
+      // while the user reads or types. The list refreshes as it comes back into view.
+      if (!detailOpenRef.current) loadTasks();
     }, 5000);
     return () => window.clearInterval(timer);
   }, [status?.paired, loadStatus, loadTasks, loadApprovals]);
@@ -2096,6 +2103,8 @@ export default function App() {
 
   function closeConversation() {
     setSelectedId(null);
+    // The directory poll is paused behind the detail, so the list is refreshed here as it
+    // comes back into view instead of every 5s while nobody can see it.
     loadTasks();
   }
 
