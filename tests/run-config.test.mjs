@@ -73,6 +73,87 @@ test('an existing conversation inherits the provider and model used by its lates
   });
 });
 
+test('the provider the client recorded on the task beats the first provider sharing its key and model', () => {
+  const providers = providerOptionsFromSettings({
+    chat: { provider: 'custom', name: 'opencode_go', model: 'deepseek-v4-flash', reasoning_effort: 'high' },
+    profiles: [
+      { id: 'llm-profile-router', provider: 'custom', name: 'ai rounter', model: 'deepseek-v4-flash', reasoning_effort: 'high' },
+      { id: 'llm-profile-code', provider: 'custom', name: 'command code', model: 'deepseek/deepseek-v4.1-flash', reasoning_effort: 'high' },
+    ],
+  });
+  const conversation = {
+    last_task_id: 'task-1',
+    tasks: [{
+      task_id: 'task-1',
+      provider_key: 'custom',
+      provider: 'Custom',
+      model: 'deepseek-v4-flash',
+      reasoning_effort: 'xhigh',
+      request_options: { provider: 'llm-profile-router', model_id: 'deepseek-v4-flash', reasoning_effort: 'xhigh' },
+    }],
+  };
+
+  assert.deepEqual(resolveRunConfig(conversation, providers, []), {
+    agentId: '',
+    providerId: 'llm-profile-router',
+    modelId: 'deepseek-v4-flash',
+    thinking: 'xhigh',
+  });
+});
+
+test('the adapter can hand the recorded selector over as a flat field', () => {
+  const providers = providerOptionsFromSettings({
+    chat: { provider: 'custom', name: 'opencode_go', model: 'deepseek-v4-flash' },
+    profiles: [{ id: 'llm-profile-router', provider: 'custom', name: 'ai rounter', model: 'deepseek-v4-flash' }],
+  });
+
+  assert.equal(
+    resolveRunConfig({ tasks: [{ task_id: 't', provider_key: 'custom', model: 'deepseek-v4-flash', requested_provider: 'llm-profile-router' }] }, providers, []).providerId,
+    'llm-profile-router',
+  );
+  assert.equal(
+    resolveRunConfig({ tasks: [{ task_id: 't', provider_key: 'custom', model: 'deepseek-v4-flash', requested_provider: 'custom:opencode_go' }] }, providers, []).providerId,
+    'chat:custom:opencode_go',
+  );
+});
+
+test('a recorded selector that no longer exists falls back to key and model matching', () => {
+  const providers = providerOptionsFromSettings({
+    chat: { provider: 'custom', name: 'opencode_go', model: 'deepseek-v4-flash' },
+    profiles: [{ id: 'llm-profile-router', provider: 'custom', name: 'ai rounter', model: 'deepseek-v4-flash' }],
+  });
+
+  assert.deepEqual(resolveRunConfig({
+    tasks: [{ task_id: 't', provider_key: 'custom', model: 'deepseek-v4-flash', request_options: { provider: 'llm-profile-deleted' } }],
+  }, providers, []), {
+    agentId: '',
+    providerId: 'chat:custom:opencode_go',
+    modelId: 'deepseek-v4-flash',
+    thinking: 'high',
+  });
+});
+
+test('an older recorded task is used when the newest task carries no selector', () => {
+  const providers = providerOptionsFromSettings({
+    chat: { provider: 'custom', name: 'opencode_go', model: 'deepseek-v4-flash' },
+    profiles: [{ id: 'llm-profile-router', provider: 'custom', name: 'ai rounter', model: 'deepseek-v4-flash' }],
+  });
+  const conversation = {
+    last_task_id: 'task-2',
+    tasks: [
+      { task_id: 'task-1', provider_key: 'custom', model: 'deepseek-v4-flash', request_options: { provider: 'llm-profile-router' } },
+      { task_id: 'task-2', provider_key: 'custom', model: 'deepseek-v4-flash' },
+    ],
+  };
+
+  assert.deepEqual(resolveRunConfig(conversation, providers, []), {
+    agentId: '',
+    providerId: 'llm-profile-router',
+    modelId: 'deepseek-v4-flash',
+    thinking: 'high',
+  });
+});
+
 test('prefixed backend model ids restore the matching provider and thinking level', () => {
   const providers = providerOptionsFromSettings({
     chat: { provider: 'custom', name: 'router-a', model: 'gpt-5.6-sol', reasoning_effort: 'low' },

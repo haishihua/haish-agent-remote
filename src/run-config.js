@@ -95,22 +95,67 @@ function providerKeyMatches(provider, key) {
     .some((value) => normalizedProviderKey(value) === target);
 }
 
+function taskRequestOptions(task) {
+  const options = task?.request_options;
+  return options && typeof options === 'object' ? options : null;
+}
+
+// The raw selector the client sent with the task, e.g. `llm-profile-1783479743079`
+// for a saved provider entry or `custom:opencode_go` for the chat-level provider.
+// The runtime records it per task as `request_options.provider`; the adapter may
+// hand it over as a flat `requested_provider`.
+function taskProviderSelector(task) {
+  const options = taskRequestOptions(task);
+  return String(task?.requested_provider || task?.provider_selector || options?.provider || '').trim();
+}
+
+function providerSelectorMatches(provider, selector) {
+  const target = String(selector || '').trim().toLowerCase();
+  if (!target) return false;
+  const ids = [provider?.id, provider?.requestProvider]
+    .map((value) => String(value || '').trim().toLowerCase())
+    .filter(Boolean);
+  if (ids.includes(target)) return true;
+  const separator = target.indexOf(':');
+  const key = separator === -1 ? target : target.slice(0, separator);
+  const customName = separator === -1 ? '' : target.slice(separator + 1).trim();
+  if (!providerKeyMatches(provider, key)) return false;
+  if (!customName) return true;
+  return normalizedProviderKey(provider?.customProvider) === normalizedProviderKey(customName);
+}
+
+// Saved custom providers share the generic `custom` key and can even share the same
+// model, so `provider_key` + `model` cannot tell two of them apart. The recorded
+// client selector is the only value that identifies the entry the conversation
+// actually ran with; when the client sent a bare key such as `custom`, the model is
+// still the better tie-breaker.
+function providerFromSelector(providers, selector, taskModel) {
+  if (!selector) return null;
+  const matches = providers.filter((item) => providerSelectorMatches(item, selector));
+  if (matches.length === 0) return null;
+  return matches.find((item) => modelMatches(item, taskModel)) || matches[0];
+}
+
 // `provider_key`, `model` and `reasoning_effort` live on the task (the runtime
-// stores nothing of the sort on the conversation), so the latest task is the only
-// record of what the conversation actually ran with. Custom providers all share
-// the generic `custom` key, which makes the model the sharper signal.
+// stores nothing of the sort on the conversation), so the latest task that recorded
+// how it ran is the only record of what the conversation was configured with.
 export function resolveRunConfig(conversation, providers, agents) {
   const tasks = Array.isArray(conversation?.tasks) ? conversation.tasks : [];
   const latestTask = tasks.find((task) => task?.task_id === conversation?.last_task_id) || tasks.at(-1) || null;
-  const taskProvider = latestTask?.provider_key || latestTask?.provider || '';
-  const taskModel = latestTask?.model || '';
-  const provider = providers.find((item) => providerKeyMatches(item, taskProvider) && modelMatches(item, taskModel))
+  const recordedTask = taskProviderSelector(latestTask)
+    ? latestTask
+    : [...tasks].reverse().find((task) => taskProviderSelector(task)) || latestTask;
+  const taskOptions = taskRequestOptions(recordedTask);
+  const taskProvider = recordedTask?.provider_key || recordedTask?.provider || '';
+  const taskModel = recordedTask?.model || taskOptions?.model_id || '';
+  const provider = providerFromSelector(providers, taskProviderSelector(recordedTask), taskModel)
+    || providers.find((item) => providerKeyMatches(item, taskProvider) && modelMatches(item, taskModel))
     || providers.find((item) => modelMatches(item, taskModel))
     || providers.find((item) => providerKeyMatches(item, taskProvider))
     || providers[0] || null;
-  const conversationAgentId = String(latestTask?.agent_id || latestTask?.profile_id || conversation?.agent_id || conversation?.profile_id || '').trim();
+  const conversationAgentId = String(recordedTask?.agent_id || recordedTask?.profile_id || conversation?.agent_id || conversation?.profile_id || '').trim();
   const agentId = conversationAgentId || agents[0]?.id || '';
-  const thinking = [latestTask?.reasoning_effort, provider?.reasoningEffort]
+  const thinking = [recordedTask?.reasoning_effort, taskOptions?.reasoning_effort, provider?.reasoningEffort]
     .find((value) => THINKING_OPTIONS.some((item) => item.id === value)) || 'high';
   const modelId = String(taskModel || provider?.defaultModelId || provider?.models[0]?.id || '').trim();
   return { agentId, providerId: provider?.id || '', modelId, thinking };
