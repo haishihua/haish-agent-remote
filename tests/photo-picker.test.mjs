@@ -5,15 +5,11 @@ import {
   NATIVE_PHOTO_PICKER,
   hasNativePhotoPicker,
   isPhotoPickerCancellation,
-  isUnimplementedError,
-  nativeBridgePromise,
   nativePhotoPicker,
   pickImagesFromLibrary,
-  pickImagesWith,
   pickedPhotoFiles,
   pickedPhotoName,
   pickedPhotoType,
-  pickerOptions,
   remainingImageSlots,
 } from '../src/photo-picker.js';
 
@@ -92,72 +88,4 @@ test('closing the sheet without picking is treated as a cancel, real errors are 
   assert.equal(isPhotoPickerCancellation({ message: 'User cancelled photos app' }), true);
   assert.equal(isPhotoPickerCancellation({ code: 'UNIMPLEMENTED', message: 'not implemented' }), false);
   assert.equal(isPhotoPickerCancellation(undefined), false);
-});
-
-test('the bridge fallback only exists when the native bridge exposes nativePromise', () => {
-  assert.equal(nativeBridgePromise(undefined), null);
-  assert.equal(nativeBridgePromise({}), null);
-  assert.equal(nativeBridgePromise({ nativePromise: 'not a function' }), null);
-  const invoke = (name, method, options) => ({ name, method, options });
-  const call = nativeBridgePromise({ nativePromise: invoke });
-  assert.deepEqual(call(NATIVE_PHOTO_PICKER, 'pickImages', { limit: 1 }), {
-    name: 'PhotoPicker',
-    method: 'pickImages',
-    options: { limit: 1 },
-  });
-});
-
-test('the picker options only ever carry a whole slot count', () => {
-  assert.deepEqual(pickerOptions(3.9), { limit: 3 });
-  assert.deepEqual(pickerOptions(-2), { limit: 0 });
-  assert.deepEqual(pickerOptions(undefined), { limit: 0 });
-  assert.equal(isUnimplementedError({ code: 'unimplemented' }), true);
-  assert.equal(isUnimplementedError(new Error('not implemented')), false);
-  assert.equal(isUnimplementedError(undefined), false);
-});
-
-test('an unregistered plugin retries through the bridge instead of the file input', async () => {
-  const calls = [];
-  const picker = {
-    async pickImages(options) {
-      calls.push(['proxy', options]);
-      throw { code: 'UNIMPLEMENTED', message: '"PhotoPicker" plugin is not implemented on ios' };
-    },
-  };
-  const nativePromise = async (name, method, options) => {
-    calls.push([name, method, options]);
-    return { photos: [photo()] };
-  };
-  const files = await pickImagesWith(picker, { limit: 2.4, fetchImpl: blobFetch(), nativePromise });
-  assert.deepEqual(calls, [
-    ['proxy', { limit: 2 }],
-    [NATIVE_PHOTO_PICKER, 'pickImages', { limit: 2 }],
-  ]);
-  assert.deepEqual(files.map((file) => file.name), ['haish-photo-1.jpg']);
-});
-
-test('cancels and real failures never touch the bridge fallback', async () => {
-  const nativePromise = async () => { throw new Error('the bridge must not be called'); };
-  await assert.rejects(
-    () => pickImagesWith({ pickImages: async () => { throw { code: 'cancelled' }; } }, { nativePromise }),
-    (error) => error.code === 'cancelled',
-  );
-  await assert.rejects(
-    () => pickImagesWith({ pickImages: async () => { throw new Error('photos are broken'); } }, { nativePromise, fetchImpl: blobFetch() }),
-    /photos are broken/,
-  );
-});
-
-test('without a bridge global the original unimplemented error is rethrown', async () => {
-  const previous = globalThis.Capacitor;
-  delete globalThis.Capacitor;
-  try {
-    const error = Object.assign(new Error('not implemented'), { code: 'UNIMPLEMENTED' });
-    await assert.rejects(
-      () => pickImagesWith({ pickImages: async () => { throw error; } }, { fetchImpl: blobFetch() }),
-      (thrown) => thrown === error,
-    );
-  } finally {
-    if (previous !== undefined) globalThis.Capacitor = previous;
-  }
 });

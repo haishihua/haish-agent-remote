@@ -1482,18 +1482,19 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
 
   async function openPhotoPicker() {
     if (busy || composerImagesRef.current.length >= CHAT_IMAGE_MAX_COUNT) return;
-    if (hasNativePhotoPicker()) {
-      try {
-        const files = await pickImagesFromLibrary({
-          limit: remainingImageSlots(composerImagesRef.current.length, CHAT_IMAGE_MAX_COUNT),
-        });
-        if (files?.length) await attachImages(files);
-        return;
-      } catch (nextError) {
-        if (isPhotoPickerCancellation(nextError)) return;
-      }
+    if (!hasNativePhotoPicker()) {
+      photoInputRef.current?.click();
+      return;
     }
-    photoInputRef.current?.click();
+    try {
+      const files = await pickImagesFromLibrary({
+        limit: remainingImageSlots(composerImagesRef.current.length, CHAT_IMAGE_MAX_COUNT),
+      });
+      if (files?.length) await attachImages(files);
+    } catch (nextError) {
+      if (isPhotoPickerCancellation(nextError)) return;
+      setError(nextError?.message || 'Could not open the photo library.');
+    }
   }
 
   function removeComposerImage(imageId) {
