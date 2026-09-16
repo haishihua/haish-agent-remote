@@ -220,7 +220,9 @@ WKWebView 对 `<input type="file" accept="image/*">` 只会弹出系统的 `Phot
 - 选到的相片复制到临时目录，再用 `portablePath(fromLocalURL:)` 交给 Web 层 `fetch()` 成 `File` 走原有上传流程（`POST /api/messages/images`）；
 - 相册面板被划掉没选图时按 `code = "cancelled"` 拒绝，界面什么都不做；
 - 长按同一个按钮仍然回落到系统的文件选择器，拍照 / 从“文件”里选图都还在；
-- 插件类名就是 JS 插件 id（`PhotoPicker`），Capacitor 会惰性加载；`AppDelegate` 里保留一处 `PhotoPicker.self` 引用，避免 Release 构建把它 strip 掉；
+- 插件类名就是 JS 插件 id（`PhotoPicker`），而且必须出现在生成的 `ios/App/App/capacitor.config.json` 的 `packageClassList` 里：Capacitor 只在启动时注册这张表里的类，没进表的插件连 JS 头都不会导出，`registerPlugin()` 会直接以 `UNIMPLEMENTED` 拒绝，根本到不了原生代码。`cap sync` 只扫描 npm 插件包，扫不到 App target 里的 Swift 文件，所以 `npm run mobile:sync` 在 `cap sync` 之后追加一步 `scripts/sync-ios-app-plugins.mjs`，把 App target 里带 `@objc(...)` 的 `CAPBridgedPlugin` 类名补进这张表；
+- 万一注册漏了（例如换了构建流程），Web 层还会用 `Capacitor.nativePromise()` 直连原生桥重试一次（原生桥收到调用时会按类名兜底加载插件类），两次都失败才退回文件选择器；
+- `AppDelegate` 里保留一处 `PhotoPicker.self` 引用，避免 Release 构建把它 strip 掉；
 - 浏览器（Web）下没有原生插件，按钮行为不变（直接打开文件选择器）。
 
 推送通知需要 APNs 设备注册和服务端推送链路，等前台闭环通过后单独实现。
@@ -287,7 +289,7 @@ npm test
 npm run mobile:sync
 ```
 
-`npm run mobile:sync` 只执行 Vite Web 构建和 Capacitor 资源同步，不编译 iOS、不运行 Xcode、不生成 IPA。开发 Mac 只有 Command Line Tools、无法运行 `xcodebuild` 是预期状态，不是项目故障。需要验证可安装包时，必须回到 GitHub Actions。
+`npm run mobile:sync` 只执行 Vite Web 构建、Capacitor 资源同步，以及把 App 内置原生插件登记进生成配置（`scripts/sync-ios-app-plugins.mjs`）；它不编译 iOS、不运行 Xcode、不生成 IPA。开发 Mac 只有 Command Line Tools、无法运行 `xcodebuild` 是预期状态，不是项目故障。需要验证可安装包时，必须回到 GitHub Actions。
 
 ## 验收标准
 

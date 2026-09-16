@@ -76,6 +76,46 @@ export async function pickedPhotoFiles(photos, { fetchImpl = fetch } = {}) {
   return files;
 }
 
+export function isUnimplementedError(error) {
+  return String(error?.code || '').toUpperCase() === 'UNIMPLEMENTED';
+}
+
+/**
+ * `window.Capacitor.nativePromise(name, method, options)` from the native bridge. Unlike the
+ * `registerPlugin()` proxy it does not need the plugin to be present in the JavaScript headers:
+ * the bridge resolves a missing plugin class by name when the call arrives
+ * (`CapacitorBridge.handleJSCall`), so this is the fallback for an app-local plugin that the
+ * generated `packageClassList` missed (see `scripts/sync-ios-app-plugins.mjs`).
+ */
+export function nativeBridgePromise(capacitor = globalThis.Capacitor) {
+  const invoke = capacitor?.nativePromise;
+  return typeof invoke === 'function' ? invoke.bind(capacitor) : null;
+}
+
+/** The picker's `limit` is a slot count, never a negative or fractional one. */
+export function pickerOptions(limit) {
+  return { limit: Math.max(0, Math.floor(Number(limit) || 0)) };
+}
+
+/**
+ * Runs one picker call and turns the picked assets into uploadable files. A missing registration
+ * makes the proxy reject with UNIMPLEMENTED before any native code runs, so that specific error
+ * retries straight through the bridge instead of dropping to the file input.
+ */
+export async function pickImagesWith(picker, { limit, fetchImpl, nativePromise } = {}) {
+  const options = pickerOptions(limit);
+  let result;
+  try {
+    result = await picker.pickImages(options);
+  } catch (error) {
+    if (!isUnimplementedError(error)) throw error;
+    const invoke = nativePromise || nativeBridgePromise();
+    if (!invoke) throw error;
+    result = await invoke(NATIVE_PHOTO_PICKER, 'pickImages', options);
+  }
+  return pickedPhotoFiles(result?.photos, { fetchImpl });
+}
+
 /**
  * Opens the system photo picker and resolves with the picked files (possibly empty).
  * Throws `{ code: 'cancelled' }` when the user closes the sheet without picking anything.
@@ -85,8 +125,7 @@ export async function pickedPhotoFiles(photos, { fetchImpl = fetch } = {}) {
 export async function pickImagesFromLibrary({ limit, fetchImpl } = {}) {
   const picker = nativePhotoPicker();
   if (!picker) return null;
-  const result = await picker.pickImages({ limit: Math.max(0, Math.floor(Number(limit) || 0)) });
-  return pickedPhotoFiles(result?.photos, { fetchImpl });
+  return pickImagesWith(picker, { limit, fetchImpl });
 }
 
 export function isPhotoPickerCancellation(error) {

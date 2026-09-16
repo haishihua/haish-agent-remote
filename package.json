@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
-    "mobile:sync": "npm run build && cap sync",
+    "mobile:sync": "npm run build && cap sync && node scripts/sync-ios-app-plugins.mjs",
     "server": "python3 -m server.app serve",
     "pair": "python3 -m server.app pair",
     "test": "node --test tests/*.test.mjs && npm run test:server",
