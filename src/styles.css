@@ -308,8 +308,6 @@ input::placeholder, textarea::placeholder { color: var(--muted-2); }
 .stream-text { white-space: pre-wrap; }
 .message-body.streaming .stream-text::after { content: ''; display: inline-block; width: 6px; height: 1em; margin-left: 4px; border-radius: 2px; background: var(--accent); vertical-align: -0.14em; animation: pulse 720ms infinite alternate; }
 .message.user .message-body { animation: message-in 160ms ease-out; }
-.task-reply-status { display: inline-flex; margin: 0 0 10px; padding: 3px 9px; border: 1px solid rgba(138, 166, 209, 0.3); border-radius: 999px; color: var(--muted); font: 600 11px/1.3 var(--tool-card-font); }
-.task-reply-status.failed, .task-reply-status.error { border-color: rgba(251, 113, 133, 0.34); color: var(--danger); }
 .agent-trace { width: 100%; min-width: 0; margin: 0 0 12px; padding: 0; font-family: var(--conversation-font); }
 .agent-trace-content { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; gap: 8px; }
 .trace-text { width: 100%; padding: 2px 0; color: var(--text); font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; }

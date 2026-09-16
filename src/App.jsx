@@ -908,7 +908,8 @@ function MessageImage({ conversationId, image, onPreview }) {
 
 // A cancelled or failed task carries the partial answer and the failure reason in
 // separate fields, and the reason is often repeated inside the answer, so show
-// each line once behind a status chip.
+// each line once. The wording stays plain: the trace above already carries the
+// run, so the reply adds no status label of its own.
 function OutcomeReply({ status, text, error }) {
   const state = String(status || '').trim().toLowerCase();
   if (!isFailureStatus(state)) return null;
@@ -917,10 +918,7 @@ function OutcomeReply({ status, text, error }) {
     .filter(Boolean)
     .filter((value, index, values) => values.indexOf(value) === index)
     .join('\n\n') || (state === 'cancelled' ? 'Task cancelled.' : 'Task failed.');
-  return <>
-    <span className={`task-reply-status ${state}`}>{state === 'cancelled' ? 'Cancelled' : 'Failed'}</span>
-    <ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>{content}</ReactMarkdown>
-  </>;
+  return <ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>{content}</ReactMarkdown>;
 }
 
 // Cancelled and failed tasks never receive a persisted assistant message, so the
