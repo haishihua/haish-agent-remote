@@ -70,7 +70,7 @@ jobs:
       - name: Verify the packaged app registers the app-local plugins
         run: |
           unzip -p Haish-unsigned.ipa Payload/App.app/capacitor.config.json | tee /dev/stderr | python3 -c "import json, sys; classes = json.load(sys.stdin)['packageClassList']; assert 'PhotoPicker' in classes, f'the bundled config does not register the app-local plugins: {classes}'"
-          unzip -p Haish-unsigned.ipa Payload/App.app/Info.plist | python3 -c "import plistlib, sys; info = plistlib.load(sys.stdin.buffer); print('ipa version', info['CFBundleShortVersionString'], 'build', info['CFBundleVersion'])"
+          unzip -p Haish-unsigned.ipa Payload/App.app/Info.plist | python3 -c "import plistlib, sys; info = plistlib.loads(sys.stdin.buffer.read()); print('ipa version', info['CFBundleShortVersionString'], 'build', info['CFBundleVersion'])"
 
       - name: Upload IPA
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
