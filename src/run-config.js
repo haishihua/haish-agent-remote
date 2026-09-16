@@ -102,11 +102,12 @@ function taskRequestOptions(task) {
 
 // The raw selector the client sent with the task, e.g. `llm-profile-1783479743079`
 // for a saved provider entry or `custom:opencode_go` for the chat-level provider.
-// The runtime records it per task as `request_options.provider`; the adapter may
-// hand it over as a flat `requested_provider`.
+// The runtime records it per task as `request_options.provider` and hands it back as
+// the flat `request_provider`; older runtimes leave the adapter to provide
+// `requested_provider` from the state the runtime keeps on disk.
 function taskProviderSelector(task) {
   const options = taskRequestOptions(task);
-  return String(task?.requested_provider || task?.provider_selector || options?.provider || '').trim();
+  return String(task?.request_provider || task?.requested_provider || task?.provider_selector || options?.provider || '').trim();
 }
 
 function providerSelectorMatches(provider, selector) {
@@ -147,7 +148,7 @@ export function resolveRunConfig(conversation, providers, agents) {
     : [...tasks].reverse().find((task) => taskProviderSelector(task)) || latestTask;
   const taskOptions = taskRequestOptions(recordedTask);
   const taskProvider = recordedTask?.provider_key || recordedTask?.provider || '';
-  const taskModel = recordedTask?.model || taskOptions?.model_id || '';
+  const taskModel = recordedTask?.model || taskOptions?.model_id || recordedTask?.request_model_id || '';
   const provider = providerFromSelector(providers, taskProviderSelector(recordedTask), taskModel)
     || providers.find((item) => providerKeyMatches(item, taskProvider) && modelMatches(item, taskModel))
     || providers.find((item) => modelMatches(item, taskModel))

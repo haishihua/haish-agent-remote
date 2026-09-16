@@ -284,6 +284,108 @@ def discover_upstream() -> str:
     raise RuntimeError("Haish runtime was not found. Start the desktop app or set HAISH_UPSTREAM_URL.")
 
 
+# Every task stores the options its client sent (`request_options.provider`), but the
+# runtime API only exposes the coarse `provider_key`: two saved custom providers that
+# share a model (`custom` + `deepseek-v4-flash`) stay indistinguishable, so a phone
+# that never started the task would keep falling back to the first matching entry.
+# The runtime persists those options in its own state directory, next to the pid file
+# the adapter already discovers; read them from there instead of guessing.
+_RUNTIME_TASK_PROVIDER_CACHE: dict[tuple[str, int, int], dict[str, str]] = {}
+_SAFE_CONVERSATION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
+# A conversation record this large costs hundreds of megabytes to parse; past this
+# point the phone keeps its own fallback ordering instead of stalling the adapter.
+_MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024
+
+
+def runtime_home() -> Path | None:
+    """State directory of the runtime this adapter proxies to."""
+    explicit = os.getenv("HAISH_RUNTIME_HOME", "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    for path in _candidate_pid_files():
+        if path.is_file():
+            return path.parent
+    return None
+
+
+def _recorded_provider(task: Any) -> str:
+    options = task.get("request_options") if isinstance(task, dict) else None
+    if not isinstance(options, dict):
+        return ""
+    return str(options.get("provider") or "").strip()
+
+
+def _task_providers_from_journal(path: Path) -> dict[str, str]:
+    """Realtime delta journal: one task record per line, newest last."""
+    providers: dict[str, str] = {}
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                task = record.get("task") if isinstance(record, dict) else None
+                task_id = str(task.get("task_id") or "") if isinstance(task, dict) else ""
+                provider = _recorded_provider(task)
+                if task_id and provider:
+                    providers[task_id] = provider
+    except OSError:
+        return {}
+    return providers
+
+
+def _task_providers_from_snapshot(path: Path) -> dict[str, str]:
+    """Persisted conversation state: megabytes, parsed once per change and cached."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return {}
+    if stat.st_size > _MAX_SNAPSHOT_BYTES:
+        return {}
+    cache_key = (str(path), stat.st_mtime_ns, stat.st_size)
+    cached = _RUNTIME_TASK_PROVIDER_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    tasks = payload.get("tasks") if isinstance(payload, dict) else None
+    providers: dict[str, str] = {}
+    for task in tasks if isinstance(tasks, list) else []:
+        task_id = str(task.get("task_id") or "") if isinstance(task, dict) else ""
+        provider = _recorded_provider(task)
+        if task_id and provider:
+            providers[task_id] = provider
+    _RUNTIME_TASK_PROVIDER_CACHE.clear()
+    _RUNTIME_TASK_PROVIDER_CACHE[cache_key] = providers
+    return providers
+
+
+def conversation_task_providers(conversation_id: str, *, last_task_id: str = "") -> dict[str, str]:
+    """Provider selector per task id, as recorded by the runtime for this conversation.
+
+    The journal is small and covers whatever the runtime just touched, which is the
+    case that matters right now; the full snapshot is the fallback for conversations
+    whose journal has already been pruned.
+    """
+    home = runtime_home()
+    if home is None or not _SAFE_CONVERSATION_ID.fullmatch(conversation_id):
+        return {}
+    journal = _task_providers_from_journal(home / "conversation_deltas" / f"{conversation_id}.jsonl")
+    if last_task_id and journal.get(last_task_id):
+        return journal
+    snapshot = _task_providers_from_snapshot(home / "conversations" / f"{conversation_id}.json")
+    if not snapshot:
+        return journal
+    snapshot.update(journal)
+    return snapshot
+
+
 def _token_from_request(request: Request) -> str | None:
     header = request.headers.get("authorization", "")
     if header.lower().startswith("bearer "):
@@ -530,6 +632,56 @@ class RealtimeTaskStream:
             await self._emit({"kind": "end"})
 
 
+def _carried_selector(task: Any) -> str:
+    """The recorded selector a task already carries, from either runtime or adapter."""
+    if not isinstance(task, dict):
+        return ""
+    options = task.get("request_options")
+    return str(
+        task.get("request_provider")
+        or task.get("requested_provider")
+        or (options.get("provider") if isinstance(options, dict) else "")
+        or ""
+    ).strip()
+
+
+def _attach_requested_providers(payload: Any) -> Any:
+    """Carry the provider each task ran with onto the conversation payload.
+
+    The phone restores a conversation's run config from its latest task, and
+    `provider_key` alone cannot tell two saved custom providers apart. A runtime that
+    exposes the recorded selector itself (`request_provider`) is left untouched.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    conversation_id = str(payload.get("conversation_id") or "")
+    tasks = payload.get("tasks")
+    if not conversation_id or not isinstance(tasks, list) or not tasks:
+        return payload
+    newest = next(
+        (task for task in tasks if isinstance(task, dict) and task.get("task_id") == payload.get("last_task_id")),
+        tasks[-1],
+    )
+    if _carried_selector(newest):
+        return payload
+    providers = conversation_task_providers(conversation_id, last_task_id=str(payload.get("last_task_id") or ""))
+    if not providers:
+        return payload
+    for task in tasks:
+        if not isinstance(task, dict) or task.get("requested_provider"):
+            continue
+        provider = providers.get(str(task.get("task_id") or ""))
+        if provider:
+            task["requested_provider"] = provider
+    return payload
+
+
+def _is_conversation_detail(path: str) -> bool:
+    """`conversations/<id>` only: the task and image sub-routes stay untouched."""
+    prefix = "conversations/"
+    return path.startswith(prefix) and bool(path[len(prefix):]) and "/" not in path[len(prefix):]
+
+
 def _compact_project_listing(payload: Any) -> Any:
     """Keep directory polling lightweight; conversation detail is fetched on demand."""
     if not isinstance(payload, dict) or not isinstance(payload.get("projects"), list):
@@ -717,20 +869,42 @@ def create_app(*, data_dir: Path | None = None, dist_dir: Path | None = None) ->
             if key.lower() in {"content-type", "cache-control", "etag", "content-disposition"}
         }
 
-        if request.method == "GET" and path == "projects" and upstream_response.is_success:
-            body = await upstream_response.aread()
+        async def read_upstream_json() -> tuple[bytes, Any]:
+            """Drain the upstream body once; ``None`` when it is not JSON."""
+            raw = await upstream_response.aread()
             await upstream_response.aclose()
             await client.aclose()
             try:
-                compacted = _compact_project_listing(json.loads(body))
+                return raw, json.loads(raw)
             except (TypeError, json.JSONDecodeError):
-                return Response(content=body, status_code=upstream_response.status_code, headers=response_headers)
-            compact_headers = {
+                return raw, None
+
+        def rewritten_json(payload: Any) -> Response:
+            """Re-send a shaped payload; a rewritten body cannot keep the upstream ETag."""
+            shaped_headers = {
                 key: value
                 for key, value in response_headers.items()
                 if key.lower() not in {"content-type", "etag"}
             }
-            return JSONResponse(content=compacted, status_code=upstream_response.status_code, headers=compact_headers)
+            return JSONResponse(content=payload, status_code=upstream_response.status_code, headers=shaped_headers)
+
+        def upstream_error(raw: bytes) -> Response:
+            return Response(content=raw, status_code=upstream_response.status_code, headers=response_headers)
+
+        if request.method == "GET" and upstream_response.is_success and path == "projects":
+            raw, payload = await read_upstream_json()
+            if payload is None:
+                return upstream_error(raw)
+            return rewritten_json(_compact_project_listing(payload))
+
+        # The runtime API never exposes the provider a task ran with, so the phone
+        # would have to guess it from the coarse `provider_key`.
+        if request.method == "GET" and upstream_response.is_success and _is_conversation_detail(path):
+            raw, payload = await read_upstream_json()
+            if payload is None:
+                return upstream_error(raw)
+            # Reading a conversation record is file work measured in megabytes.
+            return rewritten_json(await asyncio.to_thread(_attach_requested_providers, payload))
 
         async def body_iter():
             try:

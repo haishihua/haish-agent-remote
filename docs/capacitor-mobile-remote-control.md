@@ -175,6 +175,16 @@ POST /api/approvals/{request_id}/resolve            ← 手机（请求体与旧
 
 adapter 发现 runtime 的顺序是：优先使用 `HAISH_UPSTREAM_URL`，否则读取 macOS/Linux 下最新的 `runtime.pid`。访问本机 runtime 的 `httpx` 客户端统一使用 `trust_env=False`，实时 WebSocket 客户端同样禁用环境代理，避免本地代理影响 loopback 请求。
 
+### 会话运行配置的还原
+
+打开会话详情时，手机按“这个会话实际是用什么跑的”还原服务商、模型和思考等级：runtime 把每个任务的 `request_options` 记在任务上，但 HTTP 契约只暴露粗粒度的 `provider_key`——保存的自定义服务商都叫 `custom`，甚至共用同一个模型——只有客户端当初记录的 selector（`llm-profile-1783479743079`、`custom:opencode_go`）能把它们区分开。adapter 负责把这个 selector 交到手机手上：
+
+- runtime 已经暴露 `request_provider` / `request_model_id` 时原样透传，adapter 不碰本地文件；
+- 旧版 runtime 只在磁盘上记着，adapter 从 runtime 自己的状态目录补齐：先读实时增量日志 `conversation_deltas/<conversation_id>.jsonl`（只覆盖 runtime 刚动过的任务），没有就回退到整会话记录 `conversations/<conversation_id>.json`，按 mtime + size 缓存，超过 64 MB 放弃解析；
+- 只在 `GET /api/conversations/<id>` 这一个路由上改写响应体（任务、图片子路由不动），改写过的响应不再沿用上游 ETag，也不进入缓存；
+- 状态目录取 `HAISH_RUNTIME_HOME`，否则取 adapter 已发现的 `runtime.pid` 所在目录；
+- 解析几十兆的会话记录会阻塞事件循环，因此放到线程里执行，实时任务流不受影响。
+
 ### 鉴权、错误和撤销行为
 
 - 无效或缺失 Bearer token/Cookie：需要鉴权的接口返回 401；原生客户端清除本地凭证并回到扫码页；

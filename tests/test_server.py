@@ -1,4 +1,5 @@
 import asyncio
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import threading
 import unittest
@@ -13,15 +14,58 @@ from websockets.sync.server import serve as serve_runtime_socket
 from server.app import (
     DeviceStore,
     RealtimeTaskStream,
+    _attach_requested_providers,
     _computer_model,
     _compact_project_listing,
+    _is_conversation_detail,
     _pairing_uri,
     _public_endpoint,
     _remote_device_name,
     _route_allowed,
+    conversation_task_providers,
     create_app,
     realtime_events_url,
 )
+
+
+class FakeRuntimeHttp:
+    """Minimal runtime HTTP server for the proxied GETs the adapter reshapes."""
+
+    def __init__(self, payloads: dict[str, object]):
+        self.payloads = payloads
+        self.paths: list[str] = []
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_GET(self) -> None:  # noqa: N802 - http.server dispatch naming.
+                outer.paths.append(self.path)
+                payload = outer.payloads.get(self.path)
+                body = json.dumps(payload if payload is not None else {"detail": "not found"}).encode()
+                self.send_response(200 if payload is not None else 404)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args: object) -> None:
+                pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+
+    def __enter__(self) -> "FakeRuntimeHttp":
+        self.thread.start()
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+
+    def upstream(self) -> str:
+        return f"http://127.0.0.1:{self.server.server_address[1]}"
 
 
 class FakeRuntimeSocket:
@@ -553,6 +597,188 @@ class RemoteApprovalResolveTest(unittest.TestCase):
                 with self.subTest(path=path):
                     response = client.post(path, json={"decision": "allow_once"})
                     self.assertEqual(response.status_code, 401)
+
+
+class ConversationRunConfigTest(unittest.TestCase):
+    """The runtime records the client selector per task; the phone should read it."""
+
+    CONVERSATION_ID = "af43484445be44a08f6d62bbe7ab486d"
+
+    def _runtime_home(self, directory: Path, *, journal: list[dict] | None, snapshot: dict | None) -> Path:
+        home = directory / "runtime"
+        (home / "conversation_deltas").mkdir(parents=True)
+        (home / "conversations").mkdir()
+        if journal is not None:
+            (home / "conversation_deltas" / f"{self.CONVERSATION_ID}.jsonl").write_text(
+                "\n".join(json.dumps(entry) for entry in journal) + "\n",
+                encoding="utf-8",
+            )
+        if snapshot is not None:
+            (home / "conversations" / f"{self.CONVERSATION_ID}.json").write_text(
+                json.dumps(snapshot), encoding="utf-8"
+            )
+        return home
+
+    @staticmethod
+    def _journal_entry(task_id: str, provider: str) -> dict:
+        return {"id": "1", "v": 1, "task": {"task_id": task_id, "request_options": {"provider": provider}}}
+
+    def test_provider_comes_from_the_journal_the_runtime_just_wrote(self):
+        with TemporaryDirectory() as directory:
+            home = self._runtime_home(
+                Path(directory),
+                journal=[self._journal_entry("task-1", "custom:opencode_go"), self._journal_entry("task-2", "llm-profile-router")],
+                snapshot=None,
+            )
+            with patch.dict("server.app.os.environ", {"HAISH_RUNTIME_HOME": str(home)}):
+                providers = conversation_task_providers(self.CONVERSATION_ID, last_task_id="task-2")
+                enriched = _attach_requested_providers({
+                    "conversation_id": self.CONVERSATION_ID,
+                    "last_task_id": "task-2",
+                    "tasks": [{"task_id": "task-1"}, {"task_id": "task-2"}, {"task_id": "task-9"}],
+                })
+
+            self.assertEqual(providers, {"task-1": "custom:opencode_go", "task-2": "llm-profile-router"})
+            # The journal only carries the tasks the runtime just touched: the fast
+            # path must leave everything else alone instead of guessing.
+            self.assertEqual(
+                [task.get("requested_provider") for task in enriched["tasks"]],
+                ["custom:opencode_go", "llm-profile-router", None],
+            )
+
+    def test_pruned_journal_falls_back_to_the_conversation_snapshot(self):
+        with TemporaryDirectory() as directory:
+            home = self._runtime_home(
+                Path(directory),
+                journal=[self._journal_entry("task-1", "custom")],
+                snapshot={"tasks": [
+                    {"task_id": "task-1", "request_options": {"provider": "custom"}},
+                    {"task_id": "task-2", "request_options": {"provider": "llm-profile-1783479743079"}},
+                    {"task_id": "task-3"},
+                ]},
+            )
+            with patch.dict("server.app.os.environ", {"HAISH_RUNTIME_HOME": str(home)}):
+                providers = conversation_task_providers(self.CONVERSATION_ID, last_task_id="task-2")
+
+            self.assertEqual(providers["task-2"], "llm-profile-1783479743079")
+
+    def test_a_missing_store_is_not_an_error(self):
+        with TemporaryDirectory() as directory:
+            with patch.dict("server.app.os.environ", {"HAISH_RUNTIME_HOME": str(Path(directory) / "absent")}):
+                self.assertEqual(conversation_task_providers(self.CONVERSATION_ID), {})
+                self.assertEqual(conversation_task_providers("../../etc/passwd"), {})
+
+    def test_conversation_payload_carries_the_recorded_provider_per_task(self):
+        with TemporaryDirectory() as directory:
+            # The journal was pruned before the latest task, so the snapshot fills in
+            # the tasks the journal lost while the journal still wins for the ones it kept.
+            home = self._runtime_home(
+                Path(directory),
+                journal=[self._journal_entry("task-1", "custom:opencode_go")],
+                snapshot={"tasks": [
+                    {"task_id": "task-1", "request_options": {"provider": "llm-profile-1783479743079"}},
+                    {"task_id": "task-2", "request_options": {"provider": "llm-profile-1783479743079"}},
+                ]},
+            )
+            payload = {
+                "conversation_id": self.CONVERSATION_ID,
+                "last_task_id": "task-2",
+                "tasks": [
+                    {"task_id": "task-1", "provider_key": "custom", "model": "deepseek-v4-flash"},
+                    {"task_id": "task-2", "provider_key": "custom", "model": "deepseek-v4-flash"},
+                    {"task_id": "task-3", "provider_key": "custom", "requested_provider": "custom:opencode_go"},
+                ],
+            }
+            with patch.dict("server.app.os.environ", {"HAISH_RUNTIME_HOME": str(home)}):
+                enriched = _attach_requested_providers(payload)
+
+            self.assertEqual(
+                [task.get("requested_provider") for task in enriched["tasks"]],
+                ["custom:opencode_go", "llm-profile-1783479743079", "custom:opencode_go"],
+            )
+
+    def test_a_runtime_that_reports_the_selector_itself_is_left_alone(self):
+        with TemporaryDirectory() as directory:
+            # The runtime hands the recorded selector over, so nothing should be read
+            # from its state directory - not even when the file disagrees.
+            home = self._runtime_home(
+                Path(directory),
+                journal=None,
+                snapshot={"tasks": [{"task_id": "task-1", "request_options": {"provider": "from-the-file"}}]},
+            )
+            payload = {
+                "conversation_id": self.CONVERSATION_ID,
+                "last_task_id": "task-1",
+                "tasks": [{
+                    "task_id": "task-1",
+                    "provider_key": "custom",
+                    "model": "deepseek-v4-flash",
+                    "request_provider": "llm-profile-1783479743079",
+                    "request_model_id": "deepseek-v4-flash",
+                }],
+            }
+            with patch.dict("server.app.os.environ", {"HAISH_RUNTIME_HOME": str(home)}):
+                enriched = _attach_requested_providers(payload)
+
+            self.assertIs(enriched, payload)
+            self.assertNotIn("requested_provider", enriched["tasks"][0])
+
+    def test_a_snapshot_past_the_size_cap_is_not_parsed(self):
+        with TemporaryDirectory() as directory:
+            home = self._runtime_home(
+                Path(directory),
+                journal=None,
+                snapshot={"tasks": [{"task_id": "task-1", "request_options": {"provider": "llm-profile-router"}}]},
+            )
+            with patch.dict("server.app.os.environ", {"HAISH_RUNTIME_HOME": str(home)}), patch(
+                "server.app._MAX_SNAPSHOT_BYTES", 1
+            ):
+                self.assertEqual(conversation_task_providers(self.CONVERSATION_ID, last_task_id="task-1"), {})
+
+    def test_only_the_conversation_detail_is_reshaped(self):
+        self.assertTrue(_is_conversation_detail(f"conversations/{self.CONVERSATION_ID}"))
+        self.assertFalse(_is_conversation_detail(f"conversations/{self.CONVERSATION_ID}/tasks"))
+        self.assertFalse(_is_conversation_detail(f"conversations/{self.CONVERSATION_ID}/messages/images/preview"))
+        self.assertFalse(_is_conversation_detail("conversations/"))
+        self.assertFalse(_is_conversation_detail("projects"))
+
+    def test_proxied_conversation_detail_exposes_the_selector(self):
+        with TemporaryDirectory() as directory:
+            app = create_app(data_dir=Path(directory), dist_dir=Path(directory))
+            store = app.state.device_store
+            token, _ = store.exchange(store.issue_pairing_code(), "iPhone")
+            client = TestClient(app)
+            headers = {"Authorization": f"Bearer {token}"}
+            home = self._runtime_home(
+                Path(directory),
+                journal=[self._journal_entry("task-2", "llm-profile-1783479743079")],
+                snapshot=None,
+            )
+            detail = {
+                "conversation_id": self.CONVERSATION_ID,
+                "last_task_id": "task-2",
+                "tasks": [
+                    {"task_id": "task-1", "provider_key": "custom", "model": "deepseek-v4-flash"},
+                    {"task_id": "task-2", "provider_key": "custom", "model": "deepseek-v4-flash"},
+                ],
+            }
+            task_list = [{"task_id": "task-2", "provider_key": "custom", "model": "deepseek-v4-flash"}]
+            with FakeRuntimeHttp({
+                f"/api/conversations/{self.CONVERSATION_ID}": detail,
+                f"/api/conversations/{self.CONVERSATION_ID}/tasks": task_list,
+            }) as runtime, patch("server.app.discover_upstream", return_value=runtime.upstream()), patch.dict(
+                "server.app.os.environ", {"HAISH_RUNTIME_HOME": str(home)}
+            ):
+                response = client.get(f"/api/conversations/{self.CONVERSATION_ID}", headers=headers)
+                untouched = client.get(f"/api/conversations/{self.CONVERSATION_ID}/tasks", headers=headers)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(
+                [task.get("requested_provider") for task in response.json()["tasks"]],
+                [None, "llm-profile-1783479743079"],
+            )
+            self.assertEqual(untouched.status_code, 200)
+            self.assertNotIn("requested_provider", untouched.json()[0])
 
 
 if __name__ == "__main__":

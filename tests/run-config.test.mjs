@@ -101,6 +101,38 @@ test('the provider the client recorded on the task beats the first provider shar
   });
 });
 
+test('the runtime field request_provider restores the provider the conversation ran with', () => {
+  // The live 「后端优化」 shape: the chat entry and two saved profiles all answer to the
+  // generic `custom` key, and two of them serve the same model, so the selector the
+  // client recorded is the only value that says which one the task actually ran with.
+  const providers = providerOptionsFromSettings({
+    chat: { provider: 'custom', name: 'opencode_go', model: 'deepseek-v4-flash', reasoning_effort: 'high' },
+    profiles: [
+      { id: 'llm-profile-1783479743079', provider: 'custom', name: 'ai rounter', model: 'deepseek-v4-flash', reasoning_effort: 'high' },
+      { id: 'llm-profile-command-code', provider: 'custom', name: 'command code', model: 'deepseek/deepseek-v4.1-flash', reasoning_effort: 'high' },
+    ],
+  });
+  const conversation = {
+    last_task_id: '5b2b80a2118b47508f84e3e916c5a9be',
+    tasks: [{
+      task_id: '5b2b80a2118b47508f84e3e916c5a9be',
+      provider: 'Custom',
+      provider_key: 'custom',
+      model: 'deepseek-v4-flash',
+      reasoning_effort: 'xhigh',
+      request_provider: 'llm-profile-1783479743079',
+      request_model_id: 'deepseek-v4-flash',
+    }],
+  };
+
+  assert.deepEqual(resolveRunConfig(conversation, providers, []), {
+    agentId: '',
+    providerId: 'llm-profile-1783479743079',
+    modelId: 'deepseek-v4-flash',
+    thinking: 'xhigh',
+  });
+});
+
 test('the adapter can hand the recorded selector over as a flat field', () => {
   const providers = providerOptionsFromSettings({
     chat: { provider: 'custom', name: 'opencode_go', model: 'deepseek-v4-flash' },
