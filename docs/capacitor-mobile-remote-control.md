@@ -235,7 +235,8 @@ WKWebView 对 `<input type="file" accept="image/*">` 只会弹出系统的 `Phot
 - 松手按速度决定去向：> 0.2 px/ms 或过了半屏就完成返回，其余回弹；时长取“剩余距离 / 速度”（速度下限 0.5 px/ms，90–340ms），和手指最后的速度连续；收敛从“最后一帧真正画出来的进度”接上（不是手指的最新采样），快甩也不会在松手那一下跳一格；
 - 手势进行中会话轮询（5s）、任务快照（2s）、列表轮询（5s）和秒表 tick 全部暂停；已经发出的请求如果在手势期间返回，会话刷新直接丢弃并在收敛后重取（`isSwipeBackInFlight()`）——交互式转场期间不做后台重建，这是原生 App 的常规做法；
 - 详情页开着的时候目录轮询整个停掉：`/api/projects` 一份 ~3.5 MB，本机 `JSON.parse` + 签名 `JSON.stringify` 约 13ms，到手机上就是几十毫秒的主线程停顿，而且内容一旦有变化还会重绘被盖在下面的整份列表——这些在详情页都看不见，所以只在列表真正可见时轮询，返回列表时补一次刷新，且等一个空闲时机（`requestIdleCallback`）再拉，不压在滑动的最后几帧上。
-- 按下就加 `swipe-armed` 提升图层（`will-change: transform`），被盖住的目录从这时起恢复动画（`:has(.detail-screen.swipe-armed)`），直到收敛动画播完才摘掉（中途摘会让图层和目录动画在动的时候重建，快甩的起飞段就会顿一下），`prefers-reduced-motion` 下直接切页不做动画；
+- 按下就加 `swipe-armed` 提升图层（`will-change: transform`），收敛动画播完才摘掉（中途摘会让图层在动的时候重建，快甩的起飞段就会顿一下），`prefers-reduced-motion` 下直接切页不做动画；滑动期间目录的定时动画一律不恢复（`.app-shell.detail-open > :not(.detail-screen) *` 那条规则不再为手势开绿灯）：那是滑退期最重的一笔——手上正拖着一个满屏图层时，把三只状态转圈和两条逐帧重绘的渐变放回来，既要重算整份被盖住的列表的样式，又要每帧再画一遍它们；详情页自己那两条渐变也一起暂停（`.detail-screen.swipe-armed .agent-phase-gradient`），理由同上；
+- 目录顶栏那层 `backdrop-filter` 在详情页开着时关掉（`.app-shell.detail-open .remote-topbar`）：没键盘、没列表滚动时它是免费的，但 iOS 会在它上面每一帧重算一次背景模糊——滑退时正好有一个满屏图层从它上面走过，模糊得跟着重算，滑动就会一卡一卡；详情开着时它本来就被盖住，关了不丢任何东西；
 - `tests/swipe-back.test.mjs` 覆盖阈值、锥角、进度、速度平滑和松手判定这些纯数学部分。
 
 ### 加载失败与下拉刷新
@@ -256,9 +257,13 @@ WKWebView 里的输入框获得焦点时，iOS 会在键盘上方压一条系统
 所以 `capacitor.config.ts` 里写明 `Keyboard.resize = 'none'`，键位由 Web 层自己跟（`src/ios-keyboard.js`）：
 
 - `keyboardWillShow / DidShow / WillHide / DidHide` 四个事件驱动一个控制器（浏览器里一个监听都不注册）。展开时按「键盘落地那一刻」要占的高度算，收起时回 0；
-- 布局只在一件事上听键盘的：键盘落地后给 `:root` 写一次 `--keyboard-inset`（插件报的就是键盘 frame 的高度，已包含它盖住的底部安全区）。`body` 与 `.detail-screen` 各用它做 `padding-bottom`——前者是目录页把自己的最后一行滑到键盘上方的空间，后者让输入框那一叠正好停在键盘上沿；`.composer` 的底部安全区边距同时归零（`max(0px, var(--safe-bottom) - var(--keyboard-inset))`），不会在键盘上多留一条 34pt 的缝；
-- 运动期间布局一个字节都不写：消息列表与输入框那一叠按合成层上的 transform 跟键盘一起走，时长与曲线取 iOS 自己的（250ms、curve 7 的近似），理由与右滑返回、下拉刷新一样——逐帧写样式会把整份消息列表算一遍，而这个 App 的主线程经常有活干；
-- 落地事件一到就换手：写 `--keyboard-inset`、清掉 transform、把消息列表贴回底部在同一个任务里完成，三者描述的是同一批像素，所以看不见；贴底不等 `ScrollToBottomButton` 的 ResizeObserver（它要等到这一帧的渲染步骤才跑，画面不该靠那一步与清 transform 的先后），控制器自己写同一个落点，它随后那次吸底就是同一件事（读者已经翻上去看历史时两边都不动，用的是同一条“贴着底”判断）；
+- 布局只在一件事上听键盘的：键盘落地后给 `:root` 写一次 `--keyboard-inset`（插件报的就是键盘 frame 的高度，已包含它盖住的底部安全区）与 `--keyboard-lift`。`body` 用它给目录页留出把最后一行滑到键盘上方的空间，`.detail-screen` 用它把输入框抬到键盘上沿（`.composer` 的底部安全区边距同时归零），`.message-region` 用它向上多长一段；
+- 运动期间布局一个字节都不写：消息列表与输入框按合成层上的 transform 跟键盘一起走，时长与曲线取 iOS 自己的（250ms、curve 7 的近似），理由与右滑返回、下拉刷新一样——逐帧写样式会把整份消息列表算一遍，而这个 App 的主线程经常有活干；
+- 只有读者贴着底端（`keyboardFollowing`）时消息列表才跟着走：翻上去看历史时键盘只是盖住列表下缘，内容留在原处，走的只有输入框（那是让开键盘，与看的是哪一段无关）。这条对应 RN 生态里那个键盘库 `react-native-keyboard-controller` 的 `keyboardLiftBehavior`：`whenAtEnd`（它标的就是 ChatGPT）、`always`（Telegram / WhatsApp）、`persistent`（Claude）、`never`（Perplexity），我们取第一个；
+- 落地事件一到就换手：写 `--keyboard-inset` 与 `--keyboard-lift`、清掉 transform、把消息列表贴回底部在同一个任务里完成，描述的是同一批像素，所以看不见；贴底不等 `ScrollToBottomButton` 的 ResizeObserver（它要等到这一帧的渲染步骤才跑，画面不该靠那一步与清 transform 的先后），控制器自己写同一个落点，它随后那次吸底就是同一件事（读者已经翻上去看历史时两边都不动，用的是同一条“贴着底”判断）；
+- 消息列表那两块不是各自找位置：列表的“窗口”（`.message-region` 的裁剪框）和输入框同一批位移、同一个时长，列表连窗口带内容一起动。上一版只把滚动内容 translate、窗口不动，收起键盘时内容整块滑出自己的裁剪框，整片区域露出页面底色——用户报的就是这一下；
+- `--keyboard-lift` 是键盘抬着的时候消息列表向上多长的一段（负的 `margin-top`）：收起的那一段里窗口上沿跟着往下走，多出来的这段让上面的历史消息留在窗口里（原生收起键盘时窗口是向上长的，看到的就是这些历史），而不是留一条空白。它和 `.detail-screen` 的 padding-bottom 在列表的可见高度上正好抵消，所以落地换手时滚动位置一个字都不用改；
+- 输入框那一叠停在哪儿由两行管：`.detail-screen` 的 padding-bottom 把它抬起来，`.composer` 自己的 `8px + 安全区` 底边距同时收成 0（`max(0px, ... - var(--keyboard-inset))`），所以它直接贴在键盘上沿，不会在上面多留一条 34pt 的缝；这一叠跟键盘走的那段位移也只有“屏高 − 安全区 − 键盘高”那么多（`keyboardLift`），两边描述的是同一个位置；
 - 快速开合会打断上一段动画：每次都从当前计算值接着走（`translateYOf`）；事件丢一个也由落地事件补上（`keyboardDidShow / DidHide` 自带高度）；插件把「只多一条 QuickType 提示栏」报成高度 0，那不算收起；
 - 插件在每个键盘事件里都会把 WebView 的 `contentInset` 归零（`resetScrollView`），iOS 那套替你挪一下的补偿不会叠在上面，让位的高度始终只有 `--keyboard-inset` 这一份；
 - 答案框这类落在消息列表内部的输入框，浏览器自己那次滚动发生在布局挪动之前，落地后再把它拉回输入框上方一次。

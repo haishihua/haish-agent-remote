@@ -24,17 +24,25 @@ export async function hideKeyboardAccessoryBar({ keyboard = Keyboard, native = i
  * 到位，前后没有任何动画（ionic-team/capacitor-keyboard#79）。现场是键盘先升起来、压在还没让位的输入
  * 框上，约 0.4s 后整个页面才跳一下；收起时反过来：frame 先弹回全高，页面还停在缩短的高度上，底下的
  * 界面（这里是会话目录）从缺口里露出来。这两半都在原生插件里，所以插件被设成 `resize: 'none'`，键位由
- * 这一层跟：
+ * 这一层跟。
  *
- * - 布局只在一件事上听键盘的：键盘落地后给 `--keyboard-inset` 写一次「键盘占掉的高度」。这是输入框停
- *   靠的位置，也是目录页把自己的最后一行滑到键盘上方需要的那点空间（`body` 与 `.detail-screen` 各自
- *   消费这个变量，输入框的底部安全区边距同时归零，见 styles.css）；
- * - 运动全程不碰布局：输入框和消息列表按合成层上的 transform 跟键盘一起走，理由与滑退、下拉一样——
- *   逐帧写样式或重排会把整份消息列表算一遍，而这个 App 的主线程经常有活干；
- * - 布局的那一次切换发生在键盘落地的同一帧、紧挨着清掉 transform：两者描述的是同一批像素，所以切换
- *   看不见；消息列表自己的吸底（`ScrollToBottomButton` 的 ResizeObserver）也落在这一帧里；
- * - 展开键盘时布局一次都不动，所以没有任何东西可以闪：闪的根源是视口高度和页面高度不同步，现在高度
- *   不再随键盘变。
+ * 跟的是两块一起走，而不是把消息列表的滚动内容单独 translate。详情里消息列表和输入框在键盘抬起时
+ * 同步平移（App.jsx 把这两块交给控制器），输入框贴着键盘上沿，消息列表连窗口带内容一起动：
+ *
+ * - 只有读者贴着底端时才让消息列表跟着走：翻上去看历史时键盘只是盖住列表下缘，内容留在原处
+ *   （ChatGPT 那种「只在贴着底时才抬」；Telegram/WhatsApp 是无条件抬），输入框照走不误；
+ * - 输入框永远贴着键盘上沿，中途也不脱开——上移量算的是「输入框静息底边到键盘上沿」那段，不是键盘高
+ *   度。静息时输入框底边离屏幕底还留着 8px + 安全区（styles.css），那一段本来就不该走（`keyboardLift`）；
+ * - 消息列表的窗口连内容一起动，没有任何一块被推出自己的裁剪框。上一版把消息列表单独 translate，收起
+ *   键盘时它会整块滑出 `.message-region`，于是整片区域露出页面底色——用户报的「短暂黑屏」；
+ * - 键盘抬起时这一层还向上多长一段（`--keyboard-lift`，也是落地时才写）：收起的那一段里，窗口上沿跟着
+ *   往下走，多出来的这一段正好把上面的历史消息留在窗口里，而不是留一条空白（原生键盘收起时窗口是向上
+ *   长的，看到的就是这些历史）。它和 `.detail-screen` 的 padding-bottom 在消息列表的高度上正好抵消：
+ *   换手前后列表的可见高度一致，滚动位置不用动；
+ * - 布局在运动期间一次都不动，所以没有缺口可以闪；
+ * - 落地时把 transform 换回布局：给 `--keyboard-inset` 写一次键盘高度，`.detail-screen` 的 padding-bottom
+ *   把这一层连同输入框抬到同一个位置，输入框的底部安全区边距同时归零（styles.css）；写布局、清 transform、
+ *   消息列表贴底在同一个任务里完成，两者描述同一批像素，切换看不见。
  *
  * 落地的时刻取 `keyboardDidShow` / `keyboardDidHide`；时长与曲线是 iOS 自己的（250ms、curve 7 的近
  * 似，插件不向外暴露这两个值），差一点也会被落地事件纠正回来。
@@ -42,6 +50,8 @@ export async function hideKeyboardAccessoryBar({ keyboard = Keyboard, native = i
 
 /** 键盘占的高度，写在 `:root` 上供布局使用。 */
 export const KEYBOARD_INSET_VAR = '--keyboard-inset';
+/** 跟键盘走的那一层在键盘抬起时向上多长的一段，写在 `:root` 上供布局使用。 */
+export const KEYBOARD_LIFT_VAR = '--keyboard-lift';
 /** 与 `ScrollToBottomButton` 一致：离底不超过这个距离就算「看着最新消息」。 */
 export const KEYBOARD_FOLLOW_SLACK = 96;
 /** iOS 键盘动画时长；插件不暴露 `UIKeyboardAnimationDurationUserInfoKey`。 */
@@ -50,6 +60,8 @@ export const KEYBOARD_MOTION_MS = 250;
 export const KEYBOARD_LANDING_GRACE_MS = 650;
 /** curve 7 的近似，与滑退、下拉收敛用的是同一条曲线。 */
 export const KEYBOARD_MOTION_EASING = 'cubic-bezier(0.32, 0.72, 0, 1)';
+/** 键盘运动期间挂在跟键盘走的那一层上：层内部的定时渐变/阴影在这 250ms 里停一停。 */
+export const KEYBOARD_MOTION_CLASS = 'keyboard-moving';
 
 /**
  * 键盘要从布局里拿走多少高度：插件报的就是键盘 frame 的高度（已经包含它盖住的底部安全区，所以不扣）。
@@ -61,12 +73,13 @@ export function keyboardInset(keyboardHeight) {
 }
 
 /**
- * 布局落下之后，消息列表自己的吸底会把 scrollTop 放到哪里——和 `ScrollToBottomButton`
- * （`scrollTop = scrollHeight`，由浏览器夹回上限）算的是同一个值，这正是动画与落地互换能对齐的原因。
+ * 跟键盘走的那一层要上移多少：输入框静息底边离屏幕底 `restGap`（8px + 安全区），键盘上沿离屏幕底
+ * `keyboardHeight`（插件报的高度已经包含底部安全区，两把尺子都是「离屏幕底多少」）。落地时布局把输入
+ * 框放到 `keyboardHeight` 那个位置、静息时放在 `restGap`，所以这中间的差就是移动量。
  */
-export function keyboardLanding({ contentHeight = 0, viewportHeight = 0, scrollTop = 0, inset = 0, following = true } = {}) {
-  if (!following) return scrollTop;
-  return Math.max(0, contentHeight - (viewportHeight - inset));
+export function keyboardLift({ keyboardHeight = 0, restGap = 0 } = {}) {
+  const gap = Number(restGap);
+  return Math.max(0, keyboardInset(keyboardHeight) - (Number.isFinite(gap) ? Math.max(0, Math.round(gap)) : 0));
 }
 
 /**
@@ -76,16 +89,9 @@ export function keyboardFollowing({ contentHeight = 0, viewportHeight = 0, scrol
   return contentHeight - scrollTop - viewportHeight <= slack;
 }
 
-/**
- * 键盘移动期间各自要走多少像素：`composer` 是输入框那一叠的，`thread` 是消息列表的。
- * `inset` 是布局上等着发生的变化——键盘拿走高度时为正（展开），还回来时为负（收起）。
- */
-export function keyboardTravel({ contentHeight = 0, viewportHeight = 0, scrollTop = 0, inset = 0, slack = KEYBOARD_FOLLOW_SLACK } = {}) {
-  const travel = { composer: -inset, thread: 0 };
-  // 读者已经滚上去看历史：列表留在原地，只有它自己的滚动位置能决定它跟不跟。
-  if (!keyboardFollowing({ contentHeight, viewportHeight, scrollTop, slack })) return travel;
-  travel.thread = scrollTop - keyboardLanding({ contentHeight, viewportHeight, scrollTop, inset, following: true });
-  return travel;
+/** 读者贴着底端时消息列表才跟着键盘走；翻上去看历史时它留在原处（只有输入框让开）。 */
+function listTravels(geometry) {
+  return Boolean(geometry && keyboardFollowing(geometry));
 }
 
 /** 计算后的 transform 里的 Y 位移，让被打断的动画从当前位置接着走。 */
@@ -99,7 +105,7 @@ export function translateYOf(transform) {
 
 let keyboardSurface = null;
 
-/** 打开的会话把两个跟键盘走的部分交给控制器，离开时收回。 */
+/** 打开的会话把跟键盘一起移动的两块（消息列表、输入框）交给控制器，离开时收回。 */
 export function registerKeyboardSurface(next) {
   keyboardSurface = next;
   return () => {
@@ -117,7 +123,7 @@ function revealFocusedField(scroller) {
 
 function animateTravel(element, from, to, duration) {
   return element.animate(
-    [{ transform: `translateY(${from}px)` }, { transform: `translateY(${to}px)` }],
+    [{ transform: `translate3d(0, ${from}px, 0)` }, { transform: `translate3d(0, ${to}px, 0)` }],
     { duration, easing: KEYBOARD_MOTION_EASING, fill: 'both' },
   );
 }
@@ -128,9 +134,13 @@ export function createKeyboardInsetController({
   root = document.documentElement,
   getSurface = () => keyboardSurface,
   readTransform = (element) => window.getComputedStyle(element).transform,
+  readRect = (element) => element.getBoundingClientRect(),
+  readViewportHeight = () => window.innerHeight,
   motionMs = KEYBOARD_MOTION_MS,
 } = {}) {
   let inset = 0;
+  // 输入框静息底边离屏幕底有多远。只有真正静息（布局没抬起、也没在动）时才重新量一次。
+  let restGap = 0;
   let motion = null;
   let handles = [];
   let stopped = false;
@@ -140,11 +150,36 @@ export function createKeyboardInsetController({
     root.style.setProperty(KEYBOARD_INSET_VAR, `${next}px`);
   }
 
+  // 长度与 inset 同一批写进去：两个布局值互相抵消，同一个任务里换，画面才对得上。
+  function writeLift(next) {
+    root.style.setProperty(KEYBOARD_LIFT_VAR, `${Math.max(0, next)}px`);
+  }
+
   function pieces() {
     const registered = getSurface?.();
+    const region = registered?.regionRef?.current;
     const scroller = registered?.scrollerRef?.current;
     const dock = registered?.dockRef?.current;
-    return scroller && dock ? { scroller, dock } : null;
+    return region && scroller && dock ? { region, scroller, dock } : null;
+  }
+
+  function measureRestGap({ dock }) {
+    if (inset || motion) return restGap;
+    const bottom = readRect(dock)?.bottom;
+    const viewport = readViewportHeight();
+    if (!Number.isFinite(bottom) || !Number.isFinite(viewport)) return restGap;
+    restGap = Math.max(0, Math.round(viewport - bottom));
+    return restGap;
+  }
+
+  function geometryOf(scroller) {
+    return scroller
+      ? {
+        contentHeight: scroller.scrollHeight,
+        viewportHeight: scroller.clientHeight,
+        scrollTop: scroller.scrollTop,
+      }
+      : null;
   }
 
   function stopMotion() {
@@ -153,6 +188,7 @@ export function createKeyboardInsetController({
     if (!pending) return;
     if (pending.timer) clearTimeout(pending.timer);
     pending.animations.forEach((animation) => animation.cancel());
+    pending.region?.classList.remove(KEYBOARD_MOTION_CLASS);
   }
 
   // 键盘落地、动画也走完，才把布局换过去：此时两者描述同一批像素，切换在视野里不存在。
@@ -162,7 +198,9 @@ export function createKeyboardInsetController({
     motion = null;
     if (pending.timer) clearTimeout(pending.timer);
     writeInset(pending.target);
+    writeLift(pending.settledLift);
     pending.animations.forEach((animation) => animation.cancel());
+    pending.region?.classList.remove(KEYBOARD_MOTION_CLASS);
     pinToBottom(pending);
     revealFocusedField(pending.scroller);
   }
@@ -170,7 +208,8 @@ export function createKeyboardInsetController({
   /**
    * 换手的那一步自己把消息列表贴回底部：`ScrollToBottomButton` 的 ResizeObserver 要等到这一帧的渲染步骤才
    * 跑，而画面不该依赖那一步与清 transform 的先后。写的是同一个落点，所以它随后那次吸底是同一件事（幂等）；
-   * 读者已经翻上去看历史时两边都不动。
+   * 读者已经翻上去看历史时两边都不动。换手前后这一层的内部几何是同一套（抬起来的是 padding、内缩的是输
+   * 入框自己的边距），所以这一步通常什么也没改。
    */
   function pinToBottom({ scroller, following }) {
     if (!scroller || !following) return;
@@ -187,34 +226,32 @@ export function createKeyboardInsetController({
     if (target === inset && !motion) return;
     const next = pieces();
     const scroller = next?.scroller || null;
-    const geometry = scroller
-      ? {
-        contentHeight: scroller.scrollHeight,
-        viewportHeight: scroller.clientHeight,
-        scrollTop: scroller.scrollTop,
-      }
-      : null;
-    const from = next
-      ? {
-        dock: translateYOf(readTransform(next.dock)),
-        thread: translateYOf(readTransform(next.scroller)),
-      }
-      : null;
-    const travel = geometry ? keyboardTravel({ ...geometry, inset: target - inset }) : null;
+    const geometry = geometryOf(scroller);
+    if (next) measureRestGap(next);
+    // 抬起来与收起走的是同一个量：键盘高度减输入框静息的那段空隙。
+    const lift = keyboardLift({ keyboardHeight: Math.max(inset, target), restGap });
+    const following = listTravels(geometry);
+    const from = next && following ? translateYOf(readTransform(next.region)) : 0;
+    const to = target > 0 ? -lift : lift;
     stopMotion();
     const pending = {
       target,
+      settledLift: following && target > 0 ? lift : 0,
+      region: next?.region || null,
       scroller,
-      following: Boolean(geometry && keyboardFollowing(geometry)),
+      following,
       animations: [],
       landed: false,
       moved: false,
       timer: 0,
     };
     motion = pending;
-    if (next && from && travel) {
-      if (from.dock !== travel.composer) pending.animations.push(animateTravel(next.dock, from.dock, travel.composer, motionMs));
-      if (travel.thread && from.thread !== travel.thread) pending.animations.push(animateTravel(next.scroller, from.thread, travel.thread, motionMs));
+    if (next) {
+      if (following) next.region.classList.add(KEYBOARD_MOTION_CLASS);
+      for (const element of following ? [next.region, next.dock] : [next.dock]) {
+        const start = element === next.region ? from : translateYOf(readTransform(element));
+        if (start !== to) pending.animations.push(animateTravel(element, start, to, motionMs));
+      }
     }
     pending.moved = pending.animations.length === 0;
     settleMotion();
@@ -246,8 +283,11 @@ export function createKeyboardInsetController({
   function raiseNow(height) {
     const target = keyboardInset(height);
     if (!target || target === inset) return;
+    const next = pieces();
+    if (next) measureRestGap(next);
     stopMotion();
     writeInset(target);
+    writeLift(listTravels(geometryOf(next?.scroller)) ? keyboardLift({ keyboardHeight: target, restGap }) : 0);
   }
 
   function lower() {
@@ -267,7 +307,10 @@ export function createKeyboardInsetController({
       ['keyboardWillHide', () => lower()],
       ['keyboardDidHide', () => {
         if (motion) land();
-        else if (inset) writeInset(0);
+        else if (inset) {
+          writeInset(0);
+          writeLift(0);
+        }
       }],
     ];
     handles = await Promise.all(events.map(([event, handler]) => keyboard.addListener(event, handler)));

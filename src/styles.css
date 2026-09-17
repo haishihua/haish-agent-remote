@@ -260,18 +260,37 @@ input::placeholder, textarea::placeholder { color: var(--muted-2); }
 /* 浏览器（含 PWA）里高度跟着可见视口走，免得输入框被地址栏挡住；App 里 WebView 的高度就是窗口
    （键位不缩 WebView，见 src/ios-keyboard.js），`inset: 0` 已经是全部。 */
 html:not(.native-app) .detail-screen { height: 100dvh; }
+/* 消息列表和输入框是同一层：键盘抬起时两者一起平移（src/ios-keyboard.js），输入框贴着键盘上沿，
+   消息列表的窗口连内容一起动——没有任何一块会被推出自己的裁剪框，也没有背景从缺口里露出来。落地后
+   transform 换回布局，两者描述同一批像素。
+   `--keyboard-lift` 是同一个“落地才写”的高度：键盘抬着的时候消息列表再向上长一段（负的 margin-top
+   把它的框顶抬到页头上方，内容从那里开始画），收起来的那一段里窗口上沿跟着往下走，多出来的这段把上
+   面的历史消息留在窗口里（原生收起键盘时窗口是向上长的，看到的就是这些历史）；它和上面那个
+   padding 在消息列表的可见高度上正好抵消，滚动位置不用动。 */
+.message-region { margin-top: calc(-1 * var(--keyboard-lift, 0px)); }
+/* 跟键盘一起动的那 250ms 里，把消息列表里的定时动画都停掉：.agent-phase-gradient 是逐帧重绘的渐变
+   加一层 drop-shadow，正在平移的合成层里带着它就会一卡一卡。 */
+.message-region.keyboard-moving * { animation-play-state: paused; }
 .app-shell.detail-open > :not(.detail-screen) { pointer-events: none; }
 /* The directory keeps animating behind an open conversation even though it is
    fully covered: 3 status spinners alone cost more main-thread time than the
-   whole thread. Pause them while covered, but not while a pull is on its way —
-   the list is what the finger is revealing then. */
-.app-shell.detail-open:not(:has(.detail-screen.swipe-armed)) > :not(.detail-screen) * { animation-play-state: paused; }
+   whole thread. Pause them whenever a conversation is open — including while a
+   back swipe is revealing the list under the finger. Releasing them mid-gesture
+   is what that swipe felt like: a style recalc across every row plus per-frame
+   work from the spinners and phase gradients while a full-screen layer is
+   already moving. They come back the moment the detail is gone. */
+.app-shell.detail-open > :not(.detail-screen) * { animation-play-state: paused; }
+/* 详情页滑走时，目录顶栏那层 backdrop-filter 会让 iOS 每一帧重算一次背景模糊：正在移动的详情层压在
+   它上面，模糊就得跟着重算，滑动因此一卡一卡。详情开着时它本来就被盖住，直接关掉。 */
+.app-shell.detail-open .remote-topbar { backdrop-filter: none; }
 .detail-top { touch-action: none; }
 /* The pull is a Web Animations transform owned by App.jsx; this class promotes the layer
    before the finger moves (so the first tracked frame does not build it) and stays on
    until the settle has landed: dropping it mid-flight rebuilds the layer and re-pauses
    the directory while the page is still moving. */
 .detail-screen.swipe-armed { will-change: transform; }
+/* 滑退期间详情层自己的定时动画也停一停：逐帧重绘的渐变 + drop-shadow 会拖慢正在平移的那一层。 */
+.detail-screen.swipe-armed .agent-phase-gradient { animation-play-state: paused; }
 .detail-screen.swipe-dismissing { pointer-events: none; }
 .detail-top { position: relative; z-index: 30; background: var(--background); }
 .detail-header { display: grid; grid-template-columns: 48px minmax(0, 1fr) 48px; gap: 8px; min-height: calc(70px + var(--safe-top)); padding: calc(12px + var(--safe-top)) 10px 10px; align-items: center; border-bottom: 1px solid var(--border); }
@@ -426,8 +445,11 @@ html:not(.native-app) .detail-screen { height: 100dvh; }
 .agent-phase-gradient { color: transparent; background: linear-gradient(90deg, #efbf64 0%, #ffe9a8 14%, #69c8f6 30%, #8f8cff 44%, #d58cff 58%, #69c8f6 72%, #ffe9a8 86%, #efbf64 100%); background-size: 240% 100%; background-position: 100% 50%; background-clip: text; -webkit-background-clip: text; filter: drop-shadow(0 0 7px rgba(105, 200, 246, 0.22)); animation: agent-phase-gradient 2.6s linear infinite; }
 .agent-phase-spark { animation: agent-phase-gradient 2.6s linear infinite, agent-phase-blink 0.9s steps(2, start) infinite; }
 .agent-phase-verb::after { content: 'Synthesis...'; animation: agent-phase-words 28s step-end infinite; }
-.composer-dock { min-width: 0; }
-.composer { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 48px; gap: 7px; margin: 8px 10px calc(8px + max(0px, var(--safe-bottom) - var(--keyboard-inset))); padding: 6px; border: 1px solid rgba(138, 166, 209, 0.28); border-radius: 18px; background: rgba(13, 16, 24, 0.96); transition: border-color 160ms ease, box-shadow 160ms ease; }
+.composer-dock { min-width: 0; margin-bottom: max(0px, 8px + var(--safe-bottom) - var(--keyboard-inset)); }
+/* 输入框那一叠的位置由上面那行和这一行一起管：静息时离屏幕底 8px + 安全区，键盘上来时收成 0——输入
+   框直接贴在键盘上沿（用户报的「有 padding」就是这里原来一直留着的那一段）。收掉的量与跟键盘走的那
+   一层上移的距离正好抵消，落地换手才看不见，见 src/ios-keyboard.js。 */
+.composer { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 48px; gap: 7px; margin: 8px 10px 0; padding: 6px; border: 1px solid rgba(138, 166, 209, 0.28); border-radius: 18px; background: rgba(13, 16, 24, 0.96); transition: border-color 160ms ease, box-shadow 160ms ease; }
 .composer.has-config-icon { grid-template-columns: minmax(0, 1fr) 44px 48px; }
 .composer textarea { max-height: 132px; min-height: 48px; padding: 13px 11px; border: 0; border-radius: 12px; outline: 0; background: transparent; }
 .composer.expanded { grid-template-columns: 44px minmax(0, 1fr) 44px 48px; padding: 8px; border-color: rgba(138, 166, 209, 0.42); box-shadow: 0 -10px 32px rgba(0, 0, 0, 0.18); }

@@ -1329,6 +1329,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
   const [showRunConfig, setShowRunConfig] = useState(false);
   const [composerExpanded, setComposerExpanded] = useState(false);
   const messageScrollRef = useRef(null);
+  const messageRegionRef = useRef(null);
   const messageBodyRef = useRef(null);
   const composerDockRef = useRef(null);
   const refreshIndicatorRef = useRef(null);
@@ -1616,9 +1617,9 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
 
   useEffect(() => () => stopSwipeBackMotion(), []);
 
-  // 键盘跟着输入框走（见 ios-keyboard.js）：这个会话把会跟键盘移动的两块交给控制器——消息列表和
-  // 输入框那一叠；离开会话时收回。
-  useEffect(() => registerKeyboardSurface({ scrollerRef: messageScrollRef, dockRef: composerDockRef }), []);
+  // 键盘跟着输入框走（见 ios-keyboard.js）：这个会话把会跟键盘移动的两块交给控制器——消息列表
+  // （连窗口带内容）和输入框那一叠；离开会话时收回。
+  useEffect(() => registerKeyboardSurface({ regionRef: messageRegionRef, scrollerRef: messageScrollRef, dockRef: composerDockRef }), []);
 
   function collapseComposer() {
     setComposerExpanded(false);
@@ -2122,7 +2123,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
           <span>{connection?.message || error}</span>
         </div> : null}
       </div>
-      <div className="message-region" onClick={collapseComposer}>
+      <div className="message-region" ref={messageRegionRef} onClick={collapseComposer}>
         <div className="detail-body" ref={messageBodyRef}>
           <span className="pull-refresh" ref={refreshIndicatorRef} aria-hidden="true"><LoaderCircle size={21} /></span>
           <div className="message-scroll" ref={messageScrollRef}>
