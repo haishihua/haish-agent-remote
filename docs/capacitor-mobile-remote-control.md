@@ -258,7 +258,7 @@ WKWebView 里的输入框获得焦点时，iOS 会在键盘上方压一条系统
 - `keyboardWillShow / DidShow / WillHide / DidHide` 四个事件驱动一个控制器（浏览器里一个监听都不注册）。展开时按「键盘落地那一刻」要占的高度算，收起时回 0；
 - 布局只在一件事上听键盘的：键盘落地后给 `:root` 写一次 `--keyboard-inset`（插件报的就是键盘 frame 的高度，已包含它盖住的底部安全区）。`body` 与 `.detail-screen` 各用它做 `padding-bottom`——前者是目录页把自己的最后一行滑到键盘上方的空间，后者让输入框那一叠正好停在键盘上沿；`.composer` 的底部安全区边距同时归零（`max(0px, var(--safe-bottom) - var(--keyboard-inset))`），不会在键盘上多留一条 34pt 的缝；
 - 运动期间布局一个字节都不写：消息列表与输入框那一叠按合成层上的 transform 跟键盘一起走，时长与曲线取 iOS 自己的（250ms、curve 7 的近似），理由与右滑返回、下拉刷新一样——逐帧写样式会把整份消息列表算一遍，而这个 App 的主线程经常有活干；
-- 落地事件一到就换手：写 `--keyboard-inset` 与清掉 transform 在同一帧完成，两者描述的是同一批像素，所以看不见；消息列表自己的吸底（`ScrollToBottomButton` 的 ResizeObserver）也落在这一帧里，位移量按它将要滚到的位置算（读者已经翻上去看历史时列表不跟，与吸底同一条判断）；
+- 落地事件一到就换手：写 `--keyboard-inset`、清掉 transform、把消息列表贴回底部在同一个任务里完成，三者描述的是同一批像素，所以看不见；贴底不等 `ScrollToBottomButton` 的 ResizeObserver（它要等到这一帧的渲染步骤才跑，画面不该靠那一步与清 transform 的先后），控制器自己写同一个落点，它随后那次吸底就是同一件事（读者已经翻上去看历史时两边都不动，用的是同一条“贴着底”判断）；
 - 快速开合会打断上一段动画：每次都从当前计算值接着走（`translateYOf`）；事件丢一个也由落地事件补上（`keyboardDidShow / DidHide` 自带高度）；插件把「只多一条 QuickType 提示栏」报成高度 0，那不算收起；
 - 插件在每个键盘事件里都会把 WebView 的 `contentInset` 归零（`resetScrollView`），iOS 那套替你挪一下的补偿不会叠在上面，让位的高度始终只有 `--keyboard-inset` 这一份；
 - 答案框这类落在消息列表内部的输入框，浏览器自己那次滚动发生在布局挪动之前，落地后再把它拉回输入框上方一次。

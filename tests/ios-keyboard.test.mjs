@@ -6,6 +6,7 @@ import {
   KEYBOARD_INSET_VAR,
   createKeyboardInsetController,
   hideKeyboardAccessoryBar,
+  keyboardFollowing,
   keyboardInset,
   keyboardLanding,
   keyboardTravel,
@@ -48,6 +49,14 @@ test('the landing is where the thread\'s own re-pin will put the scroll', () => 
   assert.equal(keyboardLanding({ contentHeight: 4000, viewportHeight: 585, inset: 302, scrollTop: 3015, following: false }), 3015);
 });
 
+test('the follow slack decides whether the list follows, exactly as the re-pin does', () => {
+  assert.equal(keyboardFollowing({ contentHeight: 4000, viewportHeight: 585, scrollTop: 3415 }), true);
+  assert.equal(keyboardFollowing({ contentHeight: 4000, viewportHeight: 585, scrollTop: 3415 - KEYBOARD_FOLLOW_SLACK }), true);
+  assert.equal(keyboardFollowing({ contentHeight: 4000, viewportHeight: 585, scrollTop: 3415 - KEYBOARD_FOLLOW_SLACK - 1 }), false);
+  // 本来就装得下：不滚也在底部。
+  assert.equal(keyboardFollowing({ contentHeight: 200, viewportHeight: 585, scrollTop: 0 }), true);
+});
+
 // 模型来自 ScrollToBottomButton 自己：`scrollTop = scrollHeight`，再由浏览器夹回上限。
 function repinned({ contentHeight, viewportHeight, inset }) {
   return Math.min(contentHeight, Math.max(0, contentHeight - (viewportHeight - inset)));
@@ -63,7 +72,7 @@ test('the travel is exactly the scroll delta the settled layout will produce', (
     { case: 'closing again', contentHeight: 4000, viewportHeight: 283, scrollTop: 3717, inset: -302 },
   ];
   for (const item of opening) {
-    const following = item.contentHeight - item.scrollTop - item.viewportHeight <= KEYBOARD_FOLLOW_SLACK;
+    const following = keyboardFollowing(item);
     const travel = keyboardTravel(item);
     assert.equal(travel.composer, -item.inset, item.case);
     // 位移说的是「内容往哪走」：吸底把 scrollTop 推大，内容对应的就是同值的向上。
@@ -176,6 +185,36 @@ test('the layout does not move while the keyboard is in the air, and the two pie
   assert.equal(dock.animations.at(-1).keyframes.at(-1).transform, 'translateY(336px)');
   listeners.get('keyboardDidHide')();
   assert.deepEqual(writes.at(-1), [KEYBOARD_INSET_VAR, '0px']);
+  controller.stop();
+});
+
+test('the landing writes the thread back to the bottom itself, without waiting for its ResizeObserver', async () => {
+  const dock = fakeDock();
+  const scroller = fakeScroll({ contentHeight: 4000, viewportHeight: 585, scrollTop: 3415 });
+  const { controller, listeners } = controllerFor({ dock, scroller });
+  await controller.start();
+
+  listeners.get('keyboardWillShow')({ keyboardHeight: 336 });
+  await null;
+  // 布局跟着键盘换过去：视口矮了 336，内容没变。落地这一步自己写回底部，不等 RO 那一帧。
+  scroller.clientHeight = 585 - 336;
+  listeners.get('keyboardDidShow')({ keyboardHeight: 336 });
+  // 3415 + 336：与动画走的是同一个落点（见 travel 那个用例）。
+  assert.equal(scroller.scrollTop, 3751);
+  controller.stop();
+});
+
+test('a reader who scrolled up is left exactly where they are when the layout lands', async () => {
+  const dock = fakeDock();
+  const scroller = fakeScroll({ contentHeight: 4000, viewportHeight: 585, scrollTop: 3015 });
+  const { controller, listeners } = controllerFor({ dock, scroller });
+  await controller.start();
+
+  listeners.get('keyboardWillShow')({ keyboardHeight: 336 });
+  await null;
+  scroller.clientHeight = 585 - 336;
+  listeners.get('keyboardDidShow')({ keyboardHeight: 336 });
+  assert.equal(scroller.scrollTop, 3015);
   controller.stop();
 });
 

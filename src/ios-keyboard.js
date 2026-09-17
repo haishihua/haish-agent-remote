@@ -70,13 +70,20 @@ export function keyboardLanding({ contentHeight = 0, viewportHeight = 0, scrollT
 }
 
 /**
+ * 读者是不是贴着底（看着最新消息）：离底不超过 slack。`ScrollToBottomButton` 的吸底用的是同一条判断。
+ */
+export function keyboardFollowing({ contentHeight = 0, viewportHeight = 0, scrollTop = 0, slack = KEYBOARD_FOLLOW_SLACK } = {}) {
+  return contentHeight - scrollTop - viewportHeight <= slack;
+}
+
+/**
  * 键盘移动期间各自要走多少像素：`composer` 是输入框那一叠的，`thread` 是消息列表的。
  * `inset` 是布局上等着发生的变化——键盘拿走高度时为正（展开），还回来时为负（收起）。
  */
 export function keyboardTravel({ contentHeight = 0, viewportHeight = 0, scrollTop = 0, inset = 0, slack = KEYBOARD_FOLLOW_SLACK } = {}) {
   const travel = { composer: -inset, thread: 0 };
-  // 读者已经滚上去看历史：列表留在原地，只有它自己的滚动位置能决定它跟不跟（与吸底用的是同一条判断）。
-  if (contentHeight - scrollTop - viewportHeight > slack) return travel;
+  // 读者已经滚上去看历史：列表留在原地，只有它自己的滚动位置能决定它跟不跟。
+  if (!keyboardFollowing({ contentHeight, viewportHeight, scrollTop, slack })) return travel;
   travel.thread = scrollTop - keyboardLanding({ contentHeight, viewportHeight, scrollTop, inset, following: true });
   return travel;
 }
@@ -156,7 +163,18 @@ export function createKeyboardInsetController({
     if (pending.timer) clearTimeout(pending.timer);
     writeInset(pending.target);
     pending.animations.forEach((animation) => animation.cancel());
+    pinToBottom(pending);
     revealFocusedField(pending.scroller);
+  }
+
+  /**
+   * 换手的那一步自己把消息列表贴回底部：`ScrollToBottomButton` 的 ResizeObserver 要等到这一帧的渲染步骤才
+   * 跑，而画面不该依赖那一步与清 transform 的先后。写的是同一个落点，所以它随后那次吸底是同一件事（幂等）；
+   * 读者已经翻上去看历史时两边都不动。
+   */
+  function pinToBottom({ scroller, following }) {
+    if (!scroller || !following) return;
+    scroller.scrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
   }
 
   function land() {
@@ -168,24 +186,26 @@ export function createKeyboardInsetController({
   function moveTo(target) {
     if (target === inset && !motion) return;
     const next = pieces();
+    const scroller = next?.scroller || null;
+    const geometry = scroller
+      ? {
+        contentHeight: scroller.scrollHeight,
+        viewportHeight: scroller.clientHeight,
+        scrollTop: scroller.scrollTop,
+      }
+      : null;
     const from = next
       ? {
         dock: translateYOf(readTransform(next.dock)),
         thread: translateYOf(readTransform(next.scroller)),
       }
       : null;
-    const travel = next
-      ? keyboardTravel({
-        contentHeight: next.scroller.scrollHeight,
-        viewportHeight: next.scroller.clientHeight,
-        scrollTop: next.scroller.scrollTop,
-        inset: target - inset,
-      })
-      : null;
+    const travel = geometry ? keyboardTravel({ ...geometry, inset: target - inset }) : null;
     stopMotion();
     const pending = {
       target,
-      scroller: next?.scroller || null,
+      scroller,
+      following: Boolean(geometry && keyboardFollowing(geometry)),
       animations: [],
       landed: false,
       moved: false,
