@@ -232,10 +232,10 @@ WKWebView 对 `<input type="file" accept="image/*">` 只会弹出系统的 `Phot
 - 左侧 50px 内按下才开始判定；判定用平移识别器：位移过 8px 且方向落在水平轴 40° 锥角内才认领手势，垂直或向左一律让给消息列表滚动；
 - 进度 = 位移 / 屏宽，写成一条 0→100% 线性 Web Animations 动画的 `currentTime`（`surface.animate()` 后 `pause()`，等价于 Ionic 的 `progressStep`）。之前是把偏移写进 CSS 变量 `--swipe-back-offset` 再让 `transform` 去读，每次 touchmove 都要让整棵消息列表重算样式；改动画时间只更新合成器，不碰样式；
 - touchmove 按帧合并（一个 rAF 一帧最多写一次），认领手势的那一帧就已经跟着手指走；
-- 松手按速度决定去向：> 0.2 px/ms 或过了半屏就完成返回，其余回弹；时长取“剩余距离 / 速度”（速度下限 0.5 px/ms，90–340ms），和手指最后的速度连续；
-- 手势进行中会话轮询（5s）、任务快照（2s）、列表轮询（5s）和秒表 tick 全部暂停，结束后补一次刷新（`isSwipeBackInFlight()`）——交互式转场期间不做后台重建，这是原生 App 的常规做法；
-- 详情页开着的时候目录轮询整个停掉：`/api/projects` 一份 ~3.5 MB，本机 `JSON.parse` + 签名 `JSON.stringify` 约 13ms，到手机上就是几十毫秒的主线程停顿，而且内容一旦有变化还会重绘被盖在下面的整份列表——这些在详情页都看不见，所以只在列表真正可见时轮询，返回列表时由 `closeConversation()` 刷新一次。
-- 按下就加 `swipe-armed` 提升图层（`will-change: transform`），被盖住的目录从这时起恢复动画（`:has(.detail-screen.swipe-armed)`），`prefers-reduced-motion` 下直接切页不做动画；
+- 松手按速度决定去向：> 0.2 px/ms 或过了半屏就完成返回，其余回弹；时长取“剩余距离 / 速度”（速度下限 0.5 px/ms，90–340ms），和手指最后的速度连续；收敛从“最后一帧真正画出来的进度”接上（不是手指的最新采样），快甩也不会在松手那一下跳一格；
+- 手势进行中会话轮询（5s）、任务快照（2s）、列表轮询（5s）和秒表 tick 全部暂停；已经发出的请求如果在手势期间返回，会话刷新直接丢弃并在收敛后重取（`isSwipeBackInFlight()`）——交互式转场期间不做后台重建，这是原生 App 的常规做法；
+- 详情页开着的时候目录轮询整个停掉：`/api/projects` 一份 ~3.5 MB，本机 `JSON.parse` + 签名 `JSON.stringify` 约 13ms，到手机上就是几十毫秒的主线程停顿，而且内容一旦有变化还会重绘被盖在下面的整份列表——这些在详情页都看不见，所以只在列表真正可见时轮询，返回列表时补一次刷新，且等一个空闲时机（`requestIdleCallback`）再拉，不压在滑动的最后几帧上。
+- 按下就加 `swipe-armed` 提升图层（`will-change: transform`），被盖住的目录从这时起恢复动画（`:has(.detail-screen.swipe-armed)`），直到收敛动画播完才摘掉（中途摘会让图层和目录动画在动的时候重建，快甩的起飞段就会顿一下），`prefers-reduced-motion` 下直接切页不做动画；
 - `tests/swipe-back.test.mjs` 覆盖阈值、锥角、进度、速度平滑和松手判定这些纯数学部分。
 
 ### 键盘：隐藏系统表单栏，输入框跟着草稿长高

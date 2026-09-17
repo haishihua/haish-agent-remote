@@ -1250,8 +1250,20 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
     if (!swipeFrameRef.current) swipeFrameRef.current = window.requestAnimationFrame(flushSwipeBack);
   }
 
+  // Where the surface is actually painted: touch samples are coalesced per frame, so the
+  // release offset can sit a frame ahead of it. Settling from the painted step keeps the
+  // page continuous at release instead of snapping it forward.
+  function paintedSwipeBackStep(fallback) {
+    const currentTime = Number(swipeAnimationRef.current?.currentTime);
+    if (!Number.isFinite(currentTime)) return fallback;
+    return Math.min(1, Math.max(0, currentTime / SWIPE_BACK_TRACK_MS));
+  }
+
   // Replaces the tracking animation with a one-shot settle: the page keeps moving from
   // where the finger left it, over the time the remaining distance needs at that speed.
+  // `swipe-armed` deliberately stays until the surface has arrived (stopSwipeBackMotion):
+  // dropping it here releases the promoted layer and re-pauses every animation in the
+  // directory while the page is still moving, which reads as a hitch in the fly-off.
   function settleSwipeBack(step, complete, duration, easing) {
     const surface = detailScreenRef.current;
     if (!surface) return null;
@@ -1262,7 +1274,6 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
     swipeAnimationRef.current?.cancel();
     swipeAnimationRef.current = null;
     swipeSettleRef.current = settle;
-    surface.classList.remove('swipe-armed');
     surface.classList.toggle('swipe-dismissing', complete);
     return settle;
   }
@@ -1291,7 +1302,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
     });
     const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
     const duration = reducedMotion ? 0 : release.durationMs;
-    const settle = settleSwipeBack(release.step, release.complete, duration, release.easing);
+    const settle = settleSwipeBack(paintedSwipeBackStep(release.step), release.complete, duration, release.easing);
     const finish = () => {
       if (release.complete) {
         // Leave the settle holding its last frame: onBack() unmounts this surface on the
@@ -1318,7 +1329,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
     }
     const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
     const { step } = swipeBackRelease({ offset: swipeOffsetRef.current, width: start.width });
-    const settle = settleSwipeBack(step, false, reducedMotion ? 0 : 180, SWIPE_BACK_CANCEL_EASING);
+    const settle = settleSwipeBack(paintedSwipeBackStep(step), false, reducedMotion ? 0 : 180, SWIPE_BACK_CANCEL_EASING);
     const finish = () => {
       stopSwipeBackMotion();
       flushDeferredSwipeBackRefresh();
@@ -1383,6 +1394,12 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
     if (localStreamRef.current) return null;
     try {
       const nextConversation = await api.conversation(id);
+      // A poll that resolves while a pull owns the thread would rebuild the message list
+      // under the finger; drop it here and let the post-settle catch-up fetch it again.
+      if (isSwipeBackInFlight()) {
+        swipeDeferredRefreshRef.current = true;
+        return null;
+      }
       setConversation(nextConversation);
       setConversationHydrated(true);
       setError('');
@@ -2142,8 +2159,17 @@ export default function App() {
   function closeConversation() {
     setSelectedId(null);
     // The directory poll is paused behind the detail, so the list is refreshed here as it
-    // comes back into view instead of every 5s while nobody can see it.
-    loadTasks();
+    // comes back into view instead of every 5s while nobody can see it. The payload is
+    // megabytes and its parse lands on the main thread, so it waits for an idle moment
+    // rather than stacking onto the swipe's last frames.
+    const refreshDirectory = () => {
+      if (!detailOpenRef.current) loadTasks();
+    };
+    if (typeof window.requestIdleCallback === 'function') {
+      window.requestIdleCallback(refreshDirectory, { timeout: 1000 });
+    } else {
+      window.setTimeout(refreshDirectory, 300);
+    }
   }
 
   async function logout() {

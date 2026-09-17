@@ -250,8 +250,10 @@ input::placeholder, textarea::placeholder { color: var(--muted-2); }
    the list is what the finger is revealing then. */
 .app-shell.detail-open:not(:has(.detail-screen.swipe-armed)) > :not(.detail-screen) * { animation-play-state: paused; }
 .detail-top { touch-action: none; }
-/* The pull is a Web Animations transform owned by App.jsx; this class only promotes the
-   layer before the finger moves, so the first tracked frame does not build it. */
+/* The pull is a Web Animations transform owned by App.jsx; this class promotes the layer
+   before the finger moves (so the first tracked frame does not build it) and stays on
+   until the settle has landed: dropping it mid-flight rebuilds the layer and re-pauses
+   the directory while the page is still moving. */
 .detail-screen.swipe-armed { will-change: transform; }
 .detail-screen.swipe-dismissing { pointer-events: none; }
 .detail-top { position: relative; z-index: 30; background: var(--background); }
