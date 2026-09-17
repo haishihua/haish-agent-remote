@@ -67,9 +67,9 @@ jobs:
           cd "$RUNNER_TEMP/haish-ipa"
           /usr/bin/zip -qry "$GITHUB_WORKSPACE/haish-agent-remote/Haish-unsigned.ipa" Payload
 
-      - name: Verify the packaged app registers the app-local plugins
+      - name: Verify the packaged app registers its Capacitor plugins
         run: |
-          unzip -p Haish-unsigned.ipa Payload/App.app/capacitor.config.json | tee /dev/stderr | python3 -c "import json, sys; classes = json.load(sys.stdin)['packageClassList']; assert 'PhotoPicker' in classes, f'the bundled config does not register the app-local plugins: {classes}'"
+          unzip -p Haish-unsigned.ipa Payload/App.app/capacitor.config.json | tee /dev/stderr | python3 -c "import json, sys; classes = json.load(sys.stdin)['packageClassList']; assert 'PhotoPicker' in classes, f'the bundled config does not register the app-local plugins: {classes}'; assert 'KeyboardPlugin' in classes, f'the bundled config does not register the keyboard plugin that hides the form accessory bar: {classes}'"
           unzip -p Haish-unsigned.ipa Payload/App.app/Info.plist | python3 -c "import plistlib, sys; info = plistlib.loads(sys.stdin.buffer.read()); print('ipa version', info['CFBundleShortVersionString'], 'build', info['CFBundleVersion'])"
 
       - name: Upload IPA

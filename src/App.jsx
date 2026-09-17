@@ -40,6 +40,8 @@ import {
   pickImagesFromLibrary,
   remainingImageSlots,
 } from './photo-picker.js';
+import { fitComposerTextarea } from './composer-height.js';
+import { hideKeyboardAccessoryBar } from './ios-keyboard.js';
 import penguinLogo from './assets/penguin_logo_user.png';
 import stopIcon from '../../haish-agent/app-web/assets/ui/icons/stop.png';
 import toolIcon from '../../haish-agent/app-web/assets/ui/icons/tool.png';
@@ -1111,6 +1113,17 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
   useEffect(() => { optimisticUserMessagesRef.current = optimisticUserMessages; }, [optimisticUserMessages]);
   useEffect(() => { swipeBlockedRef.current = Boolean(previewImage || showRunConfig); }, [previewImage, showRunConfig]);
 
+  // 输入框高度跟着草稿走（见 composer-height.js）：展开态不再预留一行空白。
+  // 宽度变化（旋转屏幕、右侧配置图标出现/收起）会改变折行，所以这些时候也要重新量一次。
+  useEffect(() => {
+    fitComposerTextarea(messageInputRef.current);
+  }, [id, message, composerExpanded, runConfig, runConfigExpanded]);
+  useEffect(() => {
+    const fit = () => fitComposerTextarea(messageInputRef.current);
+    window.addEventListener('resize', fit);
+    return () => window.removeEventListener('resize', fit);
+  }, []);
+
   function clearSwipeBackFrame() {
     if (swipeFrameRef.current) window.cancelAnimationFrame(swipeFrameRef.current);
     swipeFrameRef.current = 0;
@@ -2038,6 +2051,8 @@ export default function App() {
     setStartupRetrying(true);
     try {
       const connection = await api.initialize();
+      // iOS 会在键盘上方压一条系统表单栏（◀ ▶ Done）；它不属于本 App，开机就交给 Keyboard 插件隐藏。
+      await hideKeyboardAccessoryBar();
       if (api.isNative && !connection) setStatus({ paired: false, runtime_online: false });
       else await loadStatus();
     } catch (error) {

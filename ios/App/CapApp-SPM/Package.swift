@@ -13,7 +13,8 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/ionic-team/capacitor-swift-pm.git", exact: "8.4.3"),
         .package(name: "AparajitaCapacitorSecureStorage", path: "../../../node_modules/@aparajita/capacitor-secure-storage"),
-        .package(name: "CapacitorBarcodeScanner", path: "../../../node_modules/@capacitor/barcode-scanner")
+        .package(name: "CapacitorBarcodeScanner", path: "../../../node_modules/@capacitor/barcode-scanner"),
+        .package(name: "CapacitorKeyboard", path: "../../../node_modules/@capacitor/keyboard")
     ],
     targets: [
         .target(
@@ -22,7 +23,8 @@ let package = Package(
                 .product(name: "Capacitor", package: "capacitor-swift-pm"),
                 .product(name: "Cordova", package: "capacitor-swift-pm"),
                 .product(name: "AparajitaCapacitorSecureStorage", package: "AparajitaCapacitorSecureStorage"),
-                .product(name: "CapacitorBarcodeScanner", package: "CapacitorBarcodeScanner")
+                .product(name: "CapacitorBarcodeScanner", package: "CapacitorBarcodeScanner"),
+                .product(name: "CapacitorKeyboard", package: "CapacitorKeyboard")
             ]
         )
     ]

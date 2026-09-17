@@ -238,6 +238,14 @@ WKWebView 对 `<input type="file" accept="image/*">` 只会弹出系统的 `Phot
 - 按下就加 `swipe-armed` 提升图层（`will-change: transform`），被盖住的目录从这时起恢复动画（`:has(.detail-screen.swipe-armed)`），`prefers-reduced-motion` 下直接切页不做动画；
 - `tests/swipe-back.test.mjs` 覆盖阈值、锥角、进度、速度平滑和松手判定这些纯数学部分。
 
+### 键盘：隐藏系统表单栏，输入框跟着草稿长高
+
+WKWebView 里的输入框获得焦点时，iOS 会在键盘上方压一条系统表单栏（左侧「◀ ▶」翻表单项、右侧 `Done` 收键盘）。它不属于本 App，却在输入框和键盘之间白占 44pt，所以交给 Capacitor 官方的 `@capacitor/keyboard` 插件：
+
+- 插件由 `npm run mobile:sync` 登记进 `packageClassList`，`capacitor.config.ts` 里写明 `Keyboard.resize = native`：键盘弹出时按原生方式缩短 WebView，输入框直接坐在键盘上（这也是插件默认值，写明避免默认值变化后输入框被键盘盖住）；
+- 启动时 `src/ios-keyboard.js` 调一次 `Keyboard.setAccessoryBarVisible({ isVisible: false })` 关掉那条栏；调用失败会走启动错误路径，不静默留着它；
+- 展开态的输入框不再钉死 82px：`src/composer-height.js` 在草稿变化、进入展开态、宽度变化（旋转屏幕、右侧配置图标出现/收起）时重新量一次内容高度，夹在 CSS 的 `min-height: 48px` / `max-height: 132px` 之间。短草稿不再留一条空白（单行 121px → 之前 155px 的整个盒子），长草稿长到 132px 才在框内滚动；上下限仍然只在 `src/styles.css` 的 `.composer textarea` 里定义一份。
+
 推送通知需要 APNs 设备注册和服务端推送链路，等前台闭环通过后单独实现。
 
 ## 公网服务器与 Mac 端
