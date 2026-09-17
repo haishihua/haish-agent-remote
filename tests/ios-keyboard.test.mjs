@@ -132,7 +132,7 @@ function fakeScroll({ contentHeight = 0, viewportHeight = 0, scrollTop = 0 } = {
   };
 }
 
-function controllerFor({ region, dock, scroller, viewportHeight = 852, listeners = new Map(), writes = [] }) {
+function controllerFor({ region, dock, scroller, viewportHeight = 852, listeners = new Map(), writes = [], viewport = null }) {
   const controller = createKeyboardInsetController({
     native: true,
     keyboard: {
@@ -150,6 +150,7 @@ function controllerFor({ region, dock, scroller, viewportHeight = 852, listeners
     readTransform: (element) => element.transform,
     readRect: (element) => ({ bottom: element.bottom }),
     readViewportHeight: () => viewportHeight,
+    viewport,
   });
   return { controller, listeners, writes };
 }
@@ -331,6 +332,91 @@ test('a surface that is not there yet only gets the layout, never a stray animat
   listeners.get('keyboardWillShow')({ keyboardHeight: 336 });
   listeners.get('keyboardDidShow')({ keyboardHeight: 336 });
   assert.deepEqual(writes, [[KEYBOARD_INSET_VAR, '336px'], [KEYBOARD_LIFT_VAR, '0px']]);
+  controller.stop();
+});
+
+test('a collapse that animates the thread lifts the layout in the same frame, so no black band can open above it', async () => {
+  const region = fakeTraveler();
+  const dock = fakeDock();
+  const scroller = fakeScroll({ contentHeight: 4000, viewportHeight: 585, scrollTop: 3015 });
+  const { controller, listeners, writes } = controllerFor({ region, dock, scroller });
+  await controller.start();
+
+  // 先在翻上去看历史时抬起键盘：列表不动，布局里也不抬（窗口就矮一段，读者位置不变）。
+  listeners.get('keyboardWillShow')({ keyboardHeight: 336 });
+  await null;
+  scroller.clientHeight = 585 - 294;
+  listeners.get('keyboardDidShow')({ keyboardHeight: 336 });
+  assert.deepEqual(writes, [[KEYBOARD_INSET_VAR, '336px'], [KEYBOARD_LIFT_VAR, '0px']]);
+
+  // 读者滑回底部，再收键盘：这一次列表要跟着键盘落下。布局里那一段必须**在动画开始时**就抬着，
+  // 否则窗口整块往下滑、页头下面露出一条键盘高、纯黑的缺口（1.36 的「短暂黑屏」）。
+  scroller.scrollTop = 4000 - scroller.clientHeight;
+  scroller.clientHeight = 585;
+  listeners.get('keyboardWillHide')();
+  await null;
+  assert.deepEqual(writes.at(-1), [KEYBOARD_LIFT_VAR, '294px']);
+  assert.deepEqual(travelKeyframes(region), [
+    { transform: 'translate3d(0, 0px, 0)' },
+    { transform: 'translate3d(0, 294px, 0)' },
+  ]);
+  // 布局换手和滚动在同一个任务里：抬起来的那 294px 从滚动位置上扣掉，画面不动（扣完正好贴底）。
+  assert.equal(scroller.scrollTop, 4000 - 585);
+
+  // 落地：布局回到 0，滚动还是同一个落点。
+  listeners.get('keyboardDidHide')();
+  assert.deepEqual(writes.slice(-2), [[KEYBOARD_INSET_VAR, '0px'], [KEYBOARD_LIFT_VAR, '0px']]);
+  assert.equal(scroller.scrollTop, 4000 - 585);
+  controller.stop();
+});
+
+test('a collapse that leaves the thread alone still keeps the reader on the same pixel', async () => {
+  const region = fakeTraveler();
+  const dock = fakeDock();
+  const scroller = fakeScroll({ contentHeight: 4000, viewportHeight: 585, scrollTop: 3415 });
+  const { controller, listeners } = controllerFor({ region, dock, scroller });
+  await controller.start();
+
+  // 贴着底开键盘：列表跟着抬起，布局里那一段也抬着（窗口高度不变，滚动位置不用动）。
+  listeners.get('keyboardWillShow')({ keyboardHeight: 336 });
+  await null;
+  listeners.get('keyboardDidShow')({ keyboardHeight: 336 });
+  assert.equal(scroller.scrollTop, 3415);
+
+  // 读者翻上去看历史，再收键盘：这一次列表不跟着走（键盘只是盖住下缘），但布局里那一段要收回，
+  // 窗口上沿回到页头；窗口里的内容相对位置靠滚动补回来，读者看到的那一屏不动。
+  scroller.scrollTop = 2000;
+  const animated = region.animations.length;
+  listeners.get('keyboardWillHide')();
+  await null;
+  assert.equal(region.animations.length, animated);
+  listeners.get('keyboardDidHide')();
+  assert.equal(scroller.scrollTop, 2000 + 294);
+  controller.stop();
+});
+
+test('a document the WebView pushed aside is put back when the keyboard lands', async () => {
+  const region = fakeTraveler();
+  const dock = fakeDock();
+  const scroller = fakeScroll({ contentHeight: 4000, viewportHeight: 585, scrollTop: 3415 });
+  const scrolled = [];
+  const viewport = { scrollX: 0, scrollY: 0, scrollTo: (x, y) => scrolled.push([x, y]) };
+  const { controller, listeners } = controllerFor({ region, dock, scroller, viewport });
+  await controller.start();
+
+  // 键盘弹出时 WKWebView 自己把文档顶上去了：插件只把 contentInset 清回 0，contentOffset 不管。
+  listeners.get('keyboardWillShow')({ keyboardHeight: 336 });
+  await null;
+  viewport.scrollY = 308;
+  listeners.get('keyboardDidShow')({ keyboardHeight: 336 });
+  assert.deepEqual(scrolled, [[0, 0]]);
+
+  // 文档没被顶走时不碰它：多推几次只会多几次没意义的滚动。
+  viewport.scrollY = 0;
+  listeners.get('keyboardWillHide')();
+  await null;
+  listeners.get('keyboardDidHide')();
+  assert.deepEqual(scrolled, [[0, 0]]);
   controller.stop();
 });
 

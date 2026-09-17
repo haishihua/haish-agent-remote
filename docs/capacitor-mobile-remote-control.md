@@ -237,7 +237,8 @@ WKWebView 对 `<input type="file" accept="image/*">` 只会弹出系统的 `Phot
 - 详情页开着的时候目录轮询整个停掉：`/api/projects` 一份 ~3.5 MB，本机 `JSON.parse` + 签名 `JSON.stringify` 约 13ms，到手机上就是几十毫秒的主线程停顿，而且内容一旦有变化还会重绘被盖在下面的整份列表——这些在详情页都看不见，所以只在列表真正可见时轮询，返回列表时补一次刷新，且等一个空闲时机（`requestIdleCallback`）再拉，不压在滑动的最后几帧上。
 - 按下就加 `swipe-armed` 提升图层（`will-change: transform`），收敛动画播完才摘掉（中途摘会让图层在动的时候重建，快甩的起飞段就会顿一下），`prefers-reduced-motion` 下直接切页不做动画；滑动期间目录的定时动画一律不恢复（`.app-shell.detail-open > :not(.detail-screen) *` 那条规则不再为手势开绿灯）：那是滑退期最重的一笔——手上正拖着一个满屏图层时，把三只状态转圈和两条逐帧重绘的渐变放回来，既要重算整份被盖住的列表的样式，又要每帧再画一遍它们；详情页自己那两条渐变也一起暂停（`.detail-screen.swipe-armed .agent-phase-gradient`），理由同上；
 - 目录顶栏那层 `backdrop-filter` 在详情页开着时关掉（`.app-shell.detail-open .remote-topbar`）：没键盘、没列表滚动时它是免费的，但 iOS 会在它上面每一帧重算一次背景模糊——滑退时正好有一个满屏图层从它上面走过，模糊得跟着重算，滑动就会一卡一卡；详情开着时它本来就被盖住，关了不丢任何东西；
-- `tests/swipe-back.test.mjs` 覆盖阈值、锥角、进度、速度平滑和松手判定这些纯数学部分。
+- 收尾那一帧不许再塞重活。滑退动画走到头时同时来了三笔：React 卸掉整棵详情树（连同它一串 effect 清理）、目录几十个定时动画重新交给合成器、顶栏第一次渲染 `backdrop-filter`（一整屏背景模糊）。`src/dismiss-handoff.js` 把它们错开：动画最后那一帧先画出去，再卸层；目录那一头在卸掉之后再挂两帧 `html.detail-closing`（`styles.css` 里那组「先别恢复」规则）才松开。目录本身套了 `React.memo`，`openConversation / createConversation / showSettings` 都过 `useCallback`——开、关会话都要重渲染整页，而目录此时正压在详情层下面，那十几毫秒（每行都要重算预览、分组、排序）就落在收尾那几帧上；
+- `tests/swipe-back.test.mjs` 覆盖阈值、锥角、进度、速度平滑和松手判定这些纯数学部分，`tests/dismiss-handoff.test.mjs` 覆盖上面这套帧交接的次序与重叠收起（`raf` 注入）。
 
 ### 加载失败与下拉刷新
 
@@ -265,7 +266,8 @@ WKWebView 里的输入框获得焦点时，iOS 会在键盘上方压一条系统
 - `--keyboard-lift` 是键盘抬着的时候消息列表向上多长的一段（负的 `margin-top`）：收起的那一段里窗口上沿跟着往下走，多出来的这段让上面的历史消息留在窗口里（原生收起键盘时窗口是向上长的，看到的就是这些历史），而不是留一条空白。它和 `.detail-screen` 的 padding-bottom 在列表的可见高度上正好抵消，所以落地换手时滚动位置一个字都不用改；
 - 输入框那一叠停在哪儿由两行管：`.detail-screen` 的 padding-bottom 把它抬起来，`.composer` 自己的 `8px + 安全区` 底边距同时收成 0（`max(0px, ... - var(--keyboard-inset))`），所以它直接贴在键盘上沿，不会在上面多留一条 34pt 的缝；这一叠跟键盘走的那段位移也只有“屏高 − 安全区 − 键盘高”那么多（`keyboardLift`），两边描述的是同一个位置；
 - 快速开合会打断上一段动画：每次都从当前计算值接着走（`translateYOf`）；事件丢一个也由落地事件补上（`keyboardDidShow / DidHide` 自带高度）；插件把「只多一条 QuickType 提示栏」报成高度 0，那不算收起；
-- 插件在每个键盘事件里都会把 WebView 的 `contentInset` 归零（`resetScrollView`），iOS 那套替你挪一下的补偿不会叠在上面，让位的高度始终只有 `--keyboard-inset` 这一份；
+- 插件在每个键盘事件里都会把 WebView 的 `contentInset` 归零（`resetScrollView`），iOS 那套替你挪一下的补偿不会叠在上面，让位的高度始终只有 `--keyboard-inset` 这一份；但归零的只有 `contentInset`，`contentOffset` 没人管：输入框获得焦点时 WKWebView 自己会把整篇文档往上顶一下，键盘收起后那一段就留在画面里（顶上是页头、底下露一片页面底色），也就是用户报的「短暂黑屏」。两个落地事件里各把 `window.scrollY / scrollX` 按回 0 一次（`pinDocumentOffset`）：整页是个 `inset: 0` 的固定壳，文档本来就不该滚动（滚动都在 `.message-scroll`、目录那些内层容器里），没被顶走时一次也不碰；
+- 收起键盘时布局要在**动画开始前**就换成「抬着」的状态。1.36 是等落地才写 `--keyboard-lift`，碰上「上一次抬起时读者没贴底（布局里没抬）、这次贴底（列表要跟着动画）」这个组合：列表整块往下滑 `lift` 那段，而布局里那段负 margin 还是 0，页头下面于是就露出一条键盘高、纯黑的缺口（用户反馈里的「短暂黑屏」，截图里最后一张卡片下方近 1000px 只有页面底色）。现在改成：这种配平在收起一开始就写掉，同一个任务里用滚动把内容按回原位（画面不动）；其余情况下布局在运动期间仍然一个字节不写；
 - 答案框这类落在消息列表内部的输入框，浏览器自己那次滚动发生在布局挪动之前，落地后再把它拉回输入框上方一次。
 - 展开态的输入框不再钉死 82px：`src/composer-height.js` 在草稿变化、进入展开态、宽度变化（旋转屏幕、右侧配置图标出现/收起）时重新量一次内容高度，夹在 CSS 的 `min-height: 48px` / `max-height: 132px` 之间。短草稿不再留一条空白（单行 121px → 之前 155px 的整个盒子），长草稿长到 132px 才在框内滚动；上下限仍然只在 `src/styles.css` 的 `.composer textarea` 里定义一份。`.detail-screen` 只在浏览器（`html:not(.native-app)`）里写 `height: 100dvh`，免得 PWA 里被地址栏遮住；App 里靠 `inset: 0`。
 

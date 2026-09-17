@@ -123,6 +123,7 @@ import {
 import {
   orphanReplyAnchors,
   orphanTaskReplies,
+import { createDismissHandoff, DIRECTORY_HOLD_CLASS } from './dismiss-handoff.js';
 } from './task-replies.js';
 
 const ACTIVE_STATUSES = new Set(['queued', 'running']);
@@ -1039,7 +1040,9 @@ function usePullToRefresh({ listenRef, surfaceRef, indicatorRef, canStart, onRef
   }, [indicatorRef, listenRef, surfaceRef]);
 }
 
-function ConversationList({ projects, conversations, tasks, status, loading, error, onRefresh, onOpen, onNew, onSettings }) {
+// 目录整棵树跟着 App 重渲染一次不便宜（每一行都要重算预览、分组、排序），而会话详情开着时它在下面完全
+// 看不见。开、关会话都会重渲染整页，收尾那几帧正好撞上，所以给它套一层 memo。
+const ConversationList = React.memo(function ConversationList({ projects, conversations, tasks, status, loading, error, onRefresh, onOpen, onNew, onSettings }) {
   const [query, setQuery] = useState('');
   const [showProjectPicker, setShowProjectPicker] = useState(false);
   const homeRef = useRef(null);
@@ -1108,7 +1111,7 @@ function ConversationList({ projects, conversations, tasks, status, loading, err
       {showProjectPicker ? <ProjectPicker projects={projects} onChoose={(projectId) => { setShowProjectPicker(false); onNew(projectId); }} onClose={() => setShowProjectPicker(false)} /> : null}
     </main>
   );
-}
+});
 
 function ImagePreview({ image, onClose }) {
   useEffect(() => {
@@ -1345,6 +1348,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
   const swipeFrameRef = useRef(0);
   const swipePendingRef = useRef(null);
   const deferredRefreshRef = useRef(false);
+  const dismissHandoffRef = useRef(null);
   const swipeBlockedRef = useRef(false);
   const swipeHandlersRef = useRef(null);
   const composerImagesRef = useRef([]);
@@ -1523,6 +1527,23 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
     surface.classList.toggle('swipe-dismissing', complete);
     return settle;
   }
+  /**
+   * 收起详情页。收尾那一帧上挤着三笔重活：卸掉整棵详情树、目录几十个定时动画重新交给合成器、顶栏的
+   * backdrop-filter 第一次渲染（一整屏背景模糊）——挤在一起就是滑退动画最后那一下的卡顿。交给
+   * `createDismissHandoff` 排期：动画最后那一帧先画出去，再卸层；目录那头多挂两帧 `detail-closing` 才恢复。
+   */
+  function dismissToDirectory() {
+    if (!dismissHandoffRef.current) {
+      dismissHandoffRef.current = createDismissHandoff({
+        // 挂到 <html> 上：React 会在这一帧重写 `.app-shell` 的 className，挂在那儿的类会被抹掉。
+        addHold: () => document.documentElement.classList.add(DIRECTORY_HOLD_CLASS),
+        removeHold: () => document.documentElement.classList.remove(DIRECTORY_HOLD_CLASS),
+        unmount: onBack,
+      });
+    }
+    dismissHandoffRef.current();
+  }
+
 
   function finishSwipeBack(event) {
     const start = swipeStartRef.current;
@@ -1551,11 +1572,10 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
     const settle = settleSwipeBack(paintedSwipeBackStep(release.step), release.complete, duration, release.easing);
     const finish = () => {
       if (release.complete) {
-        // Leave the settle holding its last frame: onBack() unmounts this surface on the
-        // next render, so nothing may snap back into view in between.
+        // Leave the settle holding its last frame: the surface is unmounted on a later frame.
         swipeSettleRef.current = null;
         setSwipeBackInFlight(false);
-        onBack();
+        dismissToDirectory();
         return;
       }
       stopSwipeBackMotion();
@@ -2114,7 +2134,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
     <main className="detail-screen" ref={detailScreenRef}>
       <div className="detail-top">
         <header className="detail-header">
-          <button className="icon-button ghost" onClick={onBack} aria-label="Back to conversations"><ArrowLeft size={22} /></button>
+          <button className="icon-button ghost" onClick={dismissToDirectory} aria-label="Back to conversations"><ArrowLeft size={22} /></button>
           <div><strong>{conversation?.title || 'Task'}</strong><span>{projectName || 'Project'}</span></div>
           <span className="header-spacer" />
         </header>
@@ -2436,20 +2456,23 @@ export default function App() {
     if (lastId && conversations.some((item) => item.conversation_id === lastId)) setSelectedId(lastId);
   }, [conversations, loading, selectedId, status?.paired]);
 
-  async function createConversation(projectId) {
+  // 传给 `ConversationList` 的几个回调必须是稳定的：它套了 memo，回调每次新建就等于没套。
+  const createConversation = useCallback(async (projectId) => {
     const created = await api.createConversation(projectId);
     restoredConversationRef.current = true;
     saveStoredConversationId(created.conversation_id);
     setSelectedId(created.conversation_id);
     // The detail screen can render immediately; refresh the directory in the background.
     loadTasks();
-  }
+  }, [loadTasks]);
 
-  function openConversation(conversation) {
+  const openConversation = useCallback((conversation) => {
     restoredConversationRef.current = true;
     saveStoredConversationId(conversation.conversation_id);
     setSelectedId(conversation.conversation_id);
-  }
+  }, []);
+
+  const showSettings = useCallback(() => setTab('settings'), []);
 
   function closeConversation() {
     setSelectedId(null);
@@ -2507,7 +2530,7 @@ export default function App() {
       {tab === 'tasks' ? (
         <>
           {approvalCount ? <div className="pending-banner"><ShieldCheck size={18} /><span>{approvalCount} {approvalCount === 1 ? 'action' : 'actions'} waiting</span></div> : null}
-          <ConversationList projects={projects} conversations={conversations} tasks={tasks} status={status} loading={loading} error={fatalError} onRefresh={refreshDirectory} onOpen={openConversation} onNew={createConversation} onSettings={() => setTab('settings')} />
+          <ConversationList projects={projects} conversations={conversations} tasks={tasks} status={status} loading={loading} error={fatalError} onRefresh={refreshDirectory} onOpen={openConversation} onNew={createConversation} onSettings={showSettings} />
         </>
       ) : <SettingsScreen status={status} onLogout={logout} onBack={() => setTab('tasks')} />}
       {detail}

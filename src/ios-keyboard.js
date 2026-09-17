@@ -35,14 +35,23 @@ export async function hideKeyboardAccessoryBar({ keyboard = Keyboard, native = i
  *   度。静息时输入框底边离屏幕底还留着 8px + 安全区（styles.css），那一段本来就不该走（`keyboardLift`）；
  * - 消息列表的窗口连内容一起动，没有任何一块被推出自己的裁剪框。上一版把消息列表单独 translate，收起
  *   键盘时它会整块滑出 `.message-region`，于是整片区域露出页面底色——用户报的「短暂黑屏」；
- * - 键盘抬起时这一层还向上多长一段（`--keyboard-lift`，也是落地时才写）：收起的那一段里，窗口上沿跟着
- *   往下走，多出来的这一段正好把上面的历史消息留在窗口里，而不是留一条空白（原生键盘收起时窗口是向上
- *   长的，看到的就是这些历史）。它和 `.detail-screen` 的 padding-bottom 在消息列表的高度上正好抵消：
+ * - 键盘抬起时这一层还向上多长一段（`--keyboard-lift`，默认等到落地才写，见下一条例外）：收起的那一段里，窗口上沿跟着
+ *   往下走，多出来的这一段正好让它留在页头上方，而不是在页头下面露出一条空白（原生键盘收起时窗口是向上
+ *   长的，看到的就是这段历史）。它和 `.detail-screen` 的 padding-bottom 在消息列表的高度上正好抵消：
  *   换手前后列表的可见高度一致，滚动位置不用动；
- * - 布局在运动期间一次都不动，所以没有缺口可以闪；
+ * - 抬多高必须和这一层当时的走向配平：读者贴着底（这一层要动画）时，布局里那段也得抬着。1.36 里这个配平
+ *   是「落地时才写」，碰上「上一次抬起时读者没贴底（没抬）、这一次贴底（要动画）」这个组合，窗口就整块
+ *   往下滑、页头下面露出一条键盘高、纯黑的缺口——用户反馈里的「短暂黑屏」。现在改成：一次「贴底」的收起
+ *   一开始就把布局换到抬起状态（同一个任务里用滚动把内容按回原位，画面不动），而不是等到落地才换；
+ * - 布局在运动期间原则上不动（唯一一次例外是上面那种配平：同一个任务里换完，画面不动），所以没有缺口可以闪；
  * - 落地时把 transform 换回布局：给 `--keyboard-inset` 写一次键盘高度，`.detail-screen` 的 padding-bottom
  *   把这一层连同输入框抬到同一个位置，输入框的底部安全区边距同时归零（styles.css）；写布局、清 transform、
  *   消息列表贴底在同一个任务里完成，两者描述同一批像素，切换看不见。
+ *
+ * - WKWebView 自己那一层还会把整篇文档顶一下：插件在每个键盘事件里只把 `contentInset` 清回 0
+ *   （`resetScrollView`），`contentOffset` 没人管，被顶走的那一段就留在画面里（顶上是页头、底下露一片页面底色）。
+ *   两个落地事件里各把 `window.scrollY / scrollX` 按回 0 一次（`pinDocumentOffset`）：整页是个 `inset: 0`
+ *   的固定壳，文档本来就不该滚动，没被顶走时一次也不碰；
  *
  * 落地的时刻取 `keyboardDidShow` / `keyboardDidHide`；时长与曲线是 iOS 自己的（250ms、curve 7 的近
  * 似，插件不向外暴露这两个值），差一点也会被落地事件纠正回来。
@@ -136,9 +145,12 @@ export function createKeyboardInsetController({
   readTransform = (element) => window.getComputedStyle(element).transform,
   readRect = (element) => element.getBoundingClientRect(),
   readViewportHeight = () => window.innerHeight,
+  viewport = typeof window === 'undefined' ? null : window,
   motionMs = KEYBOARD_MOTION_MS,
 } = {}) {
   let inset = 0;
+  // 已经写进布局的 `--keyboard-lift`：换手时要知道「现在抬着多少」才能配平滚动位置。
+  let liftValue = 0;
   // 输入框静息底边离屏幕底有多远。只有真正静息（布局没抬起、也没在动）时才重新量一次。
   let restGap = 0;
   let motion = null;
@@ -152,7 +164,8 @@ export function createKeyboardInsetController({
 
   // 长度与 inset 同一批写进去：两个布局值互相抵消，同一个任务里换，画面才对得上。
   function writeLift(next) {
-    root.style.setProperty(KEYBOARD_LIFT_VAR, `${Math.max(0, next)}px`);
+    liftValue = Math.max(0, Math.round(Number(next) || 0));
+    root.style.setProperty(KEYBOARD_LIFT_VAR, `${liftValue}px`);
   }
 
   function pieces() {
@@ -199,6 +212,12 @@ export function createKeyboardInsetController({
     if (pending.timer) clearTimeout(pending.timer);
     writeInset(pending.target);
     writeLift(pending.settledLift);
+    keepView({
+      scroller: pending.scroller,
+      liftFrom: pending.liftAtStart,
+      liftTo: pending.settledLift,
+      transform: pending.traveledTo,
+    });
     pending.animations.forEach((animation) => animation.cancel());
     pending.region?.classList.remove(KEYBOARD_MOTION_CLASS);
     pinToBottom(pending);
@@ -216,10 +235,36 @@ export function createKeyboardInsetController({
     scroller.scrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
   }
 
+  /**
+   * 布局里那段负 margin 每变一次，窗口上沿就整体挪一截（抬起来是向上长，收回是向下长：两种情况下内容
+   * 在窗口里的位置都不变）。但滚动位置是相对窗口顶端的，不补就会跟着跳一下——翻上去看历史的人每次开合
+   * 键盘都会看到内容平移一截。补的量正好抵消：窗口（布局）动多少、动画又另外动了多少，滚动就反着补多少。
+   * 只有「读者贴着底」那一类是例外：他要的就是内容跟着键盘走，那一步是 `pinToBottom` 的事。
+   */
+  function keepView({ scroller, liftFrom, liftTo, transform }) {
+    if (!scroller) return;
+    const delta = (liftFrom - liftTo) - transform;
+    if (!delta) return;
+    scroller.scrollTop = Math.max(0, scroller.scrollTop + delta);
+  }
+
   function land() {
     if (!motion) return;
     motion.landed = true;
     settleMotion();
+  }
+
+  /**
+   * 键盘这件事在 iOS 上分两层：这一层管布局，WKWebView 自己那一层还会把整篇文档往上顶一下——插件在键盘
+   * 动画结束后只把 `contentInset` 清回 0（`resetScrollView`），`contentOffset` 不管；被顶走的那一段就留在
+   * 画面里（顶上是页头、底下露一片页面底色），也就是用户报的「短暂黑屏」。这里只读 `window.scrollY`：被
+   * 顶走了就按回 0。整页是个 `inset: 0` 的固定壳，文档本来就不该滚动（滚动都在 `.message-scroll`、`.list`
+   * 这些内层容器里），按回去不会跟任何东西打架。
+   */
+  function pinDocumentOffset() {
+    if (!viewport || typeof viewport.scrollTo !== 'function') return;
+    if (!viewport.scrollY && !viewport.scrollX) return;
+    viewport.scrollTo(0, 0);
   }
 
   function moveTo(target) {
@@ -234,9 +279,21 @@ export function createKeyboardInsetController({
     const from = next && following ? translateYOf(readTransform(next.region)) : 0;
     const to = target > 0 ? -lift : lift;
     stopMotion();
+    // 收起时窗口要跟着键盘往下走 `lift`：布局里那段负 margin 必须同时抬着，窗口上沿才留在页头上方。
+    // 「上一次抬起时读者没贴底（布局里没抬）、这一次贴底（要动画）」只有这个组合会出事：窗口整块滑下来，
+    // 页头下面露出一条键盘高、纯黑的缺口。同一个任务里把布局换过去、再用滚动把内容按回原位，画面不动。
+    let liftAtStart = liftValue;
+    if (following && target === 0 && liftAtStart !== lift) {
+      writeLift(lift);
+      keepView({ scroller, liftFrom: liftAtStart, liftTo: lift, transform: from });
+      liftAtStart = lift;
+    }
     const pending = {
       target,
       settledLift: following && target > 0 ? lift : 0,
+      liftAtStart,
+      // 只有消息列表真的在动画时窗口才动过；否则要补的全在布局那一段上。
+      traveledTo: following ? to : 0,
       region: next?.region || null,
       scroller,
       following,
@@ -286,8 +343,10 @@ export function createKeyboardInsetController({
     const next = pieces();
     if (next) measureRestGap(next);
     stopMotion();
+    const travels = listTravels(geometryOf(next?.scroller));
     writeInset(target);
-    writeLift(listTravels(geometryOf(next?.scroller)) ? keyboardLift({ keyboardHeight: target, restGap }) : 0);
+    writeLift(travels ? keyboardLift({ keyboardHeight: target, restGap }) : 0);
+    pinToBottom({ scroller: next?.scroller || null, following: travels });
   }
 
   function lower() {
@@ -303,14 +362,18 @@ export function createKeyboardInsetController({
         // 落地事件总是补齐信息：`willShow` 丢过一次也不会把布局留在没抬起的状态。
         if (motion) land();
         else raiseNow(info?.keyboardHeight);
+        pinDocumentOffset();
       }],
       ['keyboardWillHide', () => lower()],
       ['keyboardDidHide', () => {
         if (motion) land();
         else if (inset) {
+          const liftFrom = liftValue;
           writeInset(0);
           writeLift(0);
+          keepView({ scroller: pieces()?.scroller || null, liftFrom, liftTo: 0, transform: 0 });
         }
+        pinDocumentOffset();
       }],
     ];
     handles = await Promise.all(events.map(([event, handler]) => keyboard.addListener(event, handler)));

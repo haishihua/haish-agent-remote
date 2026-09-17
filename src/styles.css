@@ -278,11 +278,17 @@ html:not(.native-app) .detail-screen { height: 100dvh; }
    back swipe is revealing the list under the finger. Releasing them mid-gesture
    is what that swipe felt like: a style recalc across every row plus per-frame
    work from the spinners and phase gradients while a full-screen layer is
-   already moving. They come back the moment the detail is gone. */
-.app-shell.detail-open > :not(.detail-screen) * { animation-play-state: paused; }
+   already moving. They come back the moment the detail is gone.
+   `detail-closing` 是同一个「先别恢复」的延长段：滑退动画把详情层送到位、React 把整棵详情树卸掉，
+   都落在收尾那一帧上；目录这一头同时把几十个定时动画重新交给合成器、再给顶栏糊一层背景
+   （backdrop-filter 的第一次渲染要一整屏背景模糊），两笔重活挤在一起就是用户报的「滑到最右边
+   卡一下」。这个类由 App.jsx 在收起时挂到 `<html>` 上、那一帧画完之后摘掉。 */
+.app-shell.detail-open > :not(.detail-screen) *,
+html.detail-closing .app-shell > :not(.detail-screen) * { animation-play-state: paused; }
 /* 详情页滑走时，目录顶栏那层 backdrop-filter 会让 iOS 每一帧重算一次背景模糊：正在移动的详情层压在
-   它上面，模糊就得跟着重算，滑动因此一卡一卡。详情开着时它本来就被盖住，直接关掉。 */
-.app-shell.detail-open .remote-topbar { backdrop-filter: none; }
+   它上面，模糊就得跟着重算，滑动因此一卡一卡。详情开着（或正在收起）时它本来就被盖住，直接关掉。 */
+.app-shell.detail-open .remote-topbar,
+html.detail-closing .remote-topbar { backdrop-filter: none; }
 .detail-top { touch-action: none; }
 /* The pull is a Web Animations transform owned by App.jsx; this class promotes the layer
    before the finger moves (so the first tracked frame does not build it) and stays on
@@ -305,14 +311,20 @@ html:not(.native-app) .detail-screen { height: 100dvh; }
 .detail-error-banner.connecting svg { color: var(--accent); }
 .message-region { position: relative; min-height: 0; overflow: hidden; }
 .detail-body { height: 100%; }
-.message-scroll { height: 100%; overflow-x: hidden; overflow-y: auto; padding: 20px 16px 28px; overscroll-behavior: contain; scrollbar-width: none; -ms-overflow-style: none; }
+/* 线程贴着键盘那一端（原生聊天的样子）：内容比窗口短时，空白留在上面，最后一条消息就在输入框上方，
+   而不是浮在顶上、下面空一大片。键盘那一套位移也靠这个锚：跟键盘一起动的是窗口的**下**沿，内容贴着
+   它，开合全程都跟在输入框上方；布局里那段负 margin（`--keyboard-lift`，见 src/ios-keyboard.js）只抬
+   窗口自己，不再把内容顶出页头。`flex: 0 0 auto` 是必须的：滚动容器里的 flex 子项默认会被压扁。 */
+.message-scroll { display: flex; height: 100%; flex-direction: column; overflow-x: hidden; overflow-y: auto; padding: 20px 16px 28px; overscroll-behavior: contain; scrollbar-width: none; -ms-overflow-style: none; }
+.message-scroll > * { flex: 0 0 auto; }
+.message-scroll > :first-child { margin-top: auto; }
 .message-scroll::-webkit-scrollbar { display: none; width: 0; height: 0; }
 .scroll-to-bottom-button { position: absolute; z-index: 20; bottom: 14px; left: 50%; display: inline-flex; width: 44px; height: 44px; padding: 0; align-items: center; justify-content: center; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 50%; background: rgba(12, 17, 25, 0.94); color: rgba(241, 246, 255, 0.92); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32); opacity: 0; pointer-events: none; transform: translate(-50%, 8px); transition: opacity 140ms ease, transform 140ms ease, border-color 140ms ease; }
 .scroll-to-bottom-button.is-visible { opacity: 1; pointer-events: auto; transform: translate(-50%, 0); }
 .scroll-to-bottom-button:focus-visible { border-color: rgba(239, 191, 100, 0.5); outline: none; }
 .scroll-to-bottom-button svg { width: 23px; height: 23px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .message { width: 100%; margin: 0 0 22px; }
-.message.user { width: auto; max-width: 88%; margin-left: auto; }
+.message.user { width: auto; max-width: 88%; margin-left: auto; align-self: flex-end; }
 .message-images { display: flex; max-width: 100%; margin-bottom: 7px; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .message-image { width: min(160px, 100%); min-height: 110px; padding: 0; overflow: hidden; aspect-ratio: 4 / 3; border: 0; border-radius: 14px; background: rgba(60, 60, 67, 0.4); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.32), inset 0 0 0 0.5px rgba(255, 255, 255, 0.08); }
 .message-image img { display: block; width: 100%; height: 100%; object-fit: cover; }
