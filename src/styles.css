@@ -47,6 +47,16 @@ code { padding: 2px 6px; border: 1px solid var(--border); border-radius: 6px; ba
 .header-spacer { width: 48px; }
 
 .remote-home { min-height: 100dvh; padding-bottom: calc(104px + var(--safe-bottom)); }
+/* Pull-to-refresh (see pull-to-refresh.js): the surface travels with the finger and the
+   indicator is pinned just above its first pixel, so the pull slides it out from under the
+   header the way a native refresh control does. `pull-active` keeps that surface promoted
+   for the whole motion — dropped mid-flight, the layer would be rebuilt and the pull would
+   hitch the way the back swipe used to. */
+.remote-body, .detail-body { position: relative; }
+.pull-active { will-change: transform; }
+.pull-refresh { position: absolute; z-index: 6; top: 0; left: 50%; display: grid; width: 34px; height: 34px; place-items: center; color: var(--accent); opacity: 0; pointer-events: none; transform: translate(-50%, -100%); }
+.pull-refresh svg { width: 21px; height: 21px; }
+.pull-refresh.spinning svg { animation: spin 900ms linear infinite; }
 .remote-topbar { position: sticky; z-index: 15; top: 0; padding-bottom: 1px; border-bottom: 1px solid rgba(53, 64, 90, 0.62); background: rgba(6, 7, 12, 0.92); backdrop-filter: blur(22px) saturate(130%); }
 .remote-header { display: grid; grid-template-columns: 48px minmax(0, 1fr) 48px; min-height: calc(82px + var(--safe-top)); padding: calc(10px + var(--safe-top)) 12px 6px; align-items: center; }
 .header-brand { display: block; width: 38px; height: 38px; object-fit: contain; user-select: none; -webkit-user-drag: none; }
@@ -268,6 +278,7 @@ input::placeholder, textarea::placeholder { color: var(--muted-2); }
 .detail-error-banner.connecting { border-bottom-color: rgba(239, 191, 100, 0.2); background: rgba(48, 39, 23, 0.96); color: var(--accent-strong); }
 .detail-error-banner.connecting svg { color: var(--accent); }
 .message-region { position: relative; min-height: 0; overflow: hidden; }
+.detail-body { height: 100%; }
 .message-scroll { height: 100%; overflow-x: hidden; overflow-y: auto; padding: 20px 16px 28px; overscroll-behavior: contain; scrollbar-width: none; -ms-overflow-style: none; }
 .message-scroll::-webkit-scrollbar { display: none; width: 0; height: 0; }
 .scroll-to-bottom-button { position: absolute; z-index: 20; bottom: 14px; left: 50%; display: inline-flex; width: 44px; height: 44px; padding: 0; align-items: center; justify-content: center; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 50%; background: rgba(12, 17, 25, 0.94); color: rgba(241, 246, 255, 0.92); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32); opacity: 0; pointer-events: none; transform: translate(-50%, 8px); transition: opacity 140ms ease, transform 140ms ease, border-color 140ms ease; }
@@ -505,6 +516,13 @@ input::placeholder, textarea::placeholder { color: var(--muted-2); }
 .empty-state { display: grid; min-height: 48dvh; padding: 30px; place-items: center; align-content: center; text-align: center; }
 .empty-state h2 { margin: 16px 0 0; color: var(--text); }
 .empty-state p { margin: 8px 0 20px; line-height: 1.5; }
+/* The state a screen shows when its own fetch failed: the banner above already carries the
+   real error, so this card only owns the way out it has left. */
+.load-failed { display: grid; min-height: 180px; padding: 26px 22px; place-items: center; align-content: center; gap: 2px; color: var(--muted); text-align: center; }
+.load-failed.tall { min-height: 46dvh; }
+.load-failed svg { color: #ff7388; }
+.load-failed h2 { margin: 12px 0 0; color: var(--text); font-family: var(--content-font); font-size: 17px; }
+.load-failed p { margin: 6px 0 0; font-size: 13.5px; line-height: 1.5; }
 .pending-banner, .offline-banner { display: flex; align-items: center; gap: 9px; padding: calc(10px + var(--safe-top)) 18px 10px; font-size: 13px; font-weight: 650; }
 .pending-banner { color: var(--accent-strong); background: rgba(239, 191, 100, 0.1); }
 .offline-banner { color: #ffd0d7; background: #3a161f; }

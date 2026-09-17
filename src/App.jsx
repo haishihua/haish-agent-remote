@@ -78,6 +78,19 @@ import {
   swipeBackVelocity,
 } from './swipe-back.js';
 import {
+  PULL_REFRESH_EASING,
+  PULL_REFRESH_HOLD_MS,
+  PULL_REFRESH_HOLD_PX,
+  PULL_REFRESH_MIN_SPIN_MS,
+  PULL_REFRESH_SETTLE_MS,
+  isPullRefreshInFlight,
+  pullRefreshArmed,
+  pullRefreshAxis,
+  pullRefreshDistance,
+  pullRefreshProgress,
+  setPullRefreshInFlight,
+} from './pull-to-refresh.js';
+import {
   THINKING_OPTIONS,
   agentOptionsFromPayload,
   providerOptionsFromSettings,
@@ -819,9 +832,219 @@ function RunConfigSheet({ config, agentLabel, agents, providers, models, modelLo
   );
 }
 
-function ConversationList({ projects, conversations, tasks, status, loading, onOpen, onNew, onSettings }) {
+// Pull-to-refresh: the platform's refresh control, built the way this app builds gestures
+// (see swipe-back.js). The component owns the touch listeners, the surface travels under
+// the finger through one style write per frame, and the refresh only starts once the pull
+// passed the trigger distance. `listenRef` is the element that receives the touch,
+// `surfaceRef` the one that travels, and the indicator is pinned above the surface's first
+// pixel so the pull reveals it from under the header, the way a native control slides out.
+function usePullToRefresh({ listenRef, surfaceRef, indicatorRef, canStart, onRefresh }) {
+  const onRefreshRef = useRef(onRefresh);
+  const canStartRef = useRef(canStart);
+  useEffect(() => { onRefreshRef.current = onRefresh; });
+  useEffect(() => { canStartRef.current = canStart; });
+
+  useEffect(() => {
+    const listen = listenRef.current;
+    const surface = surfaceRef.current;
+    const indicator = indicatorRef.current;
+    if (!listen || !surface || !indicator) return undefined;
+    const icon = indicator.querySelector('svg') || indicator;
+    let alive = true;
+    let start = null;
+    let claimed = false;
+    let busy = false;
+    let distance = 0;
+    let frame = 0;
+    let pending = null;
+    let motion = null;
+    let motionTimer = 0;
+
+    function stopMotion() {
+      if (frame) window.cancelAnimationFrame(frame);
+      frame = 0;
+      pending = null;
+      if (motion) motion.cancel();
+      motion = null;
+      if (motionTimer) window.clearTimeout(motionTimer);
+      motionTimer = 0;
+    }
+
+    function paint(next) {
+      distance = next;
+      surface.style.transform = `translate3d(0, ${next}px, 0)`;
+      const progress = pullRefreshProgress(next);
+      indicator.style.opacity = String(progress);
+      icon.style.transform = `rotate(${Math.round(progress * 180)}deg)`;
+    }
+
+    // Hands the surface back to CSS once the motion has landed. `pull-active` deliberately
+    // stays on until then: dropping the promoted layer mid-flight rebuilds it, which reads
+    // as a hitch in the same way it did in the back swipe.
+    function rest() {
+      stopMotion();
+      surface.classList.remove('pull-active');
+      surface.style.transform = '';
+      indicator.style.opacity = '';
+      indicator.classList.remove('spinning');
+      icon.style.transform = '';
+      distance = 0;
+      start = null;
+      claimed = false;
+      busy = false;
+      setPullRefreshInFlight(false);
+    }
+
+    // The refresh is in flight: the surface waits at the hold distance and the spinner
+    // turns, whatever the finger was doing when it let go.
+    function hold() {
+      const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+      const from = distance;
+      stopMotion();
+      distance = PULL_REFRESH_HOLD_PX;
+      surface.style.transform = `translate3d(0, ${PULL_REFRESH_HOLD_PX}px, 0)`;
+      indicator.style.opacity = '1';
+      icon.style.transform = '';
+      if (reduced || from === PULL_REFRESH_HOLD_PX) return;
+      const animation = surface.animate(
+        [{ transform: `translate3d(0, ${from}px, 0)` }, { transform: `translate3d(0, ${PULL_REFRESH_HOLD_PX}px, 0)` }],
+        { duration: PULL_REFRESH_HOLD_MS, easing: PULL_REFRESH_EASING, fill: 'both' },
+      );
+      motion = animation;
+      animation.onfinish = () => {
+        if (motion !== animation) return;
+        animation.cancel();
+        motion = null;
+      };
+    }
+
+    function settleBack() {
+      const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+      const from = distance;
+      stopMotion();
+      distance = 0;
+      surface.style.transform = 'translate3d(0, 0px, 0)';
+      indicator.style.opacity = '0';
+      icon.style.transform = 'rotate(0deg)';
+      if (reduced || !(from > 0)) {
+        rest();
+        return;
+      }
+      const animation = surface.animate(
+        [{ transform: `translate3d(0, ${from}px, 0)` }, { transform: 'translate3d(0, 0px, 0)' }],
+        { duration: PULL_REFRESH_SETTLE_MS, easing: PULL_REFRESH_EASING, fill: 'both' },
+      );
+      motion = animation;
+      const landed = () => {
+        if (motion !== animation) return;
+        animation.cancel();
+        motion = null;
+        rest();
+      };
+      animation.onfinish = landed;
+      motionTimer = window.setTimeout(landed, PULL_REFRESH_SETTLE_MS + 80);
+    }
+
+    async function startRefresh() {
+      busy = true;
+      hold();
+      indicator.classList.add('spinning');
+      const startedAt = Date.now();
+      try {
+        await onRefreshRef.current?.();
+      } catch {
+        // The screen's own error path reports what failed; the surface only settles back.
+      }
+      const remaining = PULL_REFRESH_MIN_SPIN_MS - (Date.now() - startedAt);
+      if (remaining > 0) await new Promise((resolve) => { window.setTimeout(resolve, remaining); });
+      if (!alive || !busy) return;
+      settleBack();
+    }
+
+    function begin(event) {
+      if (busy) return;
+      const touch = event.touches?.[0];
+      if (!touch || event.touches.length !== 1) return;
+      if (event.target?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+      if (!canStartRef.current?.()) return;
+      stopMotion();
+      start = { x: touch.clientX, y: touch.clientY };
+      claimed = false;
+      paint(0);
+    }
+
+    function flush() {
+      frame = 0;
+      const point = pending;
+      pending = null;
+      if (!point || !start) return;
+      paint(pullRefreshDistance(point.y - start.y));
+    }
+
+    function move(event) {
+      const touch = event.touches?.[0];
+      if (!start || !touch) return;
+      if (!claimed) {
+        const axis = pullRefreshAxis(touch.clientX - start.x, touch.clientY - start.y);
+        if (!axis) return;
+        if (axis !== 'pull') { start = null; return; }
+        claimed = true;
+        setPullRefreshInFlight(true);
+        surface.classList.add('pull-active');
+        // Own the touch from the frame that claims it, so the WebView neither starts a
+        // scroll of its own nor holds the touch stream back until that scroll settles.
+        if (event.cancelable) event.preventDefault();
+        paint(pullRefreshDistance(touch.clientY - start.y));
+        return;
+      }
+      if (event.cancelable) event.preventDefault();
+      // Touch moves can arrive faster than the display refreshes; take one sample per frame.
+      pending = { y: touch.clientY };
+      if (!frame) frame = window.requestAnimationFrame(flush);
+    }
+
+    function end(event) {
+      if (!start || !claimed) { start = null; return; }
+      const touch = event.changedTouches?.[0];
+      if (touch) paint(pullRefreshDistance(touch.clientY - start.y));
+      start = null;
+      claimed = false;
+      // A pull that travelled is not a tap: no row and no message may react to it.
+      if (event.cancelable) event.preventDefault();
+      if (pullRefreshArmed(distance)) startRefresh();
+      else settleBack();
+    }
+
+    function cancel(event) {
+      if (!start || !claimed) { start = null; return; }
+      start = null;
+      claimed = false;
+      if (event.cancelable) event.preventDefault();
+      settleBack();
+    }
+
+    listen.addEventListener('touchstart', begin, { passive: true });
+    listen.addEventListener('touchmove', move, { passive: false });
+    listen.addEventListener('touchend', end, { passive: false });
+    listen.addEventListener('touchcancel', cancel, { passive: false });
+    return () => {
+      alive = false;
+      stopMotion();
+      setPullRefreshInFlight(false);
+      listen.removeEventListener('touchstart', begin);
+      listen.removeEventListener('touchmove', move);
+      listen.removeEventListener('touchend', end);
+      listen.removeEventListener('touchcancel', cancel);
+    };
+  }, [indicatorRef, listenRef, surfaceRef]);
+}
+
+function ConversationList({ projects, conversations, tasks, status, loading, error, onRefresh, onOpen, onNew, onSettings }) {
   const [query, setQuery] = useState('');
   const [showProjectPicker, setShowProjectPicker] = useState(false);
+  const homeRef = useRef(null);
+  const bodyRef = useRef(null);
+  const refreshIndicatorRef = useRef(null);
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const pinned = conversations.filter((conversation) => conversation.pinned && (!normalizedQuery || `${conversation.title} ${conversation.label}`.toLocaleLowerCase().includes(normalizedQuery)));
   const projectIds = new Set(projects.map((project) => project.project_id));
@@ -844,8 +1067,19 @@ function ConversationList({ projects, conversations, tasks, status, loading, onO
     else setShowProjectPicker(true);
   }
 
+  // A directory that never loaded must not read as "no conversations yet": this is the one
+  // state where the list has to explain itself and offer the way out it has left.
+  const loadFailed = Boolean(error) && conversations.length === 0;
+  usePullToRefresh({
+    listenRef: homeRef,
+    surfaceRef: bodyRef,
+    indicatorRef: refreshIndicatorRef,
+    canStart: () => window.scrollY <= 0,
+    onRefresh,
+  });
+
   return (
-    <main className="remote-home">
+    <main className="remote-home" ref={homeRef}>
       <div className="remote-topbar">
         <header className="remote-header">
           <img className="header-brand" src={penguinLogo} alt="" draggable="false" />
@@ -854,15 +1088,21 @@ function ConversationList({ projects, conversations, tasks, status, loading, onO
         </header>
         <label className="search-field"><Search size={23} aria-hidden="true" /><span className="sr-only">Search conversations</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search conversations" /></label>
       </div>
-      {loading && conversations.length === 0 ? <div className="center-state"><LoaderCircle className="spin" /><span>Syncing…</span></div> : null}
-      {!loading && conversations.length === 0 ? (
-        <div className="empty-state"><Folder size={30} /><h2>No conversations yet</h2><p>Create a task and it will appear on your computer.</p></div>
-      ) : null}
-      <div className="directory-list">
-        {pinned.length ? <PinnedGroup conversations={pinned} tasks={tasks} onOpen={onOpen} previewLimit={previewLimit} /> : null}
-        {orderedProjects.map((project) => <ProjectGroup key={project.project_id} project={project} tasks={tasks} onOpen={onOpen} onNew={onNew} previewLimit={previewLimit} />)}
-        {ungrouped.length ? <ProjectGroup project={{ project_id: '', name: 'Other conversations', conversations: ungrouped }} tasks={tasks} onOpen={onOpen} onNew={onNew} previewLimit={previewLimit} /> : null}
-        {!loading && query && !pinned.length && !visibleProjects.length && !ungrouped.length ? <p className="no-results">No matching conversations</p> : null}
+      <div className="remote-body" ref={bodyRef}>
+        <span className="pull-refresh" ref={refreshIndicatorRef} aria-hidden="true"><LoaderCircle size={21} /></span>
+        {loading && conversations.length === 0 ? <div className="center-state"><LoaderCircle className="spin" /><span>Syncing…</span></div> : null}
+        {!loading && conversations.length === 0 && loadFailed ? (
+          <div className="load-failed tall"><CircleAlert size={28} aria-hidden="true" /><h2>Couldn’t load conversations</h2><p>Pull down to try again.</p></div>
+        ) : null}
+        {!loading && conversations.length === 0 && !loadFailed ? (
+          <div className="empty-state"><Folder size={30} /><h2>No conversations yet</h2><p>Create a task and it will appear on your computer.</p></div>
+        ) : null}
+        <div className="directory-list">
+          {pinned.length ? <PinnedGroup conversations={pinned} tasks={tasks} onOpen={onOpen} previewLimit={previewLimit} /> : null}
+          {orderedProjects.map((project) => <ProjectGroup key={project.project_id} project={project} tasks={tasks} onOpen={onOpen} onNew={onNew} previewLimit={previewLimit} />)}
+          {ungrouped.length ? <ProjectGroup project={{ project_id: '', name: 'Other conversations', conversations: ungrouped }} tasks={tasks} onOpen={onOpen} onNew={onNew} previewLimit={previewLimit} /> : null}
+          {!loading && query && !pinned.length && !visibleProjects.length && !ungrouped.length ? <p className="no-results">No matching conversations</p> : null}
+        </div>
       </div>
       <div className="new-task-dock"><button className="new-task-button" onClick={startNew}><span className="new-task-icon"><Plus size={20} /></span><span>New task</span></button></div>
       {showProjectPicker ? <ProjectPicker projects={projects} onChoose={(projectId) => { setShowProjectPicker(false); onNew(projectId); }} onClose={() => setShowProjectPicker(false)} /> : null}
@@ -1054,7 +1294,7 @@ const LiveRunBubble = React.memo(function LiveRunBubble({ liveRun, running }) {
     if (!running) return undefined;
     setNow(Date.now());
     const timer = window.setInterval(() => {
-      if (isSwipeBackInFlight()) return;
+      if (isSwipeBackInFlight() || isPullRefreshInFlight()) return;
       setNow(Date.now());
     }, 1000);
     return () => window.clearInterval(timer);
@@ -1089,6 +1329,8 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
   const [showRunConfig, setShowRunConfig] = useState(false);
   const [composerExpanded, setComposerExpanded] = useState(false);
   const messageScrollRef = useRef(null);
+  const messageBodyRef = useRef(null);
+  const refreshIndicatorRef = useRef(null);
   const messageInputRef = useRef(null);
   const photoInputRef = useRef(null);
   const photoLongPressRef = useRef(false);
@@ -1100,7 +1342,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
   const swipeSettleRef = useRef(null);
   const swipeFrameRef = useRef(0);
   const swipePendingRef = useRef(null);
-  const swipeDeferredRefreshRef = useRef(false);
+  const deferredRefreshRef = useRef(false);
   const swipeBlockedRef = useRef(false);
   const swipeHandlersRef = useRef(null);
   const composerImagesRef = useRef([]);
@@ -1154,9 +1396,11 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
     animation.currentTime = Math.min(1, Math.max(0, progress)) * SWIPE_BACK_TRACK_MS;
   }
 
-  function flushDeferredSwipeBackRefresh() {
-    if (!swipeDeferredRefreshRef.current) return;
-    swipeDeferredRefreshRef.current = false;
+  // Whatever a gesture pushed aside (a poll that would have landed mid-motion, or a pull
+  // that ends it) is fetched once the surface is back at rest.
+  function flushDeferredRefresh() {
+    if (!deferredRefreshRef.current) return;
+    deferredRefreshRef.current = false;
     refresh();
   }
 
@@ -1313,7 +1557,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
         return;
       }
       stopSwipeBackMotion();
-      flushDeferredSwipeBackRefresh();
+      flushDeferredRefresh();
     };
     if (!settle || duration <= 0) finish();
     else settle.onfinish = finish;
@@ -1332,7 +1576,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
     const settle = settleSwipeBack(paintedSwipeBackStep(step), false, reducedMotion ? 0 : 180, SWIPE_BACK_CANCEL_EASING);
     const finish = () => {
       stopSwipeBackMotion();
-      flushDeferredSwipeBackRefresh();
+      flushDeferredRefresh();
     };
     if (!settle || reducedMotion) finish();
     else settle.onfinish = finish;
@@ -1390,14 +1634,15 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
     loadedTraceIdsRef.current = new Set();
   }, [id]);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async ({ keep = false } = {}) => {
     if (localStreamRef.current) return null;
     try {
       const nextConversation = await api.conversation(id);
-      // A poll that resolves while a pull owns the thread would rebuild the message list
-      // under the finger; drop it here and let the post-settle catch-up fetch it again.
-      if (isSwipeBackInFlight()) {
-        swipeDeferredRefreshRef.current = true;
+      // A poll that resolves while a gesture owns the thread would rebuild the message list
+      // under the finger; drop it here and let the post-gesture catch-up fetch it again.
+      // `keep` is the pull-to-refresh call itself, which is the point of the gesture.
+      if (!keep && (isSwipeBackInFlight() || isPullRefreshInFlight())) {
+        deferredRefreshRef.current = true;
         return null;
       }
       setConversation(nextConversation);
@@ -1410,13 +1655,26 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
     }
   }, [id]);
 
+  // Same control as the directory, and the only way out of a detail that failed to load:
+  // pulling the thread down retries the fetch that fills it.
+  usePullToRefresh({
+    listenRef: messageScrollRef,
+    surfaceRef: messageBodyRef,
+    indicatorRef: refreshIndicatorRef,
+    canStart: () => (messageScrollRef.current?.scrollTop || 0) <= 0,
+    onRefresh: async () => {
+      await refresh({ keep: true });
+      deferredRefreshRef.current = false;
+    },
+  });
+
   useEffect(() => {
     refresh();
     // A poll rebuilds and re-renders the whole thread; while a pull is on the way that
     // work would land mid-gesture, so it waits for the surface to settle.
     const timer = window.setInterval(() => {
-      if (isSwipeBackInFlight()) {
-        swipeDeferredRefreshRef.current = true;
+      if (isSwipeBackInFlight() || isPullRefreshInFlight()) {
+        deferredRefreshRef.current = true;
         return;
       }
       refresh();
@@ -1563,7 +1821,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
 
     // A backgrounded app paints nothing: keep the payloads for when it does.
     function tick() {
-      if (isSwipeBackInFlight()) return;
+      if (isSwipeBackInFlight() || isPullRefreshInFlight()) return;
       if (document.visibilityState === 'hidden') return;
       hydrateActiveTask();
     }
@@ -1824,6 +2082,9 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
     .map((part) => /^\d/.test(part) ? part : `${part[0].toUpperCase()}${part.slice(1)}`)
     .join(' ');
   const reconnecting = connection && !connection.timedOut;
+  // A detail that never loaded is a dead end on its own — a banner over an empty thread.
+  // The card below owns the way out, and the pull-to-refresh handler above retries it.
+  const detailLoadFailed = !conversationHydrated && Boolean(error || connection) && !liveRun;
   // Every state change on this screen re-renders it; the thread below is memoized
   // so typing, the elapsed timer, polls and streamed events only redraw the parts
   // they actually change.
@@ -1857,23 +2118,29 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
         </div> : null}
       </div>
       <div className="message-region" onClick={collapseComposer}>
-        <div className="message-scroll" ref={messageScrollRef}>
-          <MessageThread
-            conversationId={id}
-            messages={visibleMessages}
-            optimisticMessages={visibleOptimisticMessages}
-            tasksById={tasksById}
-            taskTraces={taskTraces}
-            orphanReplyByAnchor={orphanReplyByAnchor}
-            loadTaskTrace={loadTaskTrace}
-            onPreviewImage={setPreviewImage}
-          />
-          {/* 卡片属于线程最新的一端，不属于历史之前：详情页一挂载就滚到最新消息并跟着它走，
-              把卡片摆在整段历史之前等于一进来就被滚出视野（看起来只闪了一下就没了）。
-              桌面端同样把审批行排在所有消息之后。 */}
-          <ApprovalCard approvals={approvals} onResolved={refreshApprovals} />
-          {liveRun && (running || liveReplyPending) ? <LiveRunBubble liveRun={liveRun} running={running} /> : null}
-          {!conversation ? <div className="center-state"><LoaderCircle className="spin" /></div> : null}
+        <div className="detail-body" ref={messageBodyRef}>
+          <span className="pull-refresh" ref={refreshIndicatorRef} aria-hidden="true"><LoaderCircle size={21} /></span>
+          <div className="message-scroll" ref={messageScrollRef}>
+            <MessageThread
+              conversationId={id}
+              messages={visibleMessages}
+              optimisticMessages={visibleOptimisticMessages}
+              tasksById={tasksById}
+              taskTraces={taskTraces}
+              orphanReplyByAnchor={orphanReplyByAnchor}
+              loadTaskTrace={loadTaskTrace}
+              onPreviewImage={setPreviewImage}
+            />
+            {/* 卡片属于线程最新的一端，不属于历史之前：详情页一挂载就滚到最新消息并跟着它走，
+                把卡片摆在整段历史之前等于一进来就被滚出视野（看起来只闪了一下就没了）。
+                桌面端同样把审批行排在所有消息之后。 */}
+            <ApprovalCard approvals={approvals} onResolved={refreshApprovals} />
+            {liveRun && (running || liveReplyPending) ? <LiveRunBubble liveRun={liveRun} running={running} /> : null}
+            {detailLoadFailed ? (
+              <div className="load-failed"><CircleAlert size={28} aria-hidden="true" /><h2>Couldn’t load this conversation</h2><p>Pull down to try again.</p></div>
+            ) : null}
+            {!conversation && !detailLoadFailed ? <div className="center-state"><LoaderCircle className="spin" /></div> : null}
+          </div>
         </div>
         <ScrollToBottomButton scrollRef={messageScrollRef} resetKey={id} />
       </div>
@@ -2037,13 +2304,18 @@ export default function App() {
   const startupRequestRef = useRef(false);
   const detailOpenRef = useRef(false);
   const directorySignatureRef = useRef('');
+  // A failed directory load has to stay visible until the directory itself answers. The 5s
+  // status poll succeeds on its own and used to clear the banner, so a list that never
+  // loaded turned into “No conversations yet” a few seconds later — with nothing left to
+  // pull down on.
+  const directoryErrorRef = useRef(false);
   const approvalsSignatureRef = useRef('');
 
   const loadStatus = useCallback(async () => {
     const next = await api.status();
     if (api.isNative && !next.paired) await api.forgetConnection();
     setStatus(next);
-    setFatalError('');
+    if (!directoryErrorRef.current) setFatalError('');
     return next;
   }, []);
 
@@ -2064,6 +2336,9 @@ export default function App() {
   const loadTasks = useCallback(async () => {
     try {
       const projectsResponse = await api.projects();
+      // The directory answered: whatever the previous attempt reported is stale now.
+      directoryErrorRef.current = false;
+      setFatalError('');
       const nextProjects = projectsResponse.projects || [];
       const signature = JSON.stringify(nextProjects);
       if (signature === directorySignatureRef.current) return;
@@ -2073,14 +2348,24 @@ export default function App() {
       setProjects(nextProjects);
       const nextTasks = Object.fromEntries(nextConversations.flatMap((item) => item.tasks || []).map((task) => [task.task_id, task]));
       setTasks(nextTasks);
-      setFatalError('');
     } catch (error) {
+      directoryErrorRef.current = true;
       setFatalError(error.message);
       if (error.status === 401) await loadStatus();
     } finally {
       setLoading(false);
     }
   }, [loadStatus]);
+
+  // What the 5s poll does, and what a pull-down on the directory runs: the list is the one
+  // screen whose own failure has no other way back.
+  const refreshDirectory = useCallback(async () => {
+    await Promise.allSettled([
+      loadTasks(),
+      loadStatus().catch((error) => setFatalError(error.message)),
+      loadApprovals(),
+    ]);
+  }, [loadApprovals, loadStatus, loadTasks]);
 
   const connectAtStartup = useCallback(async () => {
     if (startupRequestRef.current) return;
@@ -2123,7 +2408,7 @@ export default function App() {
     const timer = window.setInterval(() => {
       // A pull owns the thread while it is on its way: no background work may start
       // under the finger.
-      if (isSwipeBackInFlight()) return;
+      if (isSwipeBackInFlight() || isPullRefreshInFlight()) return;
       loadStatus().catch((error) => setFatalError(error.message));
       loadApprovals();
       // The directory payload is ~3.5 MB and hands every row a fresh object; behind an
@@ -2178,6 +2463,7 @@ export default function App() {
     saveStoredConversationId('');
     setConversations([]);
     directorySignatureRef.current = '';
+    directoryErrorRef.current = false;
     approvalsSignatureRef.current = '';
     setStatus({ paired: false, runtime_online: false });
   }
@@ -2211,7 +2497,7 @@ export default function App() {
       {tab === 'tasks' ? (
         <>
           {approvalCount ? <div className="pending-banner"><ShieldCheck size={18} /><span>{approvalCount} {approvalCount === 1 ? 'action' : 'actions'} waiting</span></div> : null}
-          <ConversationList projects={projects} conversations={conversations} tasks={tasks} status={status} loading={loading} onOpen={openConversation} onNew={createConversation} onSettings={() => setTab('settings')} />
+          <ConversationList projects={projects} conversations={conversations} tasks={tasks} status={status} loading={loading} error={fatalError} onRefresh={refreshDirectory} onOpen={openConversation} onNew={createConversation} onSettings={() => setTab('settings')} />
         </>
       ) : <SettingsScreen status={status} onLogout={logout} onBack={() => setTab('tasks')} />}
       {detail}
