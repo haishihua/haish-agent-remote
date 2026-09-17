@@ -180,6 +180,14 @@ export function createKeyboardInsetController({
     root.style.setProperty(KEYBOARD_LIFT_VAR, `${liftValue}px`);
   }
 
+  /**
+   * 落地时布局里该抬多少：只有「读者贴着底、而且键盘还抬着」时才抬，抬的是新键盘上沿减去输入框静息的
+   * 那段空隙。连着动画换手的那一趟（`moveTo`）和落地事件补上丢掉的开场那一趟（`raiseNow`）落到的都是这个值。
+   */
+  function settledLiftFor(target, following) {
+    return following && target > 0 ? keyboardLift({ keyboardHeight: target, restGap }) : 0;
+  }
+
   function pieces() {
     const registered = getSurface?.();
     const region = registered?.regionRef?.current;
@@ -294,7 +302,7 @@ export function createKeyboardInsetController({
     const travel = from - to;
     const following = listTravels(geometry);
     const start = next && following ? translateYOf(readTransform(next.region)) : 0;
-    const settledLift = following && target > 0 ? keyboardLift({ keyboardHeight: target, restGap }) : 0;
+    const settledLift = settledLiftFor(target, following);
     stopMotion();
     // 往下走的那一趟（收起，或者换上一把更矮的键盘）里窗口上沿会跟着往下滑：布局里那段负 margin 必须
     // 同时抬着，窗口上沿才留在页头上方。「上一次抬起时读者没贴底（布局里没抬）、这一次贴底（要动画）」
@@ -380,7 +388,7 @@ export function createKeyboardInsetController({
     stopMotion();
     const travels = listTravels(geometryOf(next?.scroller));
     writeInset(target);
-    writeLift(travels ? keyboardLift({ keyboardHeight: target, restGap }) : 0);
+    writeLift(settledLiftFor(target, travels));
     pinToBottom({ scroller: next?.scroller || null, following: travels });
   }
 

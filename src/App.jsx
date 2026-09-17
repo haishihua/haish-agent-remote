@@ -1350,6 +1350,9 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
   const deferredRefreshRef = useRef(false);
   const swipeBlockedRef = useRef(false);
   const dismissHandoffRef = useRef(null);
+  // 收起那个动作会一直活着（`createDismissHandoff` 只在第一次收起时建一次），所以 `onBack` 得穿过一层
+  // ref：否则它拿的永远是建它的那一次渲染的 `onBack`。这个文件里 `swipeHandlersRef` 也是这么做的。
+  const onBackRef = useRef(onBack);
   const swipeHandlersRef = useRef(null);
   const composerImagesRef = useRef([]);
   const optimisticUserMessagesRef = useRef([]);
@@ -1364,6 +1367,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
   useEffect(() => { composerImagesRef.current = composerImages; }, [composerImages]);
   useEffect(() => { optimisticUserMessagesRef.current = optimisticUserMessages; }, [optimisticUserMessages]);
   useEffect(() => { swipeBlockedRef.current = Boolean(previewImage || showRunConfig); }, [previewImage, showRunConfig]);
+  useEffect(() => { onBackRef.current = onBack; }, [onBack]);
 
   // 输入框高度跟着草稿走（见 composer-height.js）：展开态不再预留一行空白。
   // 宽度变化（旋转屏幕、右侧配置图标出现/收起）会改变折行，所以这些时候也要重新量一次。
@@ -1539,7 +1543,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
         // 挂到 <html> 上：React 会在这一帧重写 `.app-shell` 的 className，挂在那儿的类会被抹掉。
         addHold: () => document.documentElement.classList.add(DIRECTORY_HOLD_CLASS),
         removeHold: () => document.documentElement.classList.remove(DIRECTORY_HOLD_CLASS),
-        unmount: onBack,
+        unmount: () => onBackRef.current(),
       });
     }
     dismissHandoffRef.current();

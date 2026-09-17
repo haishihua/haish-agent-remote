@@ -67,14 +67,17 @@ jobs:
           cd "$RUNNER_TEMP/haish-ipa"
           /usr/bin/zip -qry "$GITHUB_WORKSPACE/haish-agent-remote/Haish-unsigned.ipa" Payload
 
-      - name: Verify the packaged app registers its Capacitor plugins and carries the keyboard frame hook
+      - name: Verify the packaged app registers its Capacitor plugins and carries both ends of the keyboard frame hook
         run: |
           unzip -p Haish-unsigned.ipa Payload/App.app/capacitor.config.json | tee /dev/stderr | python3 -c "import json, sys; classes = json.load(sys.stdin)['packageClassList']; assert 'PhotoPicker' in classes, f'the bundled config does not register the app-local plugins: {classes}'; assert 'KeyboardPlugin' in classes, f'the bundled config does not register the keyboard plugin that hides the form accessory bar: {classes}'"
           unzip -p Haish-unsigned.ipa Payload/App.app/Info.plist | python3 -c "import plistlib, sys; info = plistlib.loads(sys.stdin.buffer.read()); print('ipa version', info['CFBundleShortVersionString'], 'build', info['CFBundleVersion'])"
-          # AppDelegate 转发的键盘 frame 事件名（src/ios-keyboard.js 监听的就是它）：
-          # iOS 换键盘时只发 UIKeyboardWillChangeFrameNotification，插件那边一声不响，靠它把高度带过来。
+          # AppDelegate 转发的键盘 frame 事件名（src/ios-keyboard.js 监听的就是它）：iOS 换键盘时只发
+          # UIKeyboardWillChangeFrameNotification，插件那边一声不响，靠这条通道把高度带过来。通道两端分别在
+          # 二进制和 JS bundle 里，两处都查：只装了一半的包（名字对不上、或者 JS 是旧的）在这里就该拦下。
           unzip -p Haish-unsigned.ipa Payload/App.app/App | strings | grep -q haishKeyboardFrame \
             || { echo 'the app binary is missing the keyboard frame hook (haishKeyboardFrame) the web layer listens for'; exit 1; }
+          unzip -p Haish-unsigned.ipa 'Payload/App.app/public/assets/*.js' | grep -q haishKeyboardFrame \
+            || { echo 'the bundled web layer is missing the keyboard frame listener (haishKeyboardFrame) the app forwards'; exit 1; }
 
       - name: Upload IPA
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
