@@ -247,13 +247,22 @@ WKWebView 对 `<input type="file" accept="image/*">` 只会弹出系统的 `Phot
 - 松手过 64px 才真的刷新，其余回弹；刷新期间内容停在 56px、指示器持续旋转，最短 420ms（请求再快也不闪一下），手势与刷新期间 5s 轮询照旧暂停、结束后补一次；
 - 加载失败时列表与详情各显示一张卡片（`Couldn’t load …` + `Pull down to try again.`），真实错误仍然只由顶部横幅承载；这张卡片会一直留到那次加载真的成功为止——`/remote/status` 的轮询自己会成功，以前它顺手把目录的错误也清掉了，于是列表失败几秒后会变成“No conversations yet”，连可以下拉的失败态都没了。
 
-### 键盘：隐藏系统表单栏，输入框跟着草稿长高
+### 键盘：跟输入框一起上来，一起下去
 
-WKWebView 里的输入框获得焦点时，iOS 会在键盘上方压一条系统表单栏（左侧「◀ ▶」翻表单项、右侧 `Done` 收键盘）。它不属于本 App，却在输入框和键盘之间白占 44pt，所以交给 Capacitor 官方的 `@capacitor/keyboard` 插件：
+WKWebView 里的输入框获得焦点时，iOS 会在键盘上方压一条系统表单栏（左侧「◀ ▶」翻表单项、右侧 `Done` 收键盘）。它不属于本 App，却在输入框和键盘之间白占 44pt：启动时 `src/ios-keyboard.js` 调一次 `Keyboard.setAccessoryBarVisible({ isVisible: false })` 关掉它；调用失败会走启动错误路径，不静默留着。
 
-- 插件由 `npm run mobile:sync` 登记进 `packageClassList`，`capacitor.config.ts` 里写明 `Keyboard.resize = native`：键盘弹出时按原生方式缩短 WebView，输入框直接坐在键盘上（这也是插件默认值，写明避免默认值变化后输入框被键盘盖住）；
-- 启动时 `src/ios-keyboard.js` 调一次 `Keyboard.setAccessoryBarVisible({ isVisible: false })` 关掉那条栏；调用失败会走启动错误路径，不静默留着它；
-- 展开态的输入框不再钉死 82px：`src/composer-height.js` 在草稿变化、进入展开态、宽度变化（旋转屏幕、右侧配置图标出现/收起）时重新量一次内容高度，夹在 CSS 的 `min-height: 48px` / `max-height: 132px` 之间。短草稿不再留一条空白（单行 121px → 之前 155px 的整个盒子），长草稿长到 132px 才在框内滚动；上下限仍然只在 `src/styles.css` 的 `.composer textarea` 里定义一份。
+键盘本身则不能交给插件去缩 WebView。`Keyboard.resize = native`（插件默认值）在 iOS 上把这件事排在键盘动画之后：`onKeyboardWillShow:` 把键盘动画时长 +0.2 秒当作*延迟*，到点才一把 `setFrame:` 到位，前后没有任何动画（ionic-team/capacitor-keyboard#79）。现场因此是两个毛病：弹出时键盘先升起来、压在还没让位的输入框上，约 0.4s 后整页跳一下；收起时 frame 先弹回全高，页面还停在缩短的高度，底下的会话列表从缺口里露出来闪一下——`.detail-screen` 那份 `height: 100dvh` 还让这一帧更明显（高度写死成 dvh 值，视口变化时它比 `inset: 0` 晚，晚的这一帧就是列表）。
+
+所以 `capacitor.config.ts` 里写明 `Keyboard.resize = 'none'`，键位由 Web 层自己跟（`src/ios-keyboard.js`）：
+
+- `keyboardWillShow / DidShow / WillHide / DidHide` 四个事件驱动一个控制器（浏览器里一个监听都不注册）。展开时按「键盘落地那一刻」要占的高度算，收起时回 0；
+- 布局只在一件事上听键盘的：键盘落地后给 `:root` 写一次 `--keyboard-inset`（插件报的就是键盘 frame 的高度，已包含它盖住的底部安全区）。`body` 与 `.detail-screen` 各用它做 `padding-bottom`——前者是目录页把自己的最后一行滑到键盘上方的空间，后者让输入框那一叠正好停在键盘上沿；`.composer` 的底部安全区边距同时归零（`max(0px, var(--safe-bottom) - var(--keyboard-inset))`），不会在键盘上多留一条 34pt 的缝；
+- 运动期间布局一个字节都不写：消息列表与输入框那一叠按合成层上的 transform 跟键盘一起走，时长与曲线取 iOS 自己的（250ms、curve 7 的近似），理由与右滑返回、下拉刷新一样——逐帧写样式会把整份消息列表算一遍，而这个 App 的主线程经常有活干；
+- 落地事件一到就换手：写 `--keyboard-inset` 与清掉 transform 在同一帧完成，两者描述的是同一批像素，所以看不见；消息列表自己的吸底（`ScrollToBottomButton` 的 ResizeObserver）也落在这一帧里，位移量按它将要滚到的位置算（读者已经翻上去看历史时列表不跟，与吸底同一条判断）；
+- 快速开合会打断上一段动画：每次都从当前计算值接着走（`translateYOf`）；事件丢一个也由落地事件补上（`keyboardDidShow / DidHide` 自带高度）；插件把「只多一条 QuickType 提示栏」报成高度 0，那不算收起；
+- 插件在每个键盘事件里都会把 WebView 的 `contentInset` 归零（`resetScrollView`），iOS 那套替你挪一下的补偿不会叠在上面，让位的高度始终只有 `--keyboard-inset` 这一份；
+- 答案框这类落在消息列表内部的输入框，浏览器自己那次滚动发生在布局挪动之前，落地后再把它拉回输入框上方一次。
+- 展开态的输入框不再钉死 82px：`src/composer-height.js` 在草稿变化、进入展开态、宽度变化（旋转屏幕、右侧配置图标出现/收起）时重新量一次内容高度，夹在 CSS 的 `min-height: 48px` / `max-height: 132px` 之间。短草稿不再留一条空白（单行 121px → 之前 155px 的整个盒子），长草稿长到 132px 才在框内滚动；上下限仍然只在 `src/styles.css` 的 `.composer textarea` 里定义一份。`.detail-screen` 只在浏览器（`html:not(.native-app)`）里写 `height: 100dvh`，免得 PWA 里被地址栏遮住；App 里靠 `inset: 0`。
 
 推送通知需要 APNs 设备注册和服务端推送链路，等前台闭环通过后单独实现。
 

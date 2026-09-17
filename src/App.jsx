@@ -41,7 +41,7 @@ import {
   remainingImageSlots,
 } from './photo-picker.js';
 import { fitComposerTextarea } from './composer-height.js';
-import { hideKeyboardAccessoryBar } from './ios-keyboard.js';
+import { hideKeyboardAccessoryBar, mountKeyboardInset, registerKeyboardSurface } from './ios-keyboard.js';
 import penguinLogo from './assets/penguin_logo_user.png';
 import stopIcon from '../../haish-agent/app-web/assets/ui/icons/stop.png';
 import toolIcon from '../../haish-agent/app-web/assets/ui/icons/tool.png';
@@ -1330,6 +1330,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
   const [composerExpanded, setComposerExpanded] = useState(false);
   const messageScrollRef = useRef(null);
   const messageBodyRef = useRef(null);
+  const composerDockRef = useRef(null);
   const refreshIndicatorRef = useRef(null);
   const messageInputRef = useRef(null);
   const photoInputRef = useRef(null);
@@ -1614,6 +1615,10 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
   }, []);
 
   useEffect(() => () => stopSwipeBackMotion(), []);
+
+  // 键盘跟着输入框走（见 ios-keyboard.js）：这个会话把会跟键盘移动的两块交给控制器——消息列表和
+  // 输入框那一叠；离开会话时收回。
+  useEffect(() => registerKeyboardSurface({ scrollerRef: messageScrollRef, dockRef: composerDockRef }), []);
 
   function collapseComposer() {
     setComposerExpanded(false);
@@ -2144,7 +2149,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
         </div>
         <ScrollToBottomButton scrollRef={messageScrollRef} resetKey={id} />
       </div>
-      <div className="composer-dock">
+      <div className="composer-dock" ref={composerDockRef}>
         {runConfig && runConfigExpanded ? <div className={`run-config-quick-controls thinking-${runConfig.thinking}`} ref={runConfigQuickRef}>
           <button type="button" className="run-config-summary" onClick={() => setShowRunConfig(true)} disabled={running} aria-label="Open advanced run configuration">
             <span>{compactModel || 'Model'}</span><strong>{selectedThinking?.label || 'Thinking'}</strong><ChevronRight size={19} aria-hidden="true" />
@@ -2387,6 +2392,10 @@ export default function App() {
   }, [loadStatus]);
 
   useEffect(() => { connectAtStartup(); }, [connectAtStartup]);
+
+  // 键盘和输入框一起走（见 ios-keyboard.js）：控制器维护布局里的键位高度、跟着键盘做动画的位移，
+  // 与连接状态无关，所以尽早挂上；浏览器里它什么都不做。
+  useEffect(() => mountKeyboardInset(), []);
 
   useEffect(() => {
     if (!initialized || status || startupRetrying) return undefined;

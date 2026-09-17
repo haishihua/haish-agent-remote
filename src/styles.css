@@ -23,11 +23,13 @@
   --danger: #fb7185;
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-top: env(safe-area-inset-top, 0px);
+  /* 键盘占掉的高度，由 src/ios-keyboard.js 在键盘落地时写入（键盘不缩 WebView，见该模块）。 */
+  --keyboard-inset: 0px;
 }
 
 * { box-sizing: border-box; }
 html, body, #root { margin: 0; min-width: 320px; min-height: 100%; background: var(--background); }
-body { min-height: 100dvh; overscroll-behavior-y: none; }
+body { min-height: 100dvh; padding-bottom: var(--keyboard-inset); overscroll-behavior-y: none; }
 button, input, textarea { font: inherit; }
 button { cursor: pointer; touch-action: manipulation; }
 button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 75%, white); outline-offset: 2px; }
@@ -249,10 +251,15 @@ input::placeholder, textarea::placeholder { color: var(--muted-2); }
   inset: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
-  height: 100dvh;
+  /* `inset: 0` 就是视口本身，不写 `height: 100dvh`：高度一旦交给 dvh 值，视口变化时它会晚一帧，而那一
+     帧的缺口正好把下面这层会话列表露出来（收起键盘时闪的就是它）。浏览器里另算，见下。 */
+  padding-bottom: var(--keyboard-inset);
   touch-action: pan-y;
   overscroll-behavior-x: none;
 }
+/* 浏览器（含 PWA）里高度跟着可见视口走，免得输入框被地址栏挡住；App 里 WebView 的高度就是窗口
+   （键位不缩 WebView，见 src/ios-keyboard.js），`inset: 0` 已经是全部。 */
+html:not(.native-app) .detail-screen { height: 100dvh; }
 .app-shell.detail-open > :not(.detail-screen) { pointer-events: none; }
 /* The directory keeps animating behind an open conversation even though it is
    fully covered: 3 status spinners alone cost more main-thread time than the
@@ -420,7 +427,7 @@ input::placeholder, textarea::placeholder { color: var(--muted-2); }
 .agent-phase-spark { animation: agent-phase-gradient 2.6s linear infinite, agent-phase-blink 0.9s steps(2, start) infinite; }
 .agent-phase-verb::after { content: 'Synthesis...'; animation: agent-phase-words 28s step-end infinite; }
 .composer-dock { min-width: 0; }
-.composer { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 48px; gap: 7px; margin: 8px 10px calc(8px + var(--safe-bottom)); padding: 6px; border: 1px solid rgba(138, 166, 209, 0.28); border-radius: 18px; background: rgba(13, 16, 24, 0.96); transition: border-color 160ms ease, box-shadow 160ms ease; }
+.composer { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 48px; gap: 7px; margin: 8px 10px calc(8px + max(0px, var(--safe-bottom) - var(--keyboard-inset))); padding: 6px; border: 1px solid rgba(138, 166, 209, 0.28); border-radius: 18px; background: rgba(13, 16, 24, 0.96); transition: border-color 160ms ease, box-shadow 160ms ease; }
 .composer.has-config-icon { grid-template-columns: minmax(0, 1fr) 44px 48px; }
 .composer textarea { max-height: 132px; min-height: 48px; padding: 13px 11px; border: 0; border-radius: 12px; outline: 0; background: transparent; }
 .composer.expanded { grid-template-columns: 44px minmax(0, 1fr) 44px 48px; padding: 8px; border-color: rgba(138, 166, 209, 0.42); box-shadow: 0 -10px 32px rgba(0, 0, 0, 0.18); }

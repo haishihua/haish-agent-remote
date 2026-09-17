@@ -8,10 +8,12 @@ const config: CapacitorConfig = {
     CapacitorHttp: {
       enabled: false,
     },
-    // 输入框直接贴着键盘：键盘弹出时按原生方式缩短 WebView（这就是插件默认值，写明在这里，插件默认值
-    // 变了也能立刻看出来）。键盘上方那条系统表单栏（◀ ▶ Done）由 src/ios-keyboard.js 在启动时隐藏。
+    // 键盘不缩 WebView，也不改 body：插件在 iOS 上把这件事排在键盘动画之后（键盘动画时长 +0.2 秒
+    // 当作延迟，然后一把 setFrame: 到位，见 ionic-team/capacitor-keyboard#79），现场就是键盘先到、
+    // 输入框后到，收起时还会从缺口里闪出底下的界面。所以键位由 Web 层自己跟上：src/ios-keyboard.js
+    // 在键盘落地时写 --keyboard-inset，动画期间只动合成层上的位移。
     Keyboard: {
-      resize: 'native',
+      resize: 'none',
     },
   },
 };
