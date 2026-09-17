@@ -43,6 +43,11 @@ export async function hideKeyboardAccessoryBar({ keyboard = Keyboard, native = i
  *   是「落地时才写」，碰上「上一次抬起时读者没贴底（没抬）、这一次贴底（要动画）」这个组合，窗口就整块
  *   往下滑、页头下面露出一条键盘高、纯黑的缺口——用户反馈里的「短暂黑屏」。现在改成：一次「贴底」的收起
  *   一开始就把布局换到抬起状态（同一个任务里用滚动把内容按回原位，画面不动），而不是等到落地才换；
+ * - 键盘抬着的时候高度又变了一次（换输入法、切 emoji、系统键盘上多一条提示栏）走的是「新旧高度之差」，
+ *   不是整个上移量：布局里还抬着上一把键盘的那一段，再补一整段就是用户报的「切换键盘，输入框又往上跑」。
+ *   换键盘在 iOS 上常常只发 `UIKeyboardWillChangeFrameNotification`，Capacitor 的插件只订阅 will/didShow
+ *   与 will/didHide，所以 AppDelegate 把这条通知里的高度原样转给这一层（`haishKeyboardFrame` 事件，
+ *   见 ios/App/App/AppDelegate.swift）——插件一声不响时布局也不会留在上一把键盘的高度上；
  * - 布局在运动期间原则上不动（唯一一次例外是上面那种配平：同一个任务里换完，画面不动），所以没有缺口可以闪；
  * - 落地时把 transform 换回布局：给 `--keyboard-inset` 写一次键盘高度，`.detail-screen` 的 padding-bottom
  *   把这一层连同输入框抬到同一个位置，输入框的底部安全区边距同时归零（styles.css）；写布局、清 transform、
@@ -71,6 +76,13 @@ export const KEYBOARD_LANDING_GRACE_MS = 650;
 export const KEYBOARD_MOTION_EASING = 'cubic-bezier(0.32, 0.72, 0, 1)';
 /** 键盘运动期间挂在跟键盘走的那一层上：层内部的定时渐变/阴影在这 250ms 里停一停。 */
 export const KEYBOARD_MOTION_CLASS = 'keyboard-moving';
+/**
+ * AppDelegate 转发的键盘 frame 事件（`UIKeyboardWillChangeFrameNotification`）。
+ *
+ * `detail.height` 是键盘在屏幕上真正盖住的高度（点），0 表示键盘已经离开屏幕（收起时 iOS 就是把 frame
+ * 挪到屏幕外）。名字要和 ios/App/App/AppDelegate.swift 里的一致——构建那一步会到包里的二进制里找它。
+ */
+export const KEYBOARD_FRAME_EVENT = 'haishKeyboardFrame';
 
 /**
  * 键盘要从布局里拿走多少高度：插件报的就是键盘 frame 的高度（已经包含它盖住的底部安全区，所以不扣）。
@@ -273,27 +285,33 @@ export function createKeyboardInsetController({
     const scroller = next?.scroller || null;
     const geometry = geometryOf(scroller);
     if (next) measureRestGap(next);
-    // 抬起来与收起走的是同一个量：键盘高度减输入框静息的那段空隙。
-    const lift = keyboardLift({ keyboardHeight: Math.max(inset, target), restGap });
+    // 布局现在把输入框放在哪：键盘抬着时是键盘上沿，静息时是输入框自己那段底边距。
+    const from = inset > 0 ? inset : restGap;
+    // 目标：新键盘的上沿；`target` 为 0（收起）就是静息位。
+    const to = target > 0 ? target : restGap;
+    // 要补的是两者之差。键盘还抬着的时候高度又变了一次时，布局里已经抬着上一把键盘的那一段，
+    // 再补一整段就是「输入框又往上跑」；布局和动画在落地那一刻描述同一批像素，差值才对。
+    const travel = from - to;
     const following = listTravels(geometry);
-    const from = next && following ? translateYOf(readTransform(next.region)) : 0;
-    const to = target > 0 ? -lift : lift;
+    const start = next && following ? translateYOf(readTransform(next.region)) : 0;
+    const settledLift = following && target > 0 ? keyboardLift({ keyboardHeight: target, restGap }) : 0;
     stopMotion();
-    // 收起时窗口要跟着键盘往下走 `lift`：布局里那段负 margin 必须同时抬着，窗口上沿才留在页头上方。
-    // 「上一次抬起时读者没贴底（布局里没抬）、这一次贴底（要动画）」只有这个组合会出事：窗口整块滑下来，
-    // 页头下面露出一条键盘高、纯黑的缺口。同一个任务里把布局换过去、再用滚动把内容按回原位，画面不动。
+    // 往下走的那一趟（收起，或者换上一把更矮的键盘）里窗口上沿会跟着往下滑：布局里那段负 margin 必须
+    // 同时抬着，窗口上沿才留在页头上方。「上一次抬起时读者没贴底（布局里没抬）、这一次贴底（要动画）」
+    // 只有这个组合会出事：窗口整块滑下来，页头下面露出一条键盘高、纯黑的缺口。同一个任务里把布局换过去、
+    // 再用滚动把内容按回原位，画面不动。往上走的一趟不用：多出来的那一段本来就藏在页头后面。
     let liftAtStart = liftValue;
-    if (following && target === 0 && liftAtStart !== lift) {
-      writeLift(lift);
-      keepView({ scroller, liftFrom: liftAtStart, liftTo: lift, transform: from });
-      liftAtStart = lift;
+    if (following && travel > 0 && liftAtStart < travel) {
+      writeLift(travel);
+      keepView({ scroller, liftFrom: liftAtStart, liftTo: travel, transform: start });
+      liftAtStart = travel;
     }
     const pending = {
       target,
-      settledLift: following && target > 0 ? lift : 0,
+      settledLift,
       liftAtStart,
       // 只有消息列表真的在动画时窗口才动过；否则要补的全在布局那一段上。
-      traveledTo: following ? to : 0,
+      traveledTo: following ? travel : 0,
       region: next?.region || null,
       scroller,
       following,
@@ -306,8 +324,8 @@ export function createKeyboardInsetController({
     if (next) {
       if (following) next.region.classList.add(KEYBOARD_MOTION_CLASS);
       for (const element of following ? [next.region, next.dock] : [next.dock]) {
-        const start = element === next.region ? from : translateYOf(readTransform(element));
-        if (start !== to) pending.animations.push(animateTravel(element, start, to, motionMs));
+        const startY = element === next.region ? start : translateYOf(readTransform(element));
+        if (startY !== travel) pending.animations.push(animateTravel(element, startY, travel, motionMs));
       }
     }
     pending.moved = pending.animations.length === 0;
@@ -333,7 +351,24 @@ export function createKeyboardInsetController({
     // 20% 就不算键盘）：键盘还在，布局就留在原地。真正收起只走 `keyboardWillHide`。
     if (!target) return;
     if (target === inset && !motion) return;
+    // 已经在往同一个高度走了：插件的事件和 AppDelegate 转发的 frame 会撞在一起，别把动画重开一遍。
+    if (motion && motion.target === target) return;
     moveTo(target);
+  }
+
+  /**
+   * AppDelegate 转发的键盘 frame：键盘类型切换（系统键盘 ↔ 第三方输入法、emoji、多一条提示栏）在 iOS 上
+   * 常常只发 `UIKeyboardWillChangeFrameNotification`，插件订阅的 will/didShow 不会来，布局里就会留着上一把
+   * 键盘的高度——用户报的「切换键盘，输入框又往上跑」。高度交给同一套逻辑；0 表示键盘离场（收起时 iOS 把
+   * frame 挪到屏幕外），和 `keyboardWillHide` 是一回事。
+   */
+  function frame(height) {
+    if (keyboardInset(height)) raise(height);
+    else lower();
+  }
+
+  function onKeyboardFrame(event) {
+    frame(event?.detail?.height);
   }
 
   // 落地事件自己带着高度：`willShow` 整个丢掉时直接落地，不补一段已经过时的动画。
@@ -351,11 +386,14 @@ export function createKeyboardInsetController({
 
   function lower() {
     if (!inset && !motion) return;
+    if (motion && motion.target === 0) return;
     moveTo(0);
   }
 
   async function start() {
     if (stopped || !native) return stop;
+    // 原生那一侧只负责报高度，怎么动由这一层决定（浏览器里没有这个事件，也就不会有监听）。
+    viewport?.addEventListener?.(KEYBOARD_FRAME_EVENT, onKeyboardFrame);
     const events = [
       ['keyboardWillShow', (info) => raise(info?.keyboardHeight)],
       ['keyboardDidShow', (info) => {
@@ -369,9 +407,12 @@ export function createKeyboardInsetController({
         if (motion) land();
         else if (inset) {
           const liftFrom = liftValue;
+          const scroller = pieces()?.scroller || null;
+          const follows = listTravels(geometryOf(scroller));
           writeInset(0);
           writeLift(0);
-          keepView({ scroller: pieces()?.scroller || null, liftFrom, liftTo: 0, transform: 0 });
+          keepView({ scroller, liftFrom, liftTo: 0, transform: 0 });
+          pinToBottom({ scroller, following: follows });
         }
         pinDocumentOffset();
       }],
@@ -383,6 +424,7 @@ export function createKeyboardInsetController({
 
   function stop() {
     stopped = true;
+    viewport?.removeEventListener?.(KEYBOARD_FRAME_EVENT, onKeyboardFrame);
     const active = handles;
     handles = [];
     active.forEach((handle) => handle?.remove?.());

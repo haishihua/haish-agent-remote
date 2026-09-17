@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   createKeyboardInsetController,
   hideKeyboardAccessoryBar,
+  KEYBOARD_FRAME_EVENT,
   KEYBOARD_INSET_VAR,
   KEYBOARD_LIFT_VAR,
   KEYBOARD_MOTION_CLASS,
@@ -129,6 +130,27 @@ function fakeScroll({ contentHeight = 0, viewportHeight = 0, scrollTop = 0 } = {
     scrollTop,
     ownerDocument: { activeElement: null },
     contains: () => false,
+  };
+}
+
+/** AppDelegate 转发键盘 frame 的那条通道：`haishKeyboardFrame` 事件。 */
+function fakeViewport() {
+  const handlers = new Map();
+  const listening = [];
+  return {
+    listening,
+    addEventListener(name, handler) {
+      handlers.set(name, handler);
+      listening.push(name);
+    },
+    removeEventListener(name) {
+      handlers.delete(name);
+      const at = listening.indexOf(name);
+      if (at >= 0) listening.splice(at, 1);
+    },
+    dispatch(name, event) {
+      handlers.get(name)?.(event);
+    },
   };
 }
 
@@ -418,6 +440,94 @@ test('a document the WebView pushed aside is put back when the keyboard lands', 
   listeners.get('keyboardDidHide')();
   assert.deepEqual(scrolled, [[0, 0]]);
   controller.stop();
+});
+
+test('a keyboard that changes height while it is up moves the two blocks by the difference, not by the whole lift', async () => {
+  const region = fakeTraveler();
+  const dock = fakeDock();
+  const scroller = fakeScroll({ contentHeight: 4000, viewportHeight: 585, scrollTop: 3415 });
+  const { controller, listeners, writes } = controllerFor({ region, dock, scroller });
+  await controller.start();
+
+  listeners.get('keyboardWillShow')({ keyboardHeight: 336 });
+  await null;
+  listeners.get('keyboardDidShow')({ keyboardHeight: 336 });
+  assert.deepEqual(writes, [[KEYBOARD_INSET_VAR, '336px'], [KEYBOARD_LIFT_VAR, '294px']]);
+
+  // 换上一把更高的键盘（带工具栏的第三方输入法）：布局里已经抬着 336-42 = 294，这一次要走的只是
+  // 431-336 = 95。再补一整段（-389）就是把输入框甩到键盘上方一百多点——用户报的「切换键盘，输入框又往上跑」。
+  listeners.get('keyboardWillShow')({ keyboardHeight: 431 });
+  await null;
+  assert.deepEqual(travelKeyframes(region), [
+    { transform: 'translate3d(0, 0px, 0)' },
+    { transform: 'translate3d(0, -95px, 0)' },
+  ]);
+  assert.deepEqual(travelKeyframes(dock), [
+    { transform: 'translate3d(0, 0px, 0)' },
+    { transform: 'translate3d(0, -95px, 0)' },
+  ]);
+
+  // 落地时布局接到新高度上，滚动位置还是贴底。
+  scroller.clientHeight = 585 - 431 + 42;
+  listeners.get('keyboardDidShow')({ keyboardHeight: 431 });
+  assert.deepEqual(writes.slice(-2), [[KEYBOARD_INSET_VAR, '431px'], [KEYBOARD_LIFT_VAR, '389px']]);
+  assert.equal(scroller.scrollTop, 4000 - scroller.clientHeight);
+  controller.stop();
+});
+
+test('a keyboard that comes back shorter lands on the new height, not on the taller one', async () => {
+  const region = fakeTraveler();
+  const dock = fakeDock();
+  const scroller = fakeScroll({ contentHeight: 4000, viewportHeight: 585, scrollTop: 3415 });
+  const { controller, listeners, writes } = controllerFor({ region, dock, scroller });
+  await controller.start();
+
+  // 先起来一把高的（431），再换成 291 的系统键盘：这一趟往下走 431-291 = 140。
+  listeners.get('keyboardWillShow')({ keyboardHeight: 431 });
+  await null;
+  listeners.get('keyboardDidShow')({ keyboardHeight: 431 });
+  listeners.get('keyboardWillShow')({ keyboardHeight: 291 });
+  await null;
+  assert.deepEqual(travelKeyframes(region), [
+    { transform: 'translate3d(0, 0px, 0)' },
+    { transform: 'translate3d(0, 140px, 0)' },
+  ]);
+
+  // 上移量也要跟着缩到 291-42 = 249：消息列表的窗口不能一直按高的那把算。
+  scroller.clientHeight = 585 - 291 + 42;
+  listeners.get('keyboardDidShow')({ keyboardHeight: 291 });
+  assert.deepEqual(writes.slice(-2), [[KEYBOARD_INSET_VAR, '291px'], [KEYBOARD_LIFT_VAR, '249px']]);
+  controller.stop();
+});
+
+test('the frame the app forwards is what tells the layout the keyboard changed', async () => {
+  const region = fakeTraveler();
+  const dock = fakeDock();
+  const scroller = fakeScroll({ contentHeight: 4000, viewportHeight: 585, scrollTop: 3415 });
+  const viewport = fakeViewport();
+  const { controller, listeners } = controllerFor({ region, dock, scroller, viewport });
+  await controller.start();
+  assert.deepEqual(viewport.listening, [KEYBOARD_FRAME_EVENT]);
+
+  // 换键盘时插件一声不响（iOS 只发了 UIKeyboardWillChangeFrameNotification）：AppDelegate 转发的
+  // frame 自己把这一层带到新高度上——从静息位（离底 42）起走 431-42 = 389。
+  viewport.dispatch(KEYBOARD_FRAME_EVENT, { detail: { height: 431 } });
+  assert.deepEqual(travelKeyframes(region), [
+    { transform: 'translate3d(0, 0px, 0)' },
+    { transform: 'translate3d(0, -389px, 0)' },
+  ]);
+  listeners.get('keyboardDidShow')({ keyboardHeight: 431 });
+  await null;
+
+  // 键盘离开屏幕（收起时 iOS 把 frame 挪到屏幕外，报 0）：和 `keyboardWillHide` 是一回事，
+  // 这一趟把已经写在布局里的 431 放回去。
+  viewport.dispatch(KEYBOARD_FRAME_EVENT, { detail: { height: 0 } });
+  assert.deepEqual(travelKeyframes(dock).at(-1).transform, 'translate3d(0, 389px, 0)');
+  listeners.get('keyboardDidHide')();
+
+  // 会话关掉就把监听收回：回到目录页之后不再有人往这一层报键盘。
+  controller.stop();
+  assert.deepEqual(viewport.listening, []);
 });
 
 test('the browser leaves the keyboard to the browser', async () => {
