@@ -94,6 +94,20 @@ See [the mobile remote-control design](docs/capacitor-mobile-remote-control.md)
 for the security contract, repository layout, server requirements, and
 acceptance criteria.
 
+## Adapter release policy
+
+The **only supported way to produce a distributable `haish-remote-adapter`
+binary is the GitHub Actions workflow** `.github/workflows/build-remote-adapter.yml`.
+It freezes `server/` with PyInstaller and attaches the binary plus its sha256 to
+the `adapter-v<version>` GitHub release. The released version is the
+`pyproject.toml` version; a tag that disagrees with it fails the build. Every
+other part of this repository (the Vite app, the Capacitor project, the tests)
+is not part of the adapter artifact. Do not hand-roll a local release build.
+
+See [the adapter release contract](docs/remote-adapter-release.md) for the
+boundary table, artifact names, and the runtime contract the desktop client
+depends on.
+
 ## 开源方案调研结论
 
 没有一个组件可以无改造地替换 Haish Remote：手机端需要理解 Haish 的任务、审批、输入和 NDJSON 事件模型。建议复用成熟的“连接层”思路，而不是引入完整远程桌面：

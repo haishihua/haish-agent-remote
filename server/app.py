@@ -4,6 +4,7 @@ import argparse
 import asyncio
 from collections.abc import AsyncIterator
 import hashlib
+from importlib.metadata import PackageNotFoundError, version as _distribution_version
 import json
 import os
 import platform
@@ -13,6 +14,7 @@ import secrets
 import sqlite3
 import subprocess
 import time
+import tomllib
 from typing import Any
 from urllib.parse import urlencode, urlsplit
 from uuid import uuid4
@@ -30,6 +32,27 @@ COOKIE_NAME = "haish_remote_device"
 PAIRING_TTL_SECONDS = 5 * 60
 DEFAULT_DATA_DIR = Path(os.getenv("HAISH_REMOTE_DATA_DIR", "~/.haish-remote")).expanduser()
 DEFAULT_DIST_DIR = Path(__file__).resolve().parents[1] / "dist"
+
+
+def _adapter_version() -> str:
+    """The version this adapter runs as.
+
+    Frozen releases carry the distribution metadata copied in at build time; a
+    source checkout falls back to the pyproject it was cloned with.
+    """
+    try:
+        return _distribution_version("haish-agent-remote")
+    except PackageNotFoundError:
+        pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        if pyproject.is_file():
+            return tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["version"]
+        raise RuntimeError(
+            "Cannot determine the adapter version: the distribution metadata is "
+            "missing and no pyproject.toml sits next to this build.",
+        ) from None
+
+
+ADAPTER_VERSION = _adapter_version()
 
 # The runtime owns task streams, approval events and every resolve command on its
 # realtime WebSocket. The legacy NDJSON task endpoints and the HTTP resolve routes
@@ -740,7 +763,13 @@ def create_app(*, data_dir: Path | None = None, dist_dir: Path | None = None) ->
     @app.get("/remote/status")
     async def status(request: Request) -> JSONResponse:
         device = store.authenticate(_token_from_request(request))
-        return JSONResponse({"paired": device is not None, "device": device, "runtime_online": await runtime_online(), "computer_model": computer_model})
+        return JSONResponse({
+            "version": ADAPTER_VERSION,
+            "paired": device is not None,
+            "device": device,
+            "runtime_online": await runtime_online(),
+            "computer_model": computer_model,
+        })
 
     @app.post("/remote/pairing/start")
     async def start_pairing(request: Request) -> JSONResponse:
@@ -944,13 +973,16 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("command", choices=["serve", "pair"], nargs="?", default="serve")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8766)
+    parser.add_argument("--version", action="version", version=f"haish-remote-adapter {ADAPTER_VERSION}")
     args = parser.parse_args(argv)
     if args.command == "pair":
         code = DeviceStore(DEFAULT_DATA_DIR / "remote.sqlite3").issue_pairing_code()
         print(f"Pairing code: {code[:4]} {code[4:]}")
         print("Expires in 5 minutes.")
         return
-    uvicorn.run("server.app:app", host=args.host, port=args.port, reload=False)
+    # Serve this module's app object directly: frozen builds execute the module as
+    # __main__, and importing "server.app" by name would build a second instance.
+    uvicorn.run(app, host=args.host, port=args.port, reload=False)
 
 
 if __name__ == "__main__":
