@@ -92,8 +92,8 @@ import {
   isCurrentTaskRunning,
   isFailureStatus,
   isVisibleTaskTool,
-  taskStreamState,
 } from './task-stream.js';
+import { createTaskRuntimeSync } from './task-sync.js';
 import {
   CONVERSATION_PREVIEW_LIMIT,
   isTaskActuallyActive,
@@ -117,6 +117,10 @@ const LAST_CONVERSATION_STORAGE_KEY = 'haish.remote.lastConversation.v1';
 // Pressing and holding the image button keeps the old system sheet (camera, files) reachable.
 const PHOTO_LONG_PRESS_MS = 450;
 const MARKDOWN_PLUGINS = [remarkGfm];
+// One sync for the whole app session: a task that was already streamed keeps its
+// cursor, so leaving and re-entering a conversation resumes with the missing
+// events instead of replaying the whole log.
+const taskRuntime = createTaskRuntimeSync();
 
 function storedConversationId() {
   try {
@@ -1474,8 +1478,11 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
     if (!taskId || loadedTraceIdsRef.current.has(taskId)) return;
     loadedTraceIdsRef.current.add(taskId);
     try {
-      const task = await api.task(taskId);
-      setTaskTraces((current) => ({ ...current, [taskId]: taskStreamState(task) }));
+      const state = await taskRuntime.refresh(taskId);
+      // A skipped attempt (backoff, or a request already in flight) is not a
+      // loaded trace: drop the mark so the next expand retries it.
+      if (!state) loadedTraceIdsRef.current.delete(taskId);
+      else setTaskTraces((current) => ({ ...current, [taskId]: state }));
     } catch (nextError) {
       loadedTraceIdsRef.current.delete(taskId);
       setError(nextError.message);
@@ -1523,24 +1530,37 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
     }
 
     let cancelled = false;
+    // Repaint a task we already streamed this session before the next poll.
+    const cached = localStreamRef.current ? null : taskRuntime.cache.state(taskId);
+    if (cached) setLiveRun(cached);
+
     async function hydrateActiveTask() {
       if (localStreamRef.current) return;
       try {
-        const task = await api.task(taskId);
-        if (!cancelled) setLiveRun(taskStreamState(task));
+        const state = await taskRuntime.refresh(taskId);
+        if (!cancelled && state) setLiveRun(state);
       } catch (nextError) {
         if (!cancelled) setError(nextError.message);
       }
     }
 
-    hydrateActiveTask();
-    const timer = window.setInterval(() => {
+    // A backgrounded app paints nothing: keep the payloads for when it does.
+    function tick() {
       if (isSwipeBackInFlight()) return;
+      if (document.visibilityState === 'hidden') return;
       hydrateActiveTask();
-    }, 2000);
+    }
+
+    tick();
+    const timer = window.setInterval(tick, 2000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') tick();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }, [activeTask?.task_id]);
 

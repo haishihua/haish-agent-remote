@@ -96,7 +96,13 @@ export const api = {
   },
   projects: () => request('/api/projects?execution_mode=chat'),
   conversation: (id) => request(`/api/conversations/${encodeURIComponent(id)}`),
-  task: (id) => request(`/api/tasks/${encodeURIComponent(id)}?event_view=runtime`),
+  // `afterEventId` is the desktop's incremental protocol: the runtime answers
+  // with `events_delta: true` and only the events after the cursor, or with the
+  // whole log (`false`) when the cursor is too old to resolve.
+  task: (id, { afterEventId = null } = {}) => {
+    const cursor = afterEventId ? `&after_event_id=${encodeURIComponent(afterEventId)}` : '';
+    return request(`/api/tasks/${encodeURIComponent(id)}?event_view=runtime${cursor}`);
+  },
   agents: async () => {
     try {
       return await request('/api/agents');

@@ -288,8 +288,8 @@ export function applyTaskStreamEvent(current, event) {
   return next;
 }
 
-export function taskStreamState(task) {
-  let state = {
+export function initialTaskStreamState(task) {
+  return {
     taskId: task?.task_id || null,
     status: task?.status || 'running',
     text: '',
@@ -301,7 +301,13 @@ export function taskStreamState(task) {
     error: String(task?.error || ''),
     firstTokenAt: 0,
   };
-  for (const event of task?.events || []) state = applyTaskStreamEvent(state, event);
+}
+
+// The persisted record wins over anything the event log said: status, answer
+// text, failure reason and completion time are the runtime's own truth. Kept
+// separate from the fold so an incremental reader can overlay it on every read
+// instead of baking it into the state it keeps appending to (task-sync.js).
+export function applyTaskRecord(state, task) {
   return {
     ...state,
     status: task?.status || state.status,
@@ -309,6 +315,12 @@ export function taskStreamState(task) {
     error: String(task?.error || state.error || ''),
     completedAt: timeMs(task?.completed_at) || state.completedAt,
   };
+}
+
+export function taskStreamState(task) {
+  let state = initialTaskStreamState(task);
+  for (const event of task?.events || []) state = applyTaskStreamEvent(state, event);
+  return applyTaskRecord(state, task);
 }
 
 export async function readNdjson(response, onEvent) {

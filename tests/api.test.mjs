@@ -107,3 +107,26 @@ test('running task input carries uploaded image paths', async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test('task reads stay on the runtime view and carry the incremental cursor', async () => {
+  const originalFetch = globalThis.fetch;
+  const paths = [];
+  globalThis.fetch = async (path) => {
+    paths.push(path);
+    return new Response(JSON.stringify({ task_id: 'task-1', events: [], events_delta: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+
+  try {
+    await api.task('task-1');
+    await api.task('task-1', { afterEventId: 'event 2/3' });
+    assert.deepEqual(paths, [
+      '/api/tasks/task-1?event_view=runtime',
+      '/api/tasks/task-1?event_view=runtime&after_event_id=event%202%2F3',
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
