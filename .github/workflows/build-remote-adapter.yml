@@ -15,6 +15,9 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: write
+    env:
+      FRP_VERSION: '0.71.0'
+      FRP_SHA256: '45be02b186860d375ed49a8941ae9569628a54bf14e67fc36b29c98c99dabcc6'
 
     steps:
       - name: Check out Haish Remote
@@ -70,6 +73,17 @@ jobs:
             server/app.py
           mv build/adapter/haish-remote-adapter build/adapter/haish-remote-adapter-macos-arm64
 
+      - name: Fetch the tunnel client
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/frp.tar.gz" \
+            "https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_darwin_arm64.tar.gz"
+          echo "${FRP_SHA256}  $RUNNER_TEMP/frp.tar.gz" | shasum -a 256 -c -
+          tar -xzf "$RUNNER_TEMP/frp.tar.gz" -C "$RUNNER_TEMP"
+          cp "$RUNNER_TEMP/frp_${FRP_VERSION}_darwin_arm64/frpc" build/adapter/frpc-macos-arm64
+          cp "$RUNNER_TEMP/frp_${FRP_VERSION}_darwin_arm64/LICENSE" build/adapter/frpc-LICENSE
+          test "$(./build/adapter/frpc-macos-arm64 --version)" = "${FRP_VERSION}"
+
       - name: Smoke-test the frozen adapter
         run: |
           set -euo pipefail
@@ -96,14 +110,56 @@ jobs:
           assert payload["version"] == os.environ["ADAPTER_VERSION"], payload
           assert payload["paired"] is False, payload
           assert payload["runtime_online"] is False, payload
+          assert payload["tunnel"]["enabled"] is False, payload
           print("frozen adapter:", payload)
           PY
 
-      - name: Write the checksum
+          kill "$adapter_pid"
+          wait "$adapter_pid" 2>/dev/null || true
+
+      - name: Smoke-test the supervised tunnel
+        run: |
+          set -euo pipefail
+          binary="build/adapter/haish-remote-adapter-macos-arm64"
+          export HAISH_REMOTE_DATA_DIR="$(mktemp -d)"
+          export HAISH_REMOTE_TUNNEL=1
+          export HAISH_REMOTE_TUNNEL_SERVER=127.0.0.1
+          export HAISH_REMOTE_TUNNEL_SERVER_PORT=7000
+          export HAISH_REMOTE_TUNNEL_TOKEN=ci-smoke-token
+          export HAISH_REMOTE_TUNNEL_REMOTE_PORT=19999
+          export HAISH_REMOTE_FRPC=/usr/bin/false
+          "$binary" serve --host 127.0.0.1 --port 19767 > tunnel.log 2>&1 &
+          adapter_pid=$!
+          trap 'kill "$adapter_pid" 2>/dev/null || true' EXIT
+
+          for _ in $(seq 1 50); do
+            if curl -fsS http://127.0.0.1:19767/remote/status > tunnel-status.json; then
+              break
+            fi
+            sleep 0.2
+          done
+          sleep 3
+
+          curl -fsS http://127.0.0.1:19767/remote/status > tunnel-status.json
+          python - <<'PY'
+          import json
+
+          raw = open("tunnel-status.json", encoding="utf-8").read()
+          tunnel = json.loads(raw)["tunnel"]
+          assert tunnel["enabled"] is True, tunnel
+          assert tunnel["running"] is False, tunnel
+          assert tunnel["restarts"] >= 1, tunnel
+          assert "ci-smoke-token" not in raw, "the pairing token leaked into the status payload"
+          print("supervised tunnel:", tunnel)
+          PY
+          cat tunnel.log
+
+      - name: Write the checksums
         run: |
           cd build/adapter
           shasum -a 256 haish-remote-adapter-macos-arm64 > haish-remote-adapter-macos-arm64.sha256
-          cat haish-remote-adapter-macos-arm64.sha256
+          shasum -a 256 frpc-macos-arm64 > frpc-macos-arm64.sha256
+          cat *.sha256
 
       - name: Upload the adapter
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
@@ -112,6 +168,9 @@ jobs:
           path: |
             build/adapter/haish-remote-adapter-macos-arm64
             build/adapter/haish-remote-adapter-macos-arm64.sha256
+            build/adapter/frpc-macos-arm64
+            build/adapter/frpc-macos-arm64.sha256
+            build/adapter/frpc-LICENSE
           if-no-files-found: error
           retention-days: 14
 
@@ -123,5 +182,8 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             build/adapter/haish-remote-adapter-macos-arm64 \
             build/adapter/haish-remote-adapter-macos-arm64.sha256 \
+            build/adapter/frpc-macos-arm64 \
+            build/adapter/frpc-macos-arm64.sha256 \
+            build/adapter/frpc-LICENSE \
             --title "Remote adapter ${ADAPTER_VERSION}" \
             --generate-notes

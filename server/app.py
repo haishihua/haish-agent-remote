@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from collections.abc import AsyncIterator
+import atexit
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 import hashlib
 from importlib.metadata import PackageNotFoundError, version as _distribution_version
 import json
@@ -26,6 +28,13 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 import uvicorn
 import websockets
+
+from server.tunnel import (
+    TunnelConfigError,
+    TunnelSettings,
+    TunnelSupervisor,
+    disabled_snapshot,
+)
 
 
 COOKIE_NAME = "haish_remote_device"
@@ -726,12 +735,33 @@ def _compact_project_listing(payload: Any) -> Any:
     return payload
 
 
+_shutdown_callbacks: list[Callable[[], None]] = []
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Run registered cleanup during uvicorn's graceful shutdown.
+
+    uvicorn re-raises the terminating signal right after the lifespan shutdown,
+    so this is the last place where the tunnel can be stopped on SIGTERM/SIGINT.
+    """
+    yield
+    for callback in _shutdown_callbacks:
+        callback()
+
+
+def _tunnel_snapshot(request: Request) -> dict[str, Any]:
+    """Report the supervised tunnel; a source run without one reports disabled."""
+    supervisor = getattr(request.app.state, "tunnel", None)
+    return supervisor.snapshot() if supervisor is not None else disabled_snapshot()
+
+
 def create_app(*, data_dir: Path | None = None, dist_dir: Path | None = None) -> FastAPI:
     store = DeviceStore((data_dir or DEFAULT_DATA_DIR) / "remote.sqlite3")
     static_root = dist_dir or DEFAULT_DIST_DIR
     computer_model = _computer_model()
 
-    app = FastAPI(title="Haish Remote")
+    app = FastAPI(title="Haish Remote", lifespan=_lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["capacitor://localhost", "https://localhost"],
@@ -769,6 +799,7 @@ def create_app(*, data_dir: Path | None = None, dist_dir: Path | None = None) ->
             "device": device,
             "runtime_online": await runtime_online(),
             "computer_model": computer_model,
+            "tunnel": _tunnel_snapshot(request),
         })
 
     @app.post("/remote/pairing/start")
@@ -980,6 +1011,29 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Pairing code: {code[:4]} {code[4:]}")
         print("Expires in 5 minutes.")
         return
+    # The adapter owns its public presence: keep the bundled frpc alive while we
+    # serve. A misconfigured tunnel fails the start instead of going silent.
+    try:
+        tunnel_settings = TunnelSettings.from_env(
+            os.environ,
+            local_port=args.port,
+            data_dir=DEFAULT_DATA_DIR,
+        )
+    except TunnelConfigError as error:
+        raise SystemExit(f"error: {error}") from error
+    if tunnel_settings is not None:
+        supervisor = TunnelSupervisor(tunnel_settings)
+        supervisor.start()
+        app.state.tunnel = supervisor
+        # uvicorn re-raises the terminating signal after the lifespan shutdown, so
+        # the graceful path must stop frpc itself; atexit only covers plain exits.
+        _shutdown_callbacks.append(supervisor.stop)
+        atexit.register(supervisor.stop)
+        print(
+            f"[haish-remote] tunnel: frpc → {tunnel_settings.server_label}"
+            f" (remote port {tunnel_settings.remote_port}, local port {tunnel_settings.local_port})",
+            flush=True,
+        )
     # Serve this module's app object directly: frozen builds execute the module as
     # __main__, and importing "server.app" by name would build a second instance.
     uvicorn.run(app, host=args.host, port=args.port, reload=False)

@@ -134,6 +134,11 @@ depends on.
 - `HAISH_RUNTIME_PID_FILE`: explicit runtime PID record.
 - `HAISH_REMOTE_DATA_DIR`: pairing/session SQLite directory.
 - `HAISH_REMOTE_PUBLIC_ENDPOINT`: required public HTTPS origin embedded in the pairing QR code.
+- `HAISH_REMOTE_TUNNEL`: set to `1` to make the adapter publish itself through a supervised `frpc`.
+- `HAISH_REMOTE_TUNNEL_SERVER`, `HAISH_REMOTE_TUNNEL_SERVER_PORT`: frps host and port (default `7000`).
+- `HAISH_REMOTE_TUNNEL_TOKEN`: frps auth token; kept in a 0600 `frpc.toml` inside the data directory.
+- `HAISH_REMOTE_TUNNEL_REMOTE_PORT`: public port frps exposes for this computer.
+- `HAISH_REMOTE_FRPC`: path to the frpc binary shipped by the desktop client.
 
 ## Checks
 
