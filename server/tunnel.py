@@ -207,14 +207,29 @@ class TunnelSupervisor:
         with self._lock:
             process = self._process
         if process is not None and process.poll() is None:
-            process.terminate()
+            self._signal_process_group(process, signal.SIGTERM)
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                process.kill()
+                self._signal_process_group(process, signal.SIGKILL)
                 process.wait(timeout=5)
         if self._thread is not None:
             self._thread.join(timeout=5)
+        if process is not None:
+            self._remove_pid_record(process.pid)
+
+    @staticmethod
+    def _signal_process_group(process: subprocess.Popen, sig: signal.Signals) -> None:
+        """frpc runs in its own session; signal the group it leads so a helper
+        that spawned children cannot hold our output pipe open.
+        """
+        try:
+            os.killpg(process.pid, sig)
+        except OSError:
+            try:
+                process.send_signal(sig)
+            except OSError:
+                pass
 
     def snapshot(self) -> dict[str, object]:
         with self._lock:
@@ -309,6 +324,7 @@ class TunnelSupervisor:
                     stderr=subprocess.STDOUT,
                     text=True,
                     bufsize=1,
+                    start_new_session=True,
                 )
             except OSError as error:
                 self._record_failure(f"frpc failed to launch: {error}")

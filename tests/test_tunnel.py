@@ -220,6 +220,21 @@ class TunnelSupervisorTest(unittest.TestCase):
             finally:
                 supervisor.stop()
 
+    def test_stop_reaps_a_tunnel_that_spawned_children(self):
+        # A helper that forks a child holds our output pipe open; stopping must
+        # kill the whole process group instead of waiting out the join timeout.
+        with tempfile.TemporaryDirectory() as raw:
+            supervisor = self._supervisor(Path(raw), "sleep 30 &\nwait", restart_delays=(0.05,))
+            supervisor.start()
+            snapshot = wait_for_snapshot(supervisor, lambda s: s["running"])
+            self.assertIsNotNone(snapshot)
+            started = time.monotonic()
+            supervisor.stop()
+            self.assertLess(time.monotonic() - started, 5.0)
+            self.assertFalse((Path(raw) / "frpc.pid").exists())
+            with self.assertRaises(ProcessLookupError):
+                os.killpg(snapshot["pid"], 0)
+
     def test_a_tunnel_left_behind_by_a_crashed_adapter_is_reaped(self):
         with tempfile.TemporaryDirectory() as raw:
             directory = Path(raw)
