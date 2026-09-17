@@ -123,8 +123,8 @@ import {
 import {
   orphanReplyAnchors,
   orphanTaskReplies,
-import { createDismissHandoff, DIRECTORY_HOLD_CLASS } from './dismiss-handoff.js';
 } from './task-replies.js';
+import { createDismissHandoff, DIRECTORY_HOLD_CLASS } from './dismiss-handoff.js';
 
 const ACTIVE_STATUSES = new Set(['queued', 'running']);
 const LAST_CONVERSATION_STORAGE_KEY = 'haish.remote.lastConversation.v1';
@@ -1348,8 +1348,8 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
   const swipeFrameRef = useRef(0);
   const swipePendingRef = useRef(null);
   const deferredRefreshRef = useRef(false);
-  const dismissHandoffRef = useRef(null);
   const swipeBlockedRef = useRef(false);
+  const dismissHandoffRef = useRef(null);
   const swipeHandlersRef = useRef(null);
   const composerImagesRef = useRef([]);
   const optimisticUserMessagesRef = useRef([]);
@@ -1527,6 +1527,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
     surface.classList.toggle('swipe-dismissing', complete);
     return settle;
   }
+
   /**
    * 收起详情页。收尾那一帧上挤着三笔重活：卸掉整棵详情树、目录几十个定时动画重新交给合成器、顶栏的
    * backdrop-filter 第一次渲染（一整屏背景模糊）——挤在一起就是滑退动画最后那一下的卡顿。交给
@@ -1543,7 +1544,6 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
     }
     dismissHandoffRef.current();
   }
-
 
   function finishSwipeBack(event) {
     const start = swipeStartRef.current;
