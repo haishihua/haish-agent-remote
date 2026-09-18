@@ -68,19 +68,31 @@ haish-agent-remote/
 | --- | --- | --- |
 | 数据 | `src/chat-runtime.js` | 三条入口（详情/游标轮询、NDJSON 流、本地草稿）都折成**桌面形状**的 runtime task（`eventLog` + 记录字段），行由 `buildChatRows` 拼 |
 | 视图 | `src/chat-view.jsx` | 直接渲染桌面 `ChatMessageRow` / `ChatAgentTimeline`；图片走 `api.imagePreview` 取字节 |
-| 样式 | `src/desktop-theme.css` + `scripts/gen-desktop-base-css.mjs` | 引用桌面的 `styles/*.css`；生成的 `src/desktop-base.generated.css` 把桌面 `base.css` 的 `:root` token / `.ico-*` / portal tooltip 摘过来（已 gitignore，prebuild/predev 重生成） |
+| 样式 | `src/desktop-theme.css` + `scripts/gen-desktop-base-css.mjs` + `scripts/gen-desktop-markdown-css.mjs` | 引用桌面的 `styles/*.css`；生成的 `src/desktop-base.generated.css` 把桌面 `base.css` 的 `:root` token / `.ico-*` / portal tooltip 摘过来，`src/desktop-markdown.generated.css` 是桌面 `markdown.css` 的副本（只改 `@source` 的起点，见下）；两份都已 gitignore，prebuild/predev 重生成 |
+
+#### 为什么 markdown.css 要复制一份（`@source` 的位置）
+
+桌面 `app-web/styles/markdown.css` 里有四条 `@source "../../node_modules/<包>/dist/..."`（Streamdown 的四份包）。Tailwind 是照**这个文件所在的位置**去找的，也就是桌面仓库的 node_modules——而 CI 里桌面只 checkout 源码、不装依赖（只有手机跑 `npm ci`），四条一条也扫不到：**Streamdown 的表格 / 代码块要用的一批工具类（`bg-muted` / `divide-y` / `overflow-x-auto` / `rounded-md` / `max-w-full` / `text-muted-foreground`）在包里根本不存在**，手机上就是表格列错位、代码块没底色。本地一切正常（本地桌面仓库装着依赖，扫得到），所以单测和本地 build 都发现不了——第 51 次构建发出去的 1.51 包就是这么坏的。
+
+接缝两半：
+
+- `scripts/gen-desktop-markdown-css.mjs` 把桌面那份**逐字节复制**，只把 `@source` 的起点改到手机自己的 node_modules（两份 package.json 钉的是同一批版本）；
+- `vite.config.js` 的 `desktopMarkdownSeam` 插件（`resolveId`）把桌面那个路径换成副本——**全树只编译一份**（两份的话 theme / preflight / `.haish-markdown` 会各来一遍）。试过 `resolve.alias`，拦不住桌面 `Markdown.jsx` 里那句相对 import 解析出来的绝对路径，还是把桌面原件编进去了。
+
+兜底：`npm run check:styles`（`scripts/verify-bundled-styles.mjs`）在构建产物上核这批类，CI 的 `build-ios-unsigned.yml` 在 `mobile:sync` 之后就会跑；`tests/desktop-markdown-css.test.mjs` 钉住桌面那份的 `@source` 四条还在、改写除了起点一个字不动、以及那条 `resolveId` 真的落到副本上。
 
 折叠用的原语全部来自桌面检出：`normalizeRuntimeEvent` → `runtimeEventToLog` → `appendStreamEvent` / `compactStreamEvents`（相邻 delta 合并成一条），时间线投影是桌面的 `buildChatTimeline(task, status)`。手机自己那套 `segments` 折叠、`TaskTrace` / `ToolTraceCard` 与它们的 `.tool-trace-*` 样式已删。
 
 **不搬**：桌面 `ChatPanel`（拖 Lexical 输入框、ModelPickers、标注、搜索）、`createTaskStreamHandlers.js`（1003 行，接的是桌面的 socket 与 store）——手机只搬行、时间线、卡片和纯函数模型，composer / 目录 / 滚动仍是手机自己的。只有发送/停止两个键的**图标**照桌面聊天区来（`ArrowUp` 与实心圆角 `Square`，即 `chat.css` 的 `.chat-send-icon` / `.chat-stop-icon`；桌面按钮 40px 配 22px/12px，手机按钮 48px 因此放成 26px/14px，进场动画沿用桌面的 `chat-send-icon-in`），不再用 `deploy.png` / `stop.png` 两个遮罩字形。
 
-### 手机上故意画得跟桌面不一样的三处
+### 手机上故意画得跟桌面不一样的四处
 
-只有这三处，都是用户拍过的，其余一律照桌面：
+只有这四处，都是用户拍过的，其余一律照桌面：
 
 1. **thinking 折叠 chip 不画**（桌面 `ChatTimelineNodes.jsx` 的 `.chat-timeline-thinking-*`：灯泡 + `N chars`）。用户说那是老 UI 的观感。事件日志照桌面折，只在 `chat-runtime.js` 交给行之前把 `kind === 'thinking'` 的节点滤掉——活动 orb 的文案仍走桌面那份（流式时它本来就在，只是少了一个可点的折叠块）。
 2. **取消 / 失败任务的本地回复去重**（`withoutTimelineDuplicates`）。被 `cancel` 打断的那次回答没定稿，过程文本（commentary）已经是时间线上的一个节点，`answer_text` 又是同一段，正文整段去重就少一遍。只对这一种行生效：持久化消息的正文就是答案本身，done 行的时间线默认折着，去掉它就等于把答案藏起来。
 3. **browser_use 的截图位降级成占位**。桌面靠 Electron IPC `readToolScreenshot` 读图，手机端 v1 不建 artifact 路由（core 只有会话图片预览，adapter 没有 artifact 通道）。卡片其余字段照搬。
+4. **气泡吃满行宽**。桌面两条上限（`.chat-bubble` 的 `min(680px, 72%)`、助手行的 82%）是给 1000px 往上的窗口留的余量，到 390px 的屏上只剩 258 / 293px，正文挤成一根条、表格和代码没地方放（用户：「优化一下现在是太挤了，根本看不了」）。手机在 `src/styles.css` 里覆盖成 `max-width: 100%`——气泡内部那 38px 是头像的让位（助手行在左、用户行在右），取满也不会顶到行外。其余尺寸（字号、内边距、头像槽）仍照桌面。
 
 另外 `src/main.jsx` 必须包一层桌面 `AppTooltipProvider`：行 / 时间线 / 工具卡里的 tooltip 会抛 `useContext must be used within GlobalTooltipProvider`，整条线程白屏。
 
@@ -411,7 +423,7 @@ npm run mobile:sync
 ## 当前状态
 
 - GitHub Actions workflow：已配置为唯一 IPA 构建入口；
-- 会话内执行 UI：直接渲染桌面 chat 的行 / 时间线 / 工具卡 / 审批与提问卡（pin 桌面 0.0.20，见上文「会话内的执行 UI 直接复用桌面 chat」）；composer 的发送/停止图标已换成桌面那套 `ArrowUp` / 实心圆角 `Square`；
+- 会话内执行 UI：直接渲染桌面 chat 的行 / 时间线 / 工具卡 / 审批与提问卡（pin 桌面 0.0.20，见上文「会话内的执行 UI 直接复用桌面 chat」）；composer 的发送/停止图标已换成桌面那套 `ArrowUp` / 实心圆角 `Square`；行距 15px、气泡吃满行宽；桌面 `markdown.css` 的 `@source` 已改指本仓 node_modules（表格 / 代码块工具类，见上文），CI 里 `npm run check:styles` 兜底；
 - 最新移动端 UI：已通过 Actions 成功构建并验证 artifact 内容；
 - 公网 HTTPS：`https://47.97.24.242/remote/status` 已验证返回 `200`；
 - FRP：服务器 `7000` 与 Mac client 隧道已验证可用；

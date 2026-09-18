@@ -46,6 +46,15 @@ jobs:
       - name: Build and sync Capacitor
         run: npm run mobile:sync
 
+      # 桌面 markdown.css 的 @source 指向的是**桌面仓库**的 node_modules（Streamdown 四份包），
+      # 而这边只 checkout 桌面源码、不装依赖：Tailwind 扫不到类名，表格 / 代码块要用的那批
+      # 工具类（bg-muted / divide-y / overflow-x-auto / rounded-md …）在包里根本不存在。
+      # 本地永远扫得到（本地桌面仓库装着依赖），所以只有构建产物能验——第 51 次构建发出去的
+      # 包就是这么坏的（手机上表格列错位、代码块没底色）。接缝见
+      # scripts/gen-desktop-markdown-css.mjs 与 vite.config.js 的 desktopMarkdownSeam 插件。
+      - name: Verify the bundle carries the desktop markdown styles (tables / code blocks)
+        run: npm run check:styles
+
       - name: Build unsigned iOS app
         run: |
           xcodebuild \

@@ -1,6 +1,8 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // 手机端直接复用桌面的 chat 执行 UI（组件 + 样式都从 ../haish-agent 检出里 import，
 // 见 src/desktop-theme.css 与 src/chat-view.jsx）。两件事必须在这里钉死：
@@ -11,6 +13,11 @@ import tailwindcss from '@tailwindcss/vite';
 //    也在另一份里，所以子路径同样要列。）
 // 2) tailwind：桌面 agent-elements 的 CSS 用的是 v4 语法（@import "tailwindcss/utilities.css"
 //    source(none)、@theme inline、@source "./*.tsx"、@reference），没有这个插件编译不过。
+//    **而桌面 markdown.css 的 @source 指向桌面仓库的 node_modules**（Streamdown 四份包），
+//    CI 里桌面只 checkout 源码、不装依赖，扫不到就等于表格 / 代码块的工具类整段消失——
+//    本地看不出来。所以那份样式由 scripts/gen-desktop-markdown-css.mjs 复制一份改过
+//    @source 起点的副本，下面的 desktopMarkdownSeam 插件把桌面的路径指过去（只编译一份，
+//    见那个脚本的注释）。
 const desktopPackages = [
   'react',
   'react-dom',
@@ -30,8 +37,32 @@ const desktopPackages = [
   'tailwindcss',
 ];
 
+// 生成物在 src/ 下（prebuild/predev 重生成，见 .gitignore）。
+const desktopMarkdownCss = fileURLToPath(new URL('./src/desktop-markdown.generated.css', import.meta.url));
+
+/**
+ * 桌面 markdown.css 的接缝：桌面那份里的 @source 指的是**桌面仓库**的 node_modules
+ * （Streamdown 四份包），CI 里桌面只 checkout 源码、不装依赖，Tailwind 扫不到类名，
+ * 表格 / 代码块要用的工具类整段消失（本地看不出来）。这里把桌面那个路径换成生成的副本。
+ *
+ * 用 resolveId 而不是 resolve.alias：实测 alias 拦不住桌面 Markdown.jsx 里那句相对
+ * import（`../../../styles/markdown.css`）解析出来的绝对路径，还是把桌面原件编进去了。
+ */
+function desktopMarkdownSeam() {
+  const desktopSuffix = path.join('haish-agent', 'app-web', 'styles', 'markdown.css');
+  return {
+    name: 'haish:desktop-markdown-seam',
+    enforce: 'pre',
+    resolveId(source, importer) {
+      if (!importer || (!source.startsWith('.') && !path.isAbsolute(source))) return null;
+      const resolved = source.startsWith('.') ? path.resolve(path.dirname(importer), source) : source;
+      return resolved.endsWith(path.sep + desktopSuffix) ? desktopMarkdownCss : null;
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [desktopMarkdownSeam(), react(), tailwindcss()],
   resolve: { dedupe: desktopPackages },
   // 桌面文件在项目根之外，dev / preview 的静态服务要放行上一级目录。
   server: {

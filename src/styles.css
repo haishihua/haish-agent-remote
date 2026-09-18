@@ -333,6 +333,13 @@ html.detail-closing .app-shell > :not(.detail-screen) * { animation-play-state: 
 .message-scroll > * { flex: 0 0 auto; }
 .message-scroll > :first-child { margin-top: auto; }
 .message-scroll::-webkit-scrollbar { display: none; width: 0; height: 0; }
+/* 气泡吃满行宽：桌面的两条上限（`.chat-bubble` 的 min(680px, 72%)、助手行的 82%）是给
+   1000px 往上的窗口留的余量，到 390px 的屏上只剩 258 / 293px——正文挤成一根条，表格和
+   代码更没地方放。气泡内部那 38px 是头像的让位（助手行在左、用户行在右），所以取 100%
+   不会顶到行外。 */
+.chat-message-row.user .chat-bubble,
+.chat-message-row.agent .chat-bubble { max-width: 100%; }
+.chat-message-row.agent .chat-message-images { max-width: 100%; }
 .scroll-to-bottom-button { position: absolute; z-index: 20; bottom: 14px; left: 50%; display: inline-flex; width: 44px; height: 44px; padding: 0; align-items: center; justify-content: center; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 50%; background: rgba(12, 17, 25, 0.94); color: rgba(241, 246, 255, 0.92); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32); opacity: 0; pointer-events: none; transform: translate(-50%, 8px); transition: opacity 140ms ease, transform 140ms ease, border-color 140ms ease; }
 .scroll-to-bottom-button.is-visible { opacity: 1; pointer-events: auto; transform: translate(-50%, 0); }
 .scroll-to-bottom-button:focus-visible { border-color: rgba(239, 191, 100, 0.5); outline: none; }

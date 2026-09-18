@@ -4,6 +4,9 @@ dist/
 # 桌面 base.css 的摘录（:root token / .ico-* / portal-tooltip），由
 # scripts/gen-desktop-base-css.mjs 在 prebuild/predev 生成，不手改、不入库。
 src/desktop-base.generated.css
+# 桌面 markdown.css 的副本（只把 @source 的起点改到本仓 node_modules），由
+# scripts/gen-desktop-markdown-css.mjs 在 prebuild/predev 生成，不手改、不入库。
+src/desktop-markdown.generated.css
 .pytest_cache/
 __pycache__/
 *.pyc
