@@ -162,10 +162,47 @@ test('the thread is messages in order, with the desktop timeline on the agent ro
   assert.equal(rows[1].traceHydrated, true);
   assert.deepEqual(
     rows[1].traceTimeline.map((item) => `${item.kind}:${item.label || item.text}`),
-    ['thinking:hmm', 'text:Hello', 'tool:exec command'],
+    ['text:Hello', 'tool:exec command'],
   );
   assert.deepEqual(rows[1].traceLatestTodos, [{ content: 'Ship it', status: 'in_progress', activeForm: '' }]);
   assert.equal(rows[1].firstTokenAt, Date.parse('2026-09-19T00:00:01Z'));
+});
+
+test('the phone timeline drops the thinking chip the user called old UI', () => {
+  const runtime = runtimeTaskFromDetail(detail([
+    rawEvent('e1', 'llm_thinking_delta', { delta: '先看仓库里有没有测试脚本' }),
+    ...answerDeltas('Hello'),
+    rawEvent('e3', 'tool_call_started', { call_id: 'c9', tool_name: 'exec_command', tool_input: { command: 'ls' } }),
+  ]));
+  const rows = buildChatRows({
+    conversationId: 'convo-1',
+    messages: [{ message_id: 'm2', role: 'assistant', content: 'Hello', task_id: 'task-1' }],
+    tasksById: new Map([['task-1', { task_id: 'task-1', status: 'done', completed_at: '2026-09-19T00:00:09Z' }]]),
+    runtimeTasks: { 'task-1': runtime },
+    agentOptions: AGENT_OPTIONS,
+  });
+
+  assert.equal(rows[0].traceTimeline.some((item) => item.kind === 'thinking'), false);
+  assert.equal(runtime.eventLog.some((entry) => entry.type === 'llm_thinking_delta'), true);
+});
+
+// 持久化消息的正文就是答案本身，哪怕时间线上有同一段字（未定稿的那次会这样）也
+// 不能去掉：done 行的时间线默认折着，去掉正文等于把答案藏起来。
+test('a persisted answer keeps its body even when the timeline carries the same text', () => {
+  const runtime = runtimeTaskFromDetail(detail([
+    ...answerDeltas('Hello'),
+    rawEvent('e3', 'tool_call_started', { call_id: 'c9', tool_name: 'exec_command', tool_input: { command: 'ls' } }),
+    rawEvent('e4', 'llm_answer_delta', { delta: 'Hello' }),
+  ]));
+  const rows = buildChatRows({
+    conversationId: 'convo-1',
+    messages: [{ message_id: 'm2', role: 'assistant', content: 'Hello', task_id: 'task-1' }],
+    tasksById: new Map([['task-1', { task_id: 'task-1', status: 'done', completed_at: '2026-09-19T00:00:09Z' }]]),
+    runtimeTasks: { 'task-1': runtime },
+    agentOptions: AGENT_OPTIONS,
+  });
+
+  assert.equal(rows[0].text, 'Hello');
 });
 
 test('a row with only a summary says so instead of painting an empty timeline', () => {
@@ -231,7 +268,7 @@ test('the live row streams on its own and stops rendering once the run lands', (
   assert.equal(settled.length, 1);
 });
 
-test('a cancelled run with no persisted reply still shows its partial answer', () => {
+test('an orphan reply row keeps the body when the trace says nothing about it', () => {
   const conversation = {
     messages: [{ message_id: 'm1', role: 'user', content: 'stop me', task_id: 'task-2' }],
     tasks: [{ task_id: 'task-2', status: 'cancelled', answer_text: 'I was writing', error: 'Cancelled by user.' }],
@@ -249,6 +286,82 @@ test('a cancelled run with no persisted reply still shows its partial answer', (
   assert.deepEqual(rows.map((row) => row.id), ['m1', 'm1-reply']);
   assert.equal(rows[1].text, 'I was writing\n\nCancelled by user.');
   assert.equal(rows[1].status, 'cancelled');
+  assert.equal(rows[1].traceHydrated, false);
+});
+
+// 取消的那次回答没定稿，过程文本留在时间线上，answer_text 又是同一段：正文不再重复。
+test('a cancelled run whose trace already carries the partial answer does not repeat it', () => {
+  const conversation = {
+    messages: [{ message_id: 'm1', role: 'user', content: 'stop me', task_id: 'task-3' }],
+    tasks: [{ task_id: 'task-3', status: 'cancelled', answer_text: '我先把这两条测试改成', error: 'Cancelled by user.' }],
+  };
+  const runtime = runtimeTaskFromDetail({
+    task_id: 'task-3',
+    status: 'cancelled',
+    answer_text: '我先把这两条测试改成',
+    error: 'Cancelled by user.',
+    events: [
+      rawEvent('e1', 'run_started'),
+      rawEvent('e2', 'llm_answer_delta', { delta: '我先把这两条测试改成' }),
+      // 被打断在那条命令上：过程文本因此成了时间线上的一个节点（只有 delta 时它算正文）。
+      rawEvent('e3', 'tool_call_started', { call_id: 'c4', tool_name: 'exec_command', tool_input: { command: 'npm run build' } }),
+    ],
+  });
+  const rows = buildChatRows({
+    conversationId: 'convo-1',
+    conversation,
+    messages: conversation.messages,
+    tasksById: new Map([['task-3', conversation.tasks[0]]]),
+    runtimeTasks: { 'task-3': runtime },
+    agentOptions: AGENT_OPTIONS,
+    orphanReplyByAnchor: orphanReplyAnchors(conversation.messages, orphanTaskReplies(conversation)),
+  });
+
+  // 过程文本已经在时间线上（未定稿的那段），正文只剩错误说明。
+  assert.equal(rows[1].text, 'Cancelled by user.');
+  assert.deepEqual(
+    rows[1].traceTimeline.map((item) => `${item.kind}:${item.text || item.label}`),
+    ['text:我先把这两条测试改成', 'tool:exec command'],
+  );
+});
+
+// 只有 delta 没有工具的那次打断：那段话算正文（桌面的时间线不管它），不重复。
+test('a cancelled run that never reached a tool keeps its answer in the body', () => {
+  const orphan = { task_id: 'task-5', status: 'cancelled', answer_text: 'half a sentence' };
+  const runtime = runtimeTaskFromDetail({
+    task_id: 'task-5',
+    status: 'cancelled',
+    answer_text: 'half a sentence',
+    events: [
+      rawEvent('e1', 'run_started'),
+      rawEvent('e2', 'llm_answer_delta', { delta: 'half a sentence' }),
+    ],
+  });
+  const rows = buildChatRows({
+    conversationId: 'convo-1',
+    messages: [{ message_id: 'm1', role: 'user', content: 'stop me', task_id: 'task-5' }],
+    tasksById: new Map([['task-5', orphan]]),
+    runtimeTasks: { 'task-5': runtime },
+    agentOptions: AGENT_OPTIONS,
+    orphanReplyByAnchor: new Map([['m1', orphan]]),
+  });
+
+  assert.equal(rows[1].text, 'half a sentence');
+  assert.deepEqual(rows[1].traceTimeline, []);
+});
+
+// 执行记录还没到手时（只有摘要）正文得自己磎上，不能因为时间线为空就丢掉。
+test('a cancelled run without a trace still shows its partial answer', () => {
+  const orphan = { task_id: 'task-4', status: 'cancelled', answer_text: 'half a sentence' };
+  const rows = buildChatRows({
+    conversationId: 'convo-1',
+    messages: [{ message_id: 'm1', role: 'user', content: 'stop me', task_id: 'task-4' }],
+    tasksById: new Map([['task-4', orphan]]),
+    agentOptions: AGENT_OPTIONS,
+    orphanReplyByAnchor: new Map([['m1', orphan]]),
+  });
+
+  assert.equal(rows[1].text, 'half a sentence');
   assert.equal(rows[1].traceHydrated, false);
 });
 

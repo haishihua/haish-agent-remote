@@ -204,6 +204,37 @@ function resolveRowStatus(runtime, summary) {
   return runtimeStatus;
 }
 
+// 时间线里已经有的那段话不再当正文重复一遍。取消/失败的任务最容易碰上：那次回答
+// 还没定稿就被打断，过程文本（commentary）留在时间线上，answer_text 又是同一段。
+function shownByTimeline(text, timelineItems) {
+  const wanted = String(text || '').trim();
+  if (!wanted) return false;
+  return timelineItems.some(
+    (item) => item.kind === 'text' && String(item.text || '').trim() === wanted,
+  );
+}
+
+// 正文是一段段拼的（回答 + 错误说明），只去掉时间线上已经有的那几段。
+function withoutTimelineDuplicates(text, timelineItems) {
+  return String(text || '')
+    .split('\n\n')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .filter((part) => !shownByTimeline(part, timelineItems))
+    .join('\n\n');
+}
+
+/**
+ * 手机端不画一行：桌面的 thinking 折叠 chip（灯泡 + N chars）。
+ *
+ * 用户拍板：那个 chip 是老 UI 的观感，会话里不出现。折叠本身不动（事件日志、
+ * 活动 orb 的文案都还是桌面那套），只是不把 thinking 节点交给行。
+ */
+function timelineItemsForPhone(timeline) {
+  const items = Array.isArray(timeline?.items) ? timeline.items : [];
+  return items.filter((item) => item.kind !== 'thinking');
+}
+
 function agentRow({
   id,
   conversationId,
@@ -216,12 +247,17 @@ function agentRow({
   streaming = false,
   createdAt = 0,
   completedAt = 0,
+  // 只对「正文是拼出来的」那种行去重（取消/失败任务的本地回复）：持久化消息的正文
+  // 就是答案本身，时间线上再出现一次也不能不要它（done 行的时间线默认是折着的，
+  // 去掉正文等于把答案藏起来）。
+  trimTimelineDuplicates = false,
 }) {
   const status = resolveRowStatus(runtime, summary);
   // 只有折过执行记录的 runtime task 才有时间线；摘要只有记录字段，行上会说
   // 「Steps load when you scroll up.」，随后由可见性触发的加载补上。
   const hydrated = Boolean(runtime) && runtime.runtimeHydrated !== false;
   const timeline = hydrated ? buildChatTimeline(runtime, status) : null;
+  const timelineItems = timelineItemsForPhone(timeline);
   return {
     id,
     taskId,
@@ -229,9 +265,9 @@ function agentRow({
     messageId: messageId || runtime?.assistantMessageId || summary?.assistant_message_id || null,
     role: 'agent',
     agentName: agentName || 'Assistant',
-    text: streaming ? '' : text,
+    text: streaming ? '' : (trimTimelineDuplicates ? withoutTimelineDuplicates(text, timelineItems) : text),
     progressLines: [],
-    traceTimeline: Array.isArray(timeline?.items) ? timeline.items : [],
+    traceTimeline: timelineItems,
     traceHydrated: hydrated,
     traceLatestTodos: timeline?.latestTodos || null,
     status,
@@ -308,6 +344,7 @@ export function buildChatRows({
           summary: orphan,
           agentName: agentNameFor(orphanRuntime, orphan),
           text: replyText(orphan, orphanRuntime),
+          trimTimelineDuplicates: true,
           createdAt: timeMs(orphan.created_at),
           completedAt: timeMs(orphan.completed_at),
         }));
