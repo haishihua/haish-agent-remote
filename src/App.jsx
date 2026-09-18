@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft,
   ArrowRight,
+  ArrowUp,
   Check,
   ChevronDown,
   ChevronRight,
@@ -21,6 +22,7 @@ import {
   Search,
   ShieldCheck,
   Smartphone,
+  Square,
   SquarePen,
   X,
 } from 'lucide-react';
@@ -42,7 +44,6 @@ import {
 import { fitComposerTextarea } from './composer-height.js';
 import { hideKeyboardAccessoryBar, isKeyboardMoving, mountKeyboardInset, registerKeyboardSurface } from './ios-keyboard.js';
 import penguinLogo from './assets/penguin_logo_user.png';
-import stopIcon from '../../haish-agent/app-web/assets/ui/icons/stop.png';
 import { ScrollToBottomButton } from './ScrollToBottomButton.jsx';
 // 会话线程直接用桌面的行与时间线（见 chat-view.jsx / chat-runtime.js）。
 import { ChatThread, releaseConversationImageUrls } from './chat-view.jsx';
@@ -1800,11 +1801,13 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
           {runConfig && !runConfigExpanded ? <button type="button" className="run-config-icon-button" onClick={() => setRunConfigExpanded(true)} disabled={running} aria-label={`Show run configuration, thinking ${selectedThinking?.label || 'unknown'}`} aria-expanded="false"><svg className="run-config-gauge" style={{ '--gauge-rotation': reasoningGaugeRotation }} viewBox="0 0 24 24" aria-hidden="true"><path className="run-config-gauge-arc" d="M3.34 19a10 10 0 1 1 17.32 0" /><g className="run-config-gauge-needle"><path className="run-config-gauge-pointer" d="M10.9 13.4 12.6 15.1 18.65 7.35Z" /><circle cx="12" cy="14" r="1.8" /></g></svg></button> : null}
           {running && !message.trim() && !composerImages.some((image) => image.imageId && !image.error) ? (
             <button type="button" className="send-button stop" onClick={stop} disabled={busy} aria-label="Stop task">
-              {busy ? <span className="send-spinner" aria-hidden="true" /> : <span className="stop-icon" style={{ '--stop-icon': `url(${stopIcon})` }} aria-hidden="true" />}
+              {/* 图标照桌面 chat 的发送/停止键：ArrowUp 是发，实心圆角方块是停
+                  （40px 的桌面按钮里 22px 箭头 / 12px 方块，这里按钮是 48px，等比放大）。 */}
+              {busy ? <span className="send-spinner" aria-hidden="true" /> : <Square className="send-icon stop-square" fill="currentColor" strokeWidth={0} aria-hidden="true" />}
             </button>
           ) : (
             <button className="send-button" disabled={busy || composerImages.some((image) => image.uploading) || (!message.trim() && !composerImages.some((image) => image.imageId && !image.error)) || (!running && !runConfig)} aria-label={running ? 'Add instruction' : 'Send'}>
-              {busy ? <span className="send-spinner" aria-hidden="true" /> : <span className="send-glyph" aria-hidden="true" />}
+              {busy ? <span className="send-spinner" aria-hidden="true" /> : <ArrowUp className="send-icon" strokeWidth={2.3} aria-hidden="true" />}
             </button>
           )}
         </form>

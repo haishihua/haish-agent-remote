@@ -364,8 +364,11 @@ html.detail-closing .app-shell > :not(.detail-screen) * { animation-play-state: 
 .send-button { display: grid; grid-column: -2 / -1; width: 48px; height: 48px; padding: 0; place-items: center; align-self: end; border: 0; border-radius: 14px; background: var(--accent); color: #f7e7b0; }
 .send-button.stop { padding: 0; border: 1px solid #d05050; background: linear-gradient(180deg, #d65a5a 0%, #b73a3a 55%, #8b2a2a 100%); color: #fff8f3; box-shadow: inset 0 1px 0 rgba(255, 220, 220, 0.28), inset 0 -1px 0 rgba(70, 20, 20, 0.28), 0 1px 2px rgba(0, 0, 0, 0.16); }
 .send-spinner { display: block; width: 20px; height: 20px; box-sizing: border-box; border: 2px solid color-mix(in srgb, currentColor 28%, transparent); border-top-color: currentColor; border-radius: 50%; transform-origin: 50% 50%; animation: spin 720ms linear infinite; }
-.stop-icon { display: block; width: 20px; height: 20px; background: currentColor; -webkit-mask: var(--stop-icon) center / contain no-repeat; mask: var(--stop-icon) center / contain no-repeat; }
-.send-glyph { width: 22px; height: 22px; background: currentColor; -webkit-mask: url('./assets/deploy.png') center / contain no-repeat; mask: url('./assets/deploy.png') center / contain no-repeat; }
+/* 发送/停止的图标跟桌面 chat 的发送键一致：ArrowUp 是发，实心圆角方块是停。桌面那套是
+   40px 的圆按钮配 22px 箭头 / 12px 方块（.chat-send-icon / .chat-stop-icon），这里按钮是
+   48px，等比放到 26px / 14px；进场动画也沿用桌面那条。 */
+.send-icon { display: block; width: 26px; height: 26px; animation: chat-send-icon-in 160ms ease-out; }
+.send-icon.stop-square { width: 14px; height: 14px; border-radius: 3px; }
 .run-config-icon-button { display: grid; width: 44px; height: 44px; padding: 0; grid-column: -3 / -2; place-items: center; align-self: end; border: 0; border-radius: 12px; background: transparent; color: var(--reasoning); }
 .run-config-icon-button:active { background: rgba(74, 140, 255, 0.1); }
 .run-config-gauge { width: 28px; height: 28px; overflow: visible; }

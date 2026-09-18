@@ -72,7 +72,7 @@ haish-agent-remote/
 
 折叠用的原语全部来自桌面检出：`normalizeRuntimeEvent` → `runtimeEventToLog` → `appendStreamEvent` / `compactStreamEvents`（相邻 delta 合并成一条），时间线投影是桌面的 `buildChatTimeline(task, status)`。手机自己那套 `segments` 折叠、`TaskTrace` / `ToolTraceCard` 与它们的 `.tool-trace-*` 样式已删。
 
-**不搬**：桌面 `ChatPanel`（拖 Lexical 输入框、ModelPickers、标注、搜索）、`createTaskStreamHandlers.js`（1003 行，接的是桌面的 socket 与 store）——手机只搬行、时间线、卡片和纯函数模型，composer / 目录 / 滚动仍是手机自己的。
+**不搬**：桌面 `ChatPanel`（拖 Lexical 输入框、ModelPickers、标注、搜索）、`createTaskStreamHandlers.js`（1003 行，接的是桌面的 socket 与 store）——手机只搬行、时间线、卡片和纯函数模型，composer / 目录 / 滚动仍是手机自己的。只有发送/停止两个键的**图标**照桌面聊天区来（`ArrowUp` 与实心圆角 `Square`，即 `chat.css` 的 `.chat-send-icon` / `.chat-stop-icon`；桌面按钮 40px 配 22px/12px，手机按钮 48px 因此放成 26px/14px，进场动画沿用桌面的 `chat-send-icon-in`），不再用 `deploy.png` / `stop.png` 两个遮罩字形。
 
 ### 手机上故意画得跟桌面不一样的三处
 
@@ -411,7 +411,7 @@ npm run mobile:sync
 ## 当前状态
 
 - GitHub Actions workflow：已配置为唯一 IPA 构建入口；
-- 会话内执行 UI：直接渲染桌面 chat 的行 / 时间线 / 工具卡 / 审批与提问卡（pin 桌面 0.0.20，见上文「会话内的执行 UI 直接复用桌面 chat」）；
+- 会话内执行 UI：直接渲染桌面 chat 的行 / 时间线 / 工具卡 / 审批与提问卡（pin 桌面 0.0.20，见上文「会话内的执行 UI 直接复用桌面 chat」）；composer 的发送/停止图标已换成桌面那套 `ArrowUp` / 实心圆角 `Square`；
 - 最新移动端 UI：已通过 Actions 成功构建并验证 artifact 内容；
 - 公网 HTTPS：`https://47.97.24.242/remote/status` 已验证返回 `200`；
 - FRP：服务器 `7000` 与 Mac client 隧道已验证可用；
