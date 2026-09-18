@@ -185,6 +185,8 @@ adapter 发现 runtime 的顺序是：优先使用 `HAISH_UPSTREAM_URL`，否则
 - 状态目录取 `HAISH_RUNTIME_HOME`，否则取 adapter 已发现的 `runtime.pid` 所在目录；
 - 解析几十兆的会话记录会阻塞事件循环，因此放到线程里执行，实时任务流不受影响。
 
+agent 不参与还原，而是按“能不能换”决定是否锁：runtime 只会在会话的第一个被接受的 chat turn 上写死 agent 绑定（`set_agent_profile`），之后再带别的 `agent_id` 发任务一定 400（`Conversation is bound to agent X.`）。所以运行配置面板里的 agent 行只在会话还没发过消息时是可选项，新会话必须能选；判据与桌面端同一份规则（`src/agent-binding.js`）——会话自己的任务记录，或时间线里已经有用户消息，二者出现任意一个就锁；只上传图片（`POST /api/messages/images` 只存文件、不写消息）和还没被服务端接下的本机乐观消息都不算。
+
 ### 鉴权、错误和撤销行为
 
 - 无效或缺失 Bearer token/Cookie：需要鉴权的接口返回 401；原生客户端清除本地凭证并回到扫码页；

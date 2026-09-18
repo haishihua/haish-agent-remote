@@ -27,6 +27,7 @@ import {
   X,
 } from 'lucide-react';
 import { api, runtimeConnectionState } from './api.js';
+import { conversationHasSentMessage } from './agent-binding.js';
 import {
   CHAT_IMAGE_MAX_COUNT,
   chatMessageText,
@@ -778,7 +779,7 @@ function ProjectPicker({ projects, onChoose, onClose }) {
   );
 }
 
-function RunConfigSheet({ config, agentLabel, agents, providers, models, modelLoading, onChange, onClose }) {
+function RunConfigSheet({ config, agentLabel, agentLocked, agents, providers, models, modelLoading, onChange, onClose }) {
   const [activeField, setActiveField] = useState(null);
 
   function changeProvider(providerId) {
@@ -794,7 +795,9 @@ function RunConfigSheet({ config, agentLabel, agents, providers, models, modelLo
   }
 
   const fields = [
-    { id: 'agent', label: 'Agent', value: config.agentId, displayValue: agentLabel, options: agents, readOnly: true },
+    // agent 只在会话还没发过消息时能换：runtime 在首个被接受的 chat turn 上写死绑定，之后
+    // 再换一定 400。锁着的时候显示服务端记着的那个 agent（见 agent-binding.js）。
+    { id: 'agent', label: 'Agent', value: config.agentId, displayValue: agentLabel, options: agents, locked: agentLocked, change: (value) => onChange((current) => ({ ...current, agentId: value })) },
     { id: 'provider', label: 'Provider', value: config.providerId, options: providers, change: changeProvider },
     { id: 'model', label: 'Model', value: config.modelId, options: models, change: (value) => onChange((current) => ({ ...current, modelId: value })), disabled: modelLoading || !models.length },
     { id: 'thinking', label: 'Thinking', value: config.thinking, options: THINKING_OPTIONS, change: (value) => onChange((current) => ({ ...current, thinking: value })) },
@@ -810,7 +813,7 @@ function RunConfigSheet({ config, agentLabel, agents, providers, models, modelLo
             const open = activeField === field.id;
             const selected = field.options.find((item) => item.id === field.value);
             return <div className={`run-config-field-group ${open ? 'open' : ''}`} key={field.id}>
-              {field.readOnly ? <div className="run-config-field locked" aria-label={`${field.label} ${field.displayValue || selected?.label || field.value}, fixed for this conversation`}>
+              {field.locked ? <div className="run-config-field locked" aria-label={`${field.label} ${field.displayValue || selected?.label || field.value}, fixed for this conversation`}>
                 <span>{field.label}</span>
                 <strong>{field.displayValue || selected?.label || field.value || 'Unavailable'}</strong>
                 <LockKeyhole size={17} aria-hidden="true" />
@@ -2164,6 +2167,9 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
     .map((part) => /^\d/.test(part) ? part : `${part[0].toUpperCase()}${part.slice(1)}`)
     .join(' ');
   const reconnecting = connection && !connection.timedOut;
+  // 会话的 agent 只在还没发过消息时能换（规则见 agent-binding.js）：runtime 在首个被接受的
+  // chat turn 上写死绑定，之后再换一定 400，所以发过消息就锁上，新会话必须能选。
+  const agentLocked = conversationHasSentMessage({ tasks: conversation?.tasks, messages: conversation?.messages });
   // A detail that never loaded is a dead end on its own — a banner over an empty thread.
   // The card below owns the way out, and the pull-to-refresh handler above retries it.
   const detailLoadFailed = !conversationHydrated && Boolean(error || connection) && !liveRun;
@@ -2312,7 +2318,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
           )}
         </form>
       </div>
-      {showRunConfig && runConfig ? <RunConfigSheet config={runConfig} agentLabel={conversation?.profile_display_name} agents={agents} providers={providers} models={models} modelLoading={modelLoading} onChange={setRunConfig} onClose={() => setShowRunConfig(false)} /> : null}
+      {showRunConfig && runConfig ? <RunConfigSheet config={runConfig} agentLabel={conversation?.profile_display_name} agentLocked={agentLocked} agents={agents} providers={providers} models={models} modelLoading={modelLoading} onChange={setRunConfig} onClose={() => setShowRunConfig(false)} /> : null}
       <ImagePreview image={previewImage} onClose={() => setPreviewImage(null)} />
     </main>
   );
