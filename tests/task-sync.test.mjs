@@ -1,3 +1,7 @@
+// 游标读：手机跟桌面用同一套（`after_event_id` + `events_delta`），缓存里存的是
+// **桌面形状的 runtime task**（eventLog + 记录字段），折叠在 chat-runtime.js。
+import './support/window-stub.mjs';
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -11,6 +15,14 @@ function runtimeTask(taskId, events, extra = {}) {
   return { task_id: taskId, status: 'running', events, ...extra };
 }
 
+// 折出来的正文：相邻的 answer delta 合成一条，取它拼起来的那段。
+function foldedText(task) {
+  return (task?.eventLog || [])
+    .filter((entry) => entry.type === 'llm_answer_delta')
+    .map((entry) => entry.delta)
+    .join('');
+}
+
 test('the first read folds the whole log and remembers its cursor', () => {
   const cache = createTaskRuntimeCache();
   assert.equal(cache.cursor('task-1'), null);
@@ -18,8 +30,9 @@ test('the first read folds the whole log and remembers its cursor', () => {
 
   const state = cache.remember(runtimeTask('task-1', [delta('A', 'e1'), delta('B', 'e2')]));
 
-  assert.equal(state.text, 'AB');
+  assert.equal(foldedText(state), 'AB');
   assert.equal(state.status, 'running');
+  assert.equal(state.runtimeHydrated, true);
   assert.equal(cache.cursor('task-1'), 'e2');
   assert.equal(cache.state('task-1'), state);
 });
@@ -35,8 +48,8 @@ test('a confirmed cursor appends only the new events', () => {
     events: [delta('B', 'e2'), delta('C', 'e3')],
   });
 
-  assert.equal(appended.text, 'ABC');
-  assert.equal(appended.segments.length, 1);
+  assert.equal(foldedText(appended), 'ABC');
+  assert.equal(appended.eventLog.length, 1);
   assert.equal(cache.cursor('task-1'), 'e3');
 });
 
@@ -59,7 +72,11 @@ test('an appended delta folds exactly like a single full replay', () => {
     events: events.slice(2),
   });
 
-  assert.deepEqual(appended, full);
+  assert.equal(foldedText(appended), foldedText(full));
+  assert.deepEqual(
+    appended.eventLog.map((entry) => entry.type),
+    full.eventLog.map((entry) => entry.type),
+  );
   assert.equal(whole.cursor('task-1'), stepwise.cursor('task-1'));
 });
 
@@ -74,7 +91,7 @@ test('a full replay replaces a trace whose cursor the runtime cannot resolve', (
     events: [delta('fresh', 'e9')],
   });
 
-  assert.equal(replaced.text, 'fresh');
+  assert.equal(foldedText(replaced), 'fresh');
   assert.equal(cache.cursor('task-1'), 'e9');
 });
 
@@ -86,7 +103,7 @@ test('a delta without anything cached still folds what it was given', () => {
     events_delta: true,
     events: [delta('A', 'e1')],
   });
-  assert.equal(state.text, 'A');
+  assert.equal(foldedText(state), 'A');
   assert.equal(cache.cursor('task-1'), 'e1');
 });
 
@@ -107,7 +124,7 @@ test('an idle delta poll hands back the object the UI already paints', () => {
   });
   assert.notEqual(finished, idle);
   assert.equal(finished.status, 'done');
-  assert.equal(finished.text, 'A');
+  assert.equal(finished.answerText, 'A');
 });
 
 test('the cache stays bounded and drops the oldest task first', () => {
@@ -149,7 +166,7 @@ test('concurrent refreshes share one request and the follow-up carries the curso
   releaseFirst(runtimeTask('task-1', [delta('A', 'e1')]));
   const [a, b] = await Promise.all([first, second]);
   assert.equal(a, b);
-  assert.equal(a.text, 'A');
+  assert.equal(foldedText(a), 'A');
 
   responses.push({
     task_id: 'task-1',
@@ -158,7 +175,7 @@ test('concurrent refreshes share one request and the follow-up carries the curso
     events: [delta('B', 'e2')],
   });
   const next = await sync.refresh('task-1');
-  assert.equal(next.text, 'AB');
+  assert.equal(foldedText(next), 'AB');
   assert.deepEqual(calls.map((call) => call.afterEventId), [null, 'e1']);
 });
 
@@ -195,7 +212,7 @@ test('a failed refresh backs off, then recovers on the first success', async () 
   now = 14_000;
   failing = false;
   const recovered = await sync.refresh('task-1');
-  assert.equal(recovered.text, 'A');
+  assert.equal(foldedText(recovered), 'A');
   assert.deepEqual(attempts, [0, 2_000, 6_000, 14_000]);
 
   // A success clears the backoff, so the next failure waits the base delay again.

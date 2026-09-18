@@ -52,6 +52,37 @@ haish-agent-remote/
 
 `ios/` 是提交到仓库并由 CI 使用的 Capacitor 原生工程，不代表需要在开发 Mac 上安装或运行 Xcode。Capacitor 只把 Vite 的 `dist/` 复制进原生应用；Python 服务和 Haish runtime 始终留在电脑端。
 
+## 会话内的执行 UI 直接复用桌面 chat
+
+用户看到的观感就是桌面客户端的 chat 模式：深灰胶囊 chip + 绿勾 + `Shell`/`Read` 短名、Terminal/CodeDiff/Search 工具卡、审批与提问卡、流式增量、ActivityOrb。手机不再自己折一套执行记录，也不再自己画工具卡。
+
+**来源是 CI pin 的桌面检出**（`.github/workflows/build-ios-unsigned.yml` 里 `haishihua/haish-agent` 的 `ref`），不是子模块也不 `npm link`：
+
+```text
+桌面 0.0.20 = 97aaa54a359eabd4f2a225868df5e19aac8baf9e   # 当前 pin
+```
+
+### 手机侧的三个接缝
+
+| 接缝 | 文件 | 干什么 |
+| --- | --- | --- |
+| 数据 | `src/chat-runtime.js` | 三条入口（详情/游标轮询、NDJSON 流、本地草稿）都折成**桌面形状**的 runtime task（`eventLog` + 记录字段），行由 `buildChatRows` 拼 |
+| 视图 | `src/chat-view.jsx` | 直接渲染桌面 `ChatMessageRow` / `ChatAgentTimeline`；图片走 `api.imagePreview` 取字节 |
+| 样式 | `src/desktop-theme.css` + `scripts/gen-desktop-base-css.mjs` | 引用桌面的 `styles/*.css`；生成的 `src/desktop-base.generated.css` 把桌面 `base.css` 的 `:root` token / `.ico-*` / portal tooltip 摘过来（已 gitignore，prebuild/predev 重生成） |
+
+折叠用的原语全部来自桌面检出：`normalizeRuntimeEvent` → `runtimeEventToLog` → `appendStreamEvent` / `compactStreamEvents`（相邻 delta 合并成一条），时间线投影是桌面的 `buildChatTimeline(task, status)`。手机自己那套 `segments` 折叠、`TaskTrace` / `ToolTraceCard` 与它们的 `.tool-trace-*` 样式已删。
+
+**不搬**：桌面 `ChatPanel`（拖 Lexical 输入框、ModelPickers、标注、搜索）、`createTaskStreamHandlers.js`（1003 行，接的是桌面的 socket 与 store）——手机只搬行、时间线、卡片和纯函数模型，composer / 目录 / 滚动仍是手机自己的。
+
+### bump pin 的顺序
+
+1. 在桌面检出里核一遍要 import 的符号在新 ref 上存在（import 任何 pin 之后才有的文件会**本地过、CI 挂**：CI 只 build、不跑测试，没有测试能发现这种漂移）；
+2. 改 `.github/workflows/build-ios-unsigned.yml` 的 `ref`；
+3. 本地 `node --test tests/*.test.mjs` + `npm run build`（本地桌面检出切到同一个 ref，能提前发现解析失败）；
+4. 重跑 `build-ios-unsigned.yml`。
+
+> 桌面 `shared/api/base.js` 在**模块初始化**时读 `window.HAISH_API_BASE`，而 `chat-runtime.js → task-runtime.js → workspace-state.js → base.js` 这条链会被手机的纯函数模块拉进来。node 单测要先 `import './support/window-stub.mjs'`（见 `tests/support/window-stub.mjs`）。
+
 ## 配对协议
 
 电脑客户端展示二维码，二维码只接受以下版本化 URI：
@@ -370,6 +401,7 @@ npm run mobile:sync
 ## 当前状态
 
 - GitHub Actions workflow：已配置为唯一 IPA 构建入口；
+- 会话内执行 UI：直接渲染桌面 chat 的行 / 时间线 / 工具卡 / 审批与提问卡（pin 桌面 0.0.20，见上文「会话内的执行 UI 直接复用桌面 chat」）；
 - 最新移动端 UI：已通过 Actions 成功构建并验证 artifact 内容；
 - 公网 HTTPS：`https://47.97.24.242/remote/status` 已验证返回 `200`；
 - FRP：服务器 `7000` 与 Mac client 隧道已验证可用；

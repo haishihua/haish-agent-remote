@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "node scripts/gen-desktop-base-css.mjs",
     "dev": "vite --host 127.0.0.1",
+    "prebuild": "node scripts/gen-desktop-base-css.mjs",
     "build": "vite build",
     "mobile:sync": "npm run build && cap sync && node scripts/sync-ios-app-plugins.mjs",
     "server": "python3 -m server.app serve",
@@ -18,16 +20,25 @@
     "@capacitor/core": "8.4.3",
     "@capacitor/ios": "8.4.3",
     "@capacitor/keyboard": "8.0.5",
+    "@floating-ui/react": "^0.27.20",
+    "@streamdown/cjk": "^1.0.3",
+    "@streamdown/code": "^1.1.1",
+    "@streamdown/mermaid": "^1.0.2",
     "lucide-react": "^0.468.0",
     "lxgw-wenkai-screen-webfont": "^1.7.0",
+    "motion": "^13.2.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.1"
+    "remark-gfm": "^4.0.1",
+    "streamdown": "^2.6.0",
+    "thinking-orbs": "^0.3.1"
   },
   "devDependencies": {
     "@capacitor/cli": "8.4.3",
+    "@tailwindcss/vite": "^4.3.3",
     "@vitejs/plugin-react": "^4.5.2",
+    "tailwindcss": "^4.3.3",
     "typescript": "5.9.3",
     "vite": "^6.4.3"
   }

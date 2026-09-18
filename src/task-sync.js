@@ -1,14 +1,14 @@
 import { api } from './api.js';
-import { applyTaskRecord, applyTaskStreamEvent, initialTaskStreamState } from './task-stream.js';
+import { runtimeTaskFromDetail } from './chat-runtime.js';
 
 // Cursor-based runtime task reads. The runtime exposes `after_event_id` plus an
 // `events_delta` flag (the desktop client already reads tasks that way); this
 // module keeps the phone on the same protocol instead of re-downloading the
 // whole event log every two seconds.
 //
-// The phone also has no place to keep what it has already folded, so a poll
-// used to rebuild the whole trace from scratch. The cache below holds the fold
-// (and its cursor) while the record fields are overlaid on read.
+// 缓存里存的是**桌面形状的 runtime task**（eventLog + 记录字段），不是手机以前
+// 那套 segments：行、时间线、工具卡都由桌面组件渲染（见 chat-runtime.js /
+// chat-view.jsx），这里只负责“折在哪儿”和“从哪一条开始要”。
 const TASK_CACHE_LIMIT = 8;
 const DEFAULT_RETRY_MS = 2_000;
 const DEFAULT_MAX_RETRY_MS = 30_000;
@@ -50,7 +50,7 @@ export function createTaskRuntimeCache({ limit = TASK_CACHE_LIMIT } = {}) {
     state(taskId) {
       return entries.get(String(taskId || ''))?.snapshot || null;
     },
-    // Appends the payload to the cached fold only when the runtime confirmed
+    // Appends the payload to the cached log only when the runtime confirmed
     // our cursor (`events_delta: true`); every other answer is a full replay
     // that replaces the entry.
     remember(task) {
@@ -64,12 +64,11 @@ export function createTaskRuntimeCache({ limit = TASK_CACHE_LIMIT } = {}) {
         // Idle poll: hand back the same object so React can skip the repaint.
         return previous.snapshot;
       }
-      let state = append ? previous.state : initialTaskStreamState(task);
-      for (const event of events) state = applyTaskStreamEvent(state, event);
+      const snapshot = runtimeTaskFromDetail(task, previous?.snapshot || null);
       const lastEventId = events.length
         ? String(events[events.length - 1]?.event_id || '') || (append ? previous.lastEventId : null)
         : (append ? previous.lastEventId : null);
-      const entry = { state, record, lastEventId, snapshot: applyTaskRecord(state, record) };
+      const entry = { snapshot, record, lastEventId };
       entries.delete(taskId);
       entries.set(taskId, entry);
       evict();

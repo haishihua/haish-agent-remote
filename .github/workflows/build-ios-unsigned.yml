@@ -24,7 +24,10 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: haishihua/haish-agent
-          ref: 6f07dc16ec172a14bdbfd3b48392f514e2e8e036
+          # 桌面 0.0.20：手机端复用的 chat 执行 UI（行 / 时间线 / 工具卡 / 审批卡）
+          # 就是这个 ref 上的版本。bump 前先在桌面检出里跑
+          # `node /tmp/scan-desktop-imports.mjs` 式的符号核对（见 docs）。
+          ref: 97aaa54a359eabd4f2a225868df5e19aac8baf9e
           path: haish-agent
 
       - name: Set up Node.js

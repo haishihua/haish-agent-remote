@@ -1,6 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import {
   ArrowLeft,
   ArrowRight,
@@ -45,27 +43,14 @@ import { fitComposerTextarea } from './composer-height.js';
 import { hideKeyboardAccessoryBar, isKeyboardMoving, mountKeyboardInset, registerKeyboardSurface } from './ios-keyboard.js';
 import penguinLogo from './assets/penguin_logo_user.png';
 import stopIcon from '../../haish-agent/app-web/assets/ui/icons/stop.png';
-import toolIcon from '../../haish-agent/app-web/assets/ui/icons/tool.png';
-import readIcon from '../../haish-agent/app-web/assets/ui/icons/open-book.png';
-import searchIcon from '../../haish-agent/app-web/assets/ui/icons/search-text.png';
-import terminalIcon from '../../haish-agent/app-web/assets/ui/icons/terminal.png';
-import webIcon from '../../haish-agent/app-web/assets/ui/icons/internet.png';
-import writeIcon from '../../haish-agent/app-web/assets/ui/icons/copy-writing.png';
-import listIcon from '../../haish-agent/app-web/assets/ui/icons/list-dir.png';
-import globIcon from '../../haish-agent/app-web/assets/ui/icons/glob-files.png';
-import visualIcon from '../../haish-agent/app-web/assets/ui/icons/visual-inspect.png';
-import imageIcon from '../../haish-agent/app-web/assets/ui/icons/image-describe.png';
-import subAgentIcon from '../../haish-agent/app-web/assets/ui/icons/chat.png';
-import {
-  categorizeToolCall,
-  groupConsecutiveTools,
-  timelineToolLabel,
-} from '../../haish-agent/app-web/src/features/chat/model/chat-timeline.js';
-import {
-  buildSubAgentTimelineItems,
-  buildToolView,
-} from '../../haish-agent/app-web/src/features/chat/model/tool-view.js';
 import { ScrollToBottomButton } from './ScrollToBottomButton.jsx';
+// 会话线程直接用桌面的行与时间线（见 chat-view.jsx / chat-runtime.js）。
+import { ChatThread, releaseConversationImageUrls } from './chat-view.jsx';
+import {
+  buildChatRows,
+  draftRuntimeTask,
+  runtimeTaskWithEvent,
+} from './chat-runtime.js';
 import {
   SWIPE_BACK_CANCEL_EASING,
   SWIPE_BACK_EDGE_PX,
@@ -99,14 +84,7 @@ import {
   taskOptionsForRunConfig,
   withCurrentModel,
 } from './run-config.js';
-import {
-  applyTaskStreamEvent,
-  formatElapsedDuration,
-  hasVisibleTaskTools,
-  isCurrentTaskRunning,
-  isFailureStatus,
-  isVisibleTaskTool,
-} from './task-stream.js';
+import { isCurrentTaskRunning, isFailureStatus } from './task-stream.js';
 import { createTaskRuntimeSync } from './task-sync.js';
 import { conversationSignature, statusSignature } from './poll-signature.js';
 import {
@@ -137,7 +115,6 @@ const PHOTO_LONG_PRESS_MS = 450;
 const STATUS_POLL_MS = 5_000;
 const DIRECTORY_POLL_MS = 15_000;
 const CONVERSATION_POLL_MS = 15_000;
-const MARKDOWN_PLUGINS = [remarkGfm];
 // One sync for the whole app session: a task that was already streamed keeps its
 // cursor, so leaving and re-entering a conversation resumes with the missing
 // events instead of replaying the whole log.
@@ -175,318 +152,6 @@ function formatDate(value) {
 
 function textContent(content) {
   return chatMessageText(content);
-}
-
-function toolDisplayName(value) {
-  return String(value || 'tool')
-    .replace(/[_-]+/g, ' ')
-    .replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
-function clientToolName(value) {
-  const name = String(value || '').toLowerCase();
-  return name === 'bash' || name === 'terminal' ? 'exec_command' : name;
-}
-
-function isVisibleTimelineItem(item) {
-  if (item?.type !== 'tool' && item?.kind !== 'tool') return true;
-  return isVisibleTaskTool(clientToolName(item.name || item.toolName));
-}
-
-function toolIconFor(value) {
-  const name = String(value || '').toLowerCase();
-  if (name === 'vision_analyze' || name === 'visual_inspect') return visualIcon;
-  if (name === 'image_describe') return imageIcon;
-  if (name.includes('dispatch_sub_agent') || name.includes('sub_agent') || name.includes('subagent')) return subAgentIcon;
-  if (name === 'list_dir') return listIcon;
-  if (name === 'glob_files') return globIcon;
-  if (['read_file', 'list_dir', 'cat_file', 'view_file', 'open_file'].includes(name) || name.includes('read_text')) return readIcon;
-  if (['glob_files', 'search_text', 'grep'].includes(name) || (name.includes('search') && !name.includes('web'))) return searchIcon;
-  if (['exec_command', 'write_stdin', 'bash', 'terminal'].includes(name)) return terminalIcon;
-  if (name.includes('web') || name.includes('fetch') || name.includes('http') || name.endsWith('_url')) return webIcon;
-  if (name.includes('write') || name.includes('edit') || name.includes('patch') || name.includes('file')) return writeIcon;
-  return toolIcon;
-}
-
-const TOOL_CARD_NAMES = {
-  write_file: 'Wrote',
-  edit_file: 'Edited',
-  replace_lines: 'Replaced Lines',
-  multi_edit: 'Edited',
-  apply_patch: 'Patched',
-  create_file: 'Created',
-  delete_file: 'Deleted',
-  copy_file: 'Copied',
-  create_dir: 'Created Dir',
-  read_file: 'Read',
-  search_text: 'Search Text',
-  glob_files: 'Glob Files',
-  list_dir: 'List Dir',
-  exec_command: 'Shell',
-  bash: 'Shell',
-  terminal: 'Shell',
-  write_stdin: 'Process',
-  dispatch_sub_agent: 'Sub-agent',
-  sub_agent: 'Sub-agent',
-  subagent: 'Sub-agent',
-  vision_analyze: 'Visual Analyze',
-  visual_inspect: 'Visual Inspect',
-  image_describe: 'Image Describe',
-  acceptance_check: 'Acceptance Check',
-};
-
-function processFileName(path) {
-  return String(path || '').split(/[\\/]/).filter(Boolean).at(-1) || '';
-}
-
-function toolHeadParts(item, view) {
-  const rawName = item.name || item.toolName;
-  const name = String(rawName || '').toLowerCase();
-  const cardName = TOOL_CARD_NAMES[name] || toolDisplayName(rawName);
-  if (item.category === 'subagent') {
-    return { cardName, argument: view.role || view.task || item.inputSummary || '' };
-  }
-  if (view.isVision) {
-    return { cardName, argument: processFileName(view.mediaPath) || view.visionMode || view.task || '' };
-  }
-  const label = String(view.label || '');
-  const isRawName = label.replace(/[_-]+/g, ' ').toLowerCase() === name.replace(/[_-]+/g, ' ');
-  const labelArgument = isRawName ? (item.inputSummary || '') : label.toLowerCase().startsWith(cardName.toLowerCase())
-    ? label.slice(cardName.length).trim()
-    : (label || item.inputSummary || '');
-  const argument = labelArgument || (view.mode === 'terminal' ? view.command : '') || item.inputSummary || '';
-  return { cardName, argument };
-}
-
-function ProcessAnswer({ children, text }) {
-  const [expanded, setExpanded] = useState(false);
-  const collapsible = String(text || '').length > 900;
-  return <div className={`tool-process-answer ${expanded ? 'expanded' : ''} ${collapsible ? 'collapsible' : ''}`}>
-    <div className="tool-process-answer-body">{children}</div>
-    {collapsible ? <button type="button" onClick={() => setExpanded((value) => !value)}>{expanded ? 'Collapse' : 'View All'}</button> : null}
-  </div>;
-}
-
-function ToolTerminalOutput({ text, running, stderr = false }) {
-  const ref = useRef(null);
-  useEffect(() => {
-    if (ref.current && running) ref.current.scrollTop = ref.current.scrollHeight;
-  }, [text, running]);
-  if (!text) return null;
-  return <pre ref={ref} className={`tool-terminal-output ${stderr ? 'stderr' : ''}`}>{text}</pre>;
-}
-
-function ToolTraceBody({ view }) {
-  if (view.mode === 'terminal') {
-    return <div className="tool-terminal-frame">
-      <div className="tool-terminal-bar">
-        <span className="tool-terminal-dots" aria-hidden="true"><span /><span /><span /></span>
-        <span className="tool-terminal-cwd">{view.cwd || 'Terminal'}</span>
-        {view.running || (view.exitCode !== undefined && view.exitCode !== '')
-          ? <span className={`tool-terminal-state ${view.running ? 'running' : ''}`}>{view.running ? 'running' : `exit ${view.exitCode}`}</span>
-          : <span />}
-      </div>
-      {view.command ? <div className="tool-terminal-command"><span className="tool-terminal-prompt" aria-hidden="true">$</span><span className="tool-terminal-command-text">{view.command}</span></div> : null}
-      <ToolTerminalOutput text={view.stdout} running={view.running} />
-      <ToolTerminalOutput text={view.stderr} running={view.running} stderr />
-      {view.running && !view.stdout && !view.stderr ? <div className="tool-terminal-waiting">Waiting for output<span className="tool-terminal-cursor" aria-hidden="true" /></div> : null}
-    </div>;
-  }
-  if (view.mode === 'diff') {
-    return view.body ? <pre className="tool-diff">{view.body.split('\n').map((line, index) => {
-      const kind = line.startsWith('+') && !line.startsWith('+++') ? 'add'
-        : line.startsWith('-') && !line.startsWith('---') ? 'remove'
-          : line.startsWith('@@') ? 'hunk' : 'context';
-      return <span className={kind} key={`${index}-${line}`}>{line || ' '}</span>;
-    })}</pre> : null;
-  }
-  if (view.mode === 'process') {
-    const nested = groupConsecutiveTools(buildSubAgentTimelineItems(view).filter(isVisibleTimelineItem));
-    const activity = view.streamAnswerText || view.streamLines?.map((line) => line.text).filter(Boolean).join('\n');
-    const answer = view.finalText || (!nested.length ? activity : '');
-    const fields = [
-      view.role ? ['Role', view.role, false] : null,
-      view.systemPrompt ? ['System Prompt', view.systemPrompt, true] : null,
-      view.task ? ['Task', view.task, true] : null,
-    ].filter(Boolean);
-    return <div className="tool-process-conversation">
-      {fields.length || view.mediaPath ? <div className="tool-process-bubble request">
-        {view.mediaPath ? <div className="tool-process-attachment"><span className="tool-trace-icon" style={{ '--tool-trace-icon': `url(${view.isVision ? visualIcon : subAgentIcon})` }} aria-hidden="true" /><span title={view.mediaPath}>{processFileName(view.mediaPath)}</span>{view.visionMode ? <em>{view.visionMode}</em> : null}</div> : null}
-        {fields.length ? <div className="tool-process-fields">{fields.map(([label, value, markdown]) => <div className={`tool-process-field ${markdown ? 'multiline' : ''}`} key={label}>
-          <span>{label}</span>
-          <div>{markdown ? <ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>{String(value)}</ReactMarkdown> : value}</div>
-        </div>)}</div> : null}
-      </div> : null}
-      {nested.length && !view.finalText ? <div className="tool-process-timeline">{nested.map((item) => item.kind === 'text'
-        ? <div className="tool-process-stream-text" key={item.id}>{item.text}</div>
-        : <ToolTimelineItem item={item} key={item.id} />)}</div> : null}
-      {answer ? <div className="tool-process-bubble response">
-        <ProcessAnswer text={answer}>{view.isVision ? <p>{answer}</p> : <ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>{answer}</ReactMarkdown>}</ProcessAnswer>
-      </div> : null}
-    </div>;
-  }
-  const request = view.requestJson || '';
-  const response = view.responseJson || view.body || '';
-  return request || response ? <div className="tool-json-pair">
-    {request ? <div><span>Input</span><pre>{request}</pre></div> : null}
-    {response ? <div><span>Result</span><pre>{response}</pre></div> : null}
-  </div> : null;
-}
-
-function ToolTraceCard({ item }) {
-  const rawName = item.name || item.toolName;
-  const view = buildToolView({ ...item, toolName: clientToolName(rawName) });
-  const { cardName, argument } = toolHeadParts(item, view);
-  const hasDetails = view.mode === 'terminal'
-    ? Boolean(view.command || view.stdout || view.stderr || view.running)
-    : view.mode === 'process'
-      ? Boolean(view.task || view.mediaPath || view.finalText || view.streamAnswerText || view.streamLines?.length || view.progressEvents?.length)
-      : view.mode === 'diff'
-        ? Boolean(view.body)
-        : view.mode === 'json'
-          ? Boolean(view.requestJson || view.responseJson || view.body)
-          : false;
-  const [open, setOpen] = useState(false);
-  return (
-    <div className={`tool-trace-card ${item.status || 'running'} ${open ? 'open' : ''}`}>
-      <button
-        type="button"
-        className="tool-trace-head"
-        aria-label={`${cardName} ${item.status || 'running'}`}
-        aria-expanded={hasDetails ? open : undefined}
-        disabled={!hasDetails}
-        onClick={() => hasDetails && setOpen((value) => !value)}
-      >
-        <span className="tool-trace-status" aria-hidden="true" />
-        <span className="tool-trace-icon" style={{ '--tool-trace-icon': `url(${toolIconFor(rawName)})` }} aria-hidden="true" />
-        <strong className="tool-trace-name">{cardName}</strong>
-        {argument ? <span className="tool-trace-argument" title={argument}>{argument}</span> : null}
-        {hasDetails ? <ChevronRight className="tool-trace-chevron" size={14} aria-hidden="true" /> : null}
-      </button>
-      {open && hasDetails ? <div className="tool-trace-details"><ToolTraceBody view={view} /></div> : null}
-    </div>
-  );
-}
-
-function ToolTraceGroup({ item }) {
-  const [open, setOpen] = useState(false);
-  const tools = Array.isArray(item.tools) ? item.tools : [];
-  return (
-    <div className={`tool-trace-group ${item.status || 'done'} ${open ? 'open' : ''}`}>
-      <button type="button" className="tool-trace-head" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
-        <span className="tool-trace-status" aria-hidden="true" />
-        <span className="tool-trace-icon" style={{ '--tool-trace-icon': `url(${toolIcon})` }} aria-hidden="true" />
-        <strong className="tool-trace-group-summary">{item.summary || `used ${tools.length} tools`}</strong>
-        <span className="tool-trace-count">{tools.length}</span>
-        <ChevronRight className="tool-trace-chevron" size={14} aria-hidden="true" />
-      </button>
-      {open ? <div className="tool-trace-group-body">
-        {tools.map((tool) => <ToolTraceCard item={tool} key={tool.id} />)}
-      </div> : null}
-    </div>
-  );
-}
-
-function ToolTimelineItem({ item }) {
-  return item.kind === 'tool_group' ? <ToolTraceGroup item={item} /> : <ToolTraceCard item={item} />;
-}
-
-function TodoPanel({ todos, running }) {
-  const [showAllCompleted, setShowAllCompleted] = useState(false);
-  if (!todos?.length) return null;
-  const inProgress = todos.filter((item) => item.status === 'in_progress');
-  const pending = todos.filter((item) => item.status === 'pending');
-  const completed = todos.filter((item) => item.status === 'completed');
-  const visibleCompleted = showAllCompleted ? completed : completed.slice(-2);
-  const hiddenCount = completed.length - visibleCompleted.length;
-  const visible = [...inProgress, ...pending, ...visibleCompleted];
-  return <div className="task-todo-panel" role="list" aria-label="Task plan">
-    {visible.map((todo, index) => <div className={`task-todo-item status-${todo.status}`} role="listitem" key={`${todo.status}-${index}-${todo.content}`}>
-      <span className={`task-todo-icon ${todo.status}`} aria-label={todo.status.replace('_', ' ')}>
-        {todo.status === 'completed' ? <Check size={10} aria-hidden="true" /> : todo.status === 'in_progress' ? <span className={`task-todo-spinner ${running ? 'live' : ''}`} /> : null}
-      </span>
-      <span className="task-todo-content">{todo.content}</span>
-    </div>)}
-    {hiddenCount > 0 ? <button type="button" className="task-todo-expand" onClick={() => setShowAllCompleted(true)}>… +{hiddenCount} completed</button> : null}
-  </div>;
-}
-
-function traceTimeline(segments) {
-  return groupConsecutiveTools(segments.map((item) => {
-    if (item.type !== 'tool') return { ...item, kind: 'text' };
-    const call = { ...item, toolName: clientToolName(item.name) };
-    const category = categorizeToolCall(call);
-    return { ...call, kind: 'tool', category, label: timelineToolLabel(call, category) };
-  }));
-}
-
-function visibleTaskTraceSegments(state, running) {
-  if (!state) return [];
-  const finalText = String(state.text || '').trim();
-  return (state.segments || []).filter((item) => {
-    if (item.type === 'tool') return isVisibleTimelineItem(item);
-    if (running) return Boolean(item.text);
-    if (item.source === 'final') return false;
-    return String(item.text || '').trim() !== finalText;
-  });
-}
-
-function TaskTrace({ state, running = false }) {
-  if (!state) return null;
-  const segments = visibleTaskTraceSegments(state, running);
-  if (!running && !segments.length && !state.latestTodos?.length) return null;
-  const timeline = traceTimeline(segments);
-  return (
-    <section className={`agent-trace ${running ? 'running' : 'complete'}`} aria-label="Assistant activity">
-      <div className="agent-trace-content">
-        {timeline.map((item) => item.kind === 'tool_group'
-          ? <ToolTraceGroup item={item} key={item.id} />
-          : item.type === 'tool'
-            ? <ToolTraceCard item={item} key={item.id} />
-            : <div className={`trace-text ${item.source || 'unknown'}`} key={item.id}><ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>{item.text}</ReactMarkdown></div>)}
-        {running ? <div className="agent-phase" role="status" aria-live="polite" aria-label={state.activity || 'Agent activity'}><span className="agent-phase-spark agent-phase-gradient" aria-hidden="true">*</span><span className="agent-phase-verb agent-phase-gradient" aria-hidden="true" /></div> : null}
-        <TodoPanel todos={state.latestTodos} running={running} />
-      </div>
-    </section>
-  );
-}
-
-function TaskTraceDisclosure({ state, running = false, elapsed = '', onLoad }) {
-  const [expanded, setExpanded] = useState(false);
-  const probeRef = useRef(null);
-  useEffect(() => {
-    if (running || state || !onLoad || !probeRef.current) return undefined;
-    const probe = probeRef.current;
-    const load = () => Promise.resolve(onLoad()).catch(() => {});
-    if (!window.IntersectionObserver) {
-      load();
-      return undefined;
-    }
-    const observer = new IntersectionObserver(([entry]) => {
-      if (!entry.isIntersecting) return;
-      observer.disconnect();
-      load();
-    }, { rootMargin: '160px 0px' });
-    observer.observe(probe);
-    return () => observer.disconnect();
-  }, [onLoad, running, state]);
-  const hasTools = hasVisibleTaskTools(state);
-  if (!running && !state) return <span className="task-trace-probe" ref={probeRef} aria-hidden="true" />;
-  const hasTrace = running ? Boolean(state) : hasTools;
-  if (!hasTrace) return null;
-
-  function toggle() {
-    setExpanded((value) => !value);
-  }
-
-  return <>
-    {elapsed && hasTools ? running
-      ? <div className="task-elapsed-pill" aria-label={`Elapsed time ${elapsed}`}>{elapsed}</div>
-      : <button type="button" className={`task-trace-toggle ${expanded ? 'expanded' : ''}`} aria-expanded={expanded} onClick={toggle}>
-        <ChevronRight size={14} aria-hidden="true" /><span>{elapsed}</span>
-      </button> : null}
-    {running || (expanded && state) ? <TaskTrace state={state} running={running} /> : null}
-  </>;
 }
 
 function shortPath(value) {
@@ -1148,187 +813,6 @@ function ImagePreview({ image, onClose }) {
   );
 }
 
-function MessageImage({ conversationId, image, onPreview }) {
-  const [src, setSrc] = useState('');
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    let active = true;
-    let objectUrl = '';
-    api.imagePreview(conversationId, image.path)
-      .then((blob) => {
-        if (!active) return;
-        objectUrl = URL.createObjectURL(blob);
-        setSrc(objectUrl);
-      })
-      .catch(() => {
-        if (active) setFailed(true);
-      });
-    return () => {
-      active = false;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [conversationId, image.path]);
-
-  return (
-    <button
-      type="button"
-      className="message-image"
-      disabled={!src}
-      onClick={() => onPreview({ src, name: image.path?.split('/').pop() })}
-      aria-label={failed ? 'Attached image failed to load' : 'Preview attached image'}
-    >
-      {src ? <img src={src} alt="" loading="lazy" /> : failed ? <CircleAlert size={20} /> : <LoaderCircle className="spin" size={20} />}
-    </button>
-  );
-}
-
-// A cancelled or failed task carries the partial answer and the failure reason in
-// separate fields, and the reason is often repeated inside the answer, so show
-// each line once. The wording stays plain: the trace above already carries the
-// run, so the reply adds no status label of its own.
-function OutcomeReply({ status, text, error }) {
-  const state = String(status || '').trim().toLowerCase();
-  if (!isFailureStatus(state)) return null;
-  const content = [text, error]
-    .map((value) => textContent(value).trim())
-    .filter(Boolean)
-    .filter((value, index, values) => values.indexOf(value) === index)
-    .join('\n\n') || (state === 'cancelled' ? 'Task cancelled.' : 'Task failed.');
-  return <ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>{content}</ReactMarkdown>;
-}
-
-// Cancelled and failed tasks never receive a persisted assistant message, so the
-// thread would keep the user message and drop the agent's work entirely. Render
-// the trace (lazily loaded) and the partial answer locally for those tasks.
-function AssistantReply({ task, state, onLoad }) {
-  const elapsed = formatElapsedDuration(task.created_at, task.completed_at);
-  return <article className="message assistant" aria-label="Assistant message">
-    <div className="message-body">
-      <TaskTraceDisclosure state={state} elapsed={elapsed} onLoad={() => onLoad(task.task_id)} />
-      <OutcomeReply status={task.status} text={task.answer_text || state?.text} error={task.error || state?.error} />
-    </div>
-  </article>;
-}
-
-function imageKey(image) {
-  return String(image?.image_id || image?.path || image?.mime || '');
-}
-
-function sameImageRefs(left, right) {
-  if (left === right) return true;
-  if (!left?.length && !right?.length) return true;
-  if (!left || !right || left.length !== right.length) return false;
-  return left.every((image, index) => imageKey(image) === imageKey(right[index]));
-}
-
-// A poll rebuilds the conversation object, so a row compares the values it paints
-// instead of their identity: untouched messages (and their markdown trees) stay put.
-const MessageRow = React.memo(function MessageRow({
-  conversationId,
-  role,
-  text,
-  images,
-  taskId,
-  traceState,
-  traceElapsed,
-  orphanReply,
-  orphanTraceState,
-  loadTaskTrace,
-  onPreviewImage,
-}) {
-  return <>
-    <article className={`message ${role === 'user' ? 'user' : 'assistant'}`} aria-label={role === 'user' ? 'Your message' : 'Assistant message'}>
-      {images.length ? <div className="message-images" aria-label="Attached images">{images.map((image, index) => (
-        <MessageImage conversationId={conversationId} image={image} key={image.image_id || image.path || index} onPreview={onPreviewImage} />
-      ))}</div> : null}
-      {role !== 'user' || text ? <div className="message-body">
-        {role !== 'user' ? <TaskTraceDisclosure state={traceState} elapsed={traceElapsed} onLoad={loadTaskTrace ? () => loadTaskTrace(taskId) : undefined} /> : null}
-        <ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>{text}</ReactMarkdown>
-      </div> : null}
-    </article>
-    {orphanReply ? <AssistantReply task={orphanReply} state={orphanTraceState} onLoad={loadTaskTrace} /> : null}
-  </>;
-}, (previous, next) => (
-  previous.conversationId === next.conversationId
-  && previous.role === next.role
-  && previous.text === next.text
-  && previous.taskId === next.taskId
-  && previous.traceState === next.traceState
-  && previous.traceElapsed === next.traceElapsed
-  && previous.orphanReply === next.orphanReply
-  && previous.orphanTraceState === next.orphanTraceState
-  && previous.loadTaskTrace === next.loadTaskTrace
-  && previous.onPreviewImage === next.onPreviewImage
-  && sameImageRefs(previous.images, next.images)
-));
-
-// Memoized so composer keystrokes, run-config changes and polled conversation
-// snapshots do not re-render the whole thread on the phone.
-const MessageThread = React.memo(function MessageThread({
-  conversationId,
-  messages,
-  optimisticMessages,
-  tasksById,
-  taskTraces,
-  orphanReplyByAnchor,
-  loadTaskTrace,
-  onPreviewImage,
-}) {
-  return <>
-    {messages.map((item, index) => {
-      const task = tasksById.get(item.task_id);
-      const key = item.message_id || item.id || `message-${index}`;
-      const orphanReply = orphanReplyByAnchor.get(key);
-      return <MessageRow
-        key={key}
-        conversationId={conversationId}
-        role={item.role === 'user' ? 'user' : 'assistant'}
-        text={textContent(item.content)}
-        images={item.role === 'user' ? messageImageRefs(item, task) : []}
-        taskId={item.task_id}
-        traceState={taskTraces[item.task_id]}
-        traceElapsed={item.role !== 'user' && task?.completed_at
-          ? formatElapsedDuration(task.created_at, task.completed_at)
-          : ''}
-        orphanReply={orphanReply}
-        orphanTraceState={orphanReply ? taskTraces[orphanReply.task_id] : undefined}
-        loadTaskTrace={loadTaskTrace}
-        onPreviewImage={onPreviewImage}
-      />;
-    })}
-    {optimisticMessages.map((item) => <article className="message user" aria-label="Your message" key={item.id}>
-      {item.images.length ? <div className="message-images" aria-label="Attached images">{item.images.map((image, index) => (
-        <MessageImage conversationId={conversationId} image={image} key={image.image_id || image.path || index} onPreview={onPreviewImage} />
-      ))}</div> : null}
-      {item.text ? <div className="message-body"><ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>{item.text}</ReactMarkdown></div> : null}
-    </article>)}
-  </>;
-});
-
-// The streamed answer ticks once a second; keeping that timer here means a tick
-// only redraws the live bubble instead of every message above it.
-const LiveRunBubble = React.memo(function LiveRunBubble({ liveRun, running }) {
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    if (!running) return undefined;
-    setNow(Date.now());
-    const timer = window.setInterval(() => {
-      if (threadBusy()) return;
-      setNow(Date.now());
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [running]);
-  const startedAt = liveRun?.completedAt ? liveRun.createdAt : liveRun?.firstTokenAt;
-  const elapsed = startedAt ? formatElapsedDuration(startedAt, liveRun.completedAt || now) : '';
-  return <article className="message assistant" aria-label="Assistant message">
-    <div className={`message-body ${running ? 'streaming' : ''}`}>
-      <TaskTraceDisclosure state={liveRun} running={running} elapsed={elapsed} />
-      {!running ? <OutcomeReply status={liveRun.status} text={liveRun.text} error={liveRun.error} /> : null}
-    </div>
-  </article>;
-});
-
 function ConversationDetail({ id, projectName, initialConversation, onBack, approvals, refreshApprovals, connection }) {
   const [conversation, setConversation] = useState(initialConversation || null);
   const [conversationHydrated, setConversationHydrated] = useState(false);
@@ -1339,7 +823,9 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
   const [optimisticUserMessages, setOptimisticUserMessages] = useState([]);
   const [composerImages, setComposerImages] = useState([]);
   const [previewImage, setPreviewImage] = useState(null);
-  const [taskTraces, setTaskTraces] = useState({});
+  // 每个任务的执行记录（桌面形状的 runtime task：eventLog + 记录字段），
+  // 行/时间线由桌面组件渲染（见 chat-runtime.js）。
+  const [taskRuntimes, setTaskRuntimes] = useState({});
   const [agents, setAgents] = useState([]);
   const [providers, setProviders] = useState([]);
   const [runConfig, setRunConfig] = useState(null);
@@ -1704,7 +1190,8 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
   }, [id]);
 
   useEffect(() => {
-    setTaskTraces({});
+    setTaskRuntimes({});
+    releaseConversationImageUrls(id);
     optimisticUserMessagesRef.current = [];
     setOptimisticUserMessages([]);
     setConversationHydrated(false);
@@ -1843,7 +1330,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
       // A skipped attempt (backoff, or a request already in flight) is not a
       // loaded trace: drop the mark so the next expand retries it.
       if (!state) loadedTraceIdsRef.current.delete(taskId);
-      else setTaskTraces((current) => ({ ...current, [taskId]: state }));
+      else setTaskRuntimes((current) => ({ ...current, [taskId]: state }));
     } catch (nextError) {
       loadedTraceIdsRef.current.delete(taskId);
       setError(nextError.message);
@@ -1869,7 +1356,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
       if (cancelledTaskId) {
         // The runtime never stores an assistant message for a cancelled task, so
         // keep the streamed trace locally instead of flashing it away.
-        setTaskTraces((current) => (current[cancelledTaskId] ? current : {
+        setTaskRuntimes((current) => (current[cancelledTaskId] ? current : {
           ...current,
           [cancelledTaskId]: { ...(cancelledRun || {}), taskId: cancelledTaskId, status: 'cancelled', completedAt: cancelledAt },
         }));
@@ -2072,13 +1559,8 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
       }
 
       localStreamRef.current = true;
-      const initialRun = {
-        taskId: null,
-        status: 'running',
-        text: '',
-        createdAt: Date.now(),
-        firstTokenAt: 0,
-      };
+      // 本地草稿：任务号还没回来（第一个事件带到之前）时的壳。
+      const initialRun = draftRuntimeTask();
       liveRunRef.current = initialRun;
       flushLiveRun();
       await api.startTask(
@@ -2088,7 +1570,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
         taskOptionsForRunConfig(runConfig, providers),
         (streamEvent) => {
           // 每个 token 一条事件：折进 ref，每帧最多往 React 递一次（见 `scheduleLiveRun`）。
-          scheduleLiveRun(applyTaskStreamEvent(liveRunRef.current, streamEvent));
+          scheduleLiveRun(runtimeTaskWithEvent(liveRunRef.current, streamEvent));
         },
         () => {
           accepted = true;
@@ -2107,9 +1589,8 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
           ...streamedRun,
           taskId: streamedRun.taskId || streamedTask?.task_id || null,
           status: outcome,
-          text: textContent(streamedTask?.answer_text || streamedRun.text || ''),
+          answerText: textContent(streamedTask?.answer_text || streamedRun.answerText || ''),
           error: streamedTask?.error || streamedRun.error || '',
-          activity: outcome === 'cancelled' ? 'Cancelled' : 'Failed',
           completedAt: streamedRun.completedAt || Date.now(),
         };
         liveRunRef.current = failedRun;
@@ -2137,9 +1618,8 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
       const failedRun = {
         ...previousRun,
         status: 'failed',
-        text: textContent(previousRun.text || ''),
+        answerText: textContent(previousRun.answerText || ''),
         error: nextError.message,
-        activity: 'Failed',
         createdAt: previousRun.createdAt || failedAt,
         completedAt: failedAt,
       };
@@ -2191,6 +1671,22 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
     && isFailureStatus(liveRun.status)
     && !orphanReplies.has(liveRun.taskId)
     && !visibleMessages.some((item) => item.role !== 'user' && item.task_id === liveRun.taskId));
+  // 行列表：持久化消息 + 没有落库回复的任务（取消/失败）+ 乐观用户消息 + 实时行。
+  // 行对象在同内容时保持身份（chat-view.jsx 的 stabilizeRows），流式时只有最后
+  // 那条实时行重画。
+  const rows = useMemo(() => buildChatRows({
+    conversationId: id,
+    conversation,
+    messages: visibleMessages,
+    optimisticMessages: visibleOptimisticMessages,
+    tasksById,
+    runtimeTasks: taskRuntimes,
+    liveRun,
+    running,
+    liveReplyPending,
+    agentOptions: agents,
+    orphanReplyByAnchor,
+  }), [agents, conversation, id, liveReplyPending, liveRun, orphanReplyByAnchor, running, taskRuntimes, tasksById, visibleMessages, visibleOptimisticMessages]);
 
   return (
     <main className="detail-screen" ref={detailScreenRef}>
@@ -2209,21 +1705,16 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
         <div className="detail-body" ref={messageBodyRef}>
           <span className="pull-refresh" ref={refreshIndicatorRef} aria-hidden="true"><LoaderCircle size={21} /></span>
           <div className="message-scroll" ref={messageScrollRef}>
-            <MessageThread
+            <ChatThread
               conversationId={id}
-              messages={visibleMessages}
-              optimisticMessages={visibleOptimisticMessages}
-              tasksById={tasksById}
-              taskTraces={taskTraces}
-              orphanReplyByAnchor={orphanReplyByAnchor}
+              rows={rows}
               loadTaskTrace={loadTaskTrace}
-              onPreviewImage={setPreviewImage}
+              onPreviewImage={(image) => setPreviewImage({ src: image?.src, name: image?.title })}
             />
             {/* 卡片属于线程最新的一端，不属于历史之前：详情页一挂载就滚到最新消息并跟着它走，
                 把卡片摆在整段历史之前等于一进来就被滚出视野（看起来只闪了一下就没了）。
                 桌面端同样把审批行排在所有消息之后。 */}
             <ApprovalCard approvals={approvals} onResolved={refreshApprovals} />
-            {liveRun && (running || liveReplyPending) ? <LiveRunBubble liveRun={liveRun} running={running} /> : null}
             {detailLoadFailed ? (
               <div className="load-failed"><CircleAlert size={28} aria-hidden="true" /><h2>Couldn’t load this conversation</h2><p>Pull down to try again.</p></div>
             ) : null}

@@ -1,0 +1,23 @@
+/* 手机端直接复用桌面 chat 执行 UI 的样式接缝。
+ *
+ * 这里只做「把桌面那几份样式表接进来」，不自造组件样式：
+ * - 桌面组件的样式按桌面自己的习惯是**组件自己 import** 的（tool-elements.css、markdown.css、
+ *   approval-surface.css、quote/edit-message/error/loading-state.css、agent-elements/elements.css），
+ *   那些跟着组件走，不在这里列。
+ * - 剩下的是桌面 styles.css 里按段拆的**全局段**：聊天区、审批、工作流运行时、委派。它们内部
+ *   全是带前缀的类名（.chat-*/.aui-*/.workflow-*/.td-*），没有 html/body 这类全局规则，
+ *   整段接进来不会串味。顺序照桌面 styles.css。
+ * - 桌面 base.css 里的 :root token、.ico-* 遮罩图标、portal-tooltip 由生成器摘出来
+ *   （scripts/gen-desktop-base-css.mjs → desktop-base.generated.css）：base.css 同时含
+ *   html/body/#root/:focus 等全局规则，整份进来会改掉手机的滚动、字体与焦点环。
+ *
+ * 引入位置：由 chat-view.jsx 带进模块图，因此排在 main.jsx 的 styles.css **之前**——
+ * 两边同名的 token（--content-font/--conversation-font）和类名（.scroll-to-bottom-button）
+ * 由手机自己的样式表说了算。
+ */
+@import './desktop-base.generated.css';
+@import '../../haish-agent/app-web/styles/surfaces.css';
+@import '../../haish-agent/app-web/styles/chat.css';
+@import '../../haish-agent/app-web/styles/approvals.css';
+@import '../../haish-agent/app-web/styles/workflow-runtime.css';
+@import '../../haish-agent/app-web/styles/delegation.css';
