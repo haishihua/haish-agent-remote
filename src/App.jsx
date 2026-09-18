@@ -41,7 +41,7 @@ import {
   remainingImageSlots,
 } from './photo-picker.js';
 import { fitComposerTextarea } from './composer-height.js';
-import { hideKeyboardAccessoryBar, mountKeyboardInset, registerKeyboardSurface } from './ios-keyboard.js';
+import { hideKeyboardAccessoryBar, isKeyboardMoving, mountKeyboardInset, registerKeyboardSurface } from './ios-keyboard.js';
 import penguinLogo from './assets/penguin_logo_user.png';
 import stopIcon from '../../haish-agent/app-web/assets/ui/icons/stop.png';
 import toolIcon from '../../haish-agent/app-web/assets/ui/icons/tool.png';
@@ -107,6 +107,7 @@ import {
   isVisibleTaskTool,
 } from './task-stream.js';
 import { createTaskRuntimeSync } from './task-sync.js';
+import { conversationSignature, statusSignature } from './poll-signature.js';
 import {
   CONVERSATION_PREVIEW_LIMIT,
   isTaskActuallyActive,
@@ -130,6 +131,11 @@ const ACTIVE_STATUSES = new Set(['queued', 'running']);
 const LAST_CONVERSATION_STORAGE_KEY = 'haish.remote.lastConversation.v1';
 // Pressing and holding the image button keeps the old system sheet (camera, files) reachable.
 const PHOTO_LONG_PRESS_MS = 450;
+// 状态与审批那一圈只有几百字节，5 秒一问还算便宜；目录（~185KB）和详情里那份会话（最大 1.7MB）是
+// 几百毫秒网络 + 几十毫秒解析，15 秒一问（以前三样都是 5 秒）。手势与键盘动画期间整圈跳过。
+const STATUS_POLL_MS = 5_000;
+const DIRECTORY_POLL_MS = 15_000;
+const CONVERSATION_POLL_MS = 15_000;
 const MARKDOWN_PLUGINS = [remarkGfm];
 // One sync for the whole app session: a task that was already streamed keeps its
 // cursor, so leaving and re-entering a conversation resumes with the missing
@@ -151,6 +157,14 @@ function saveStoredConversationId(id) {
   } catch {
     // Storage can be unavailable in private WebViews; navigation still works.
   }
+}
+
+/**
+ * 手上正有手势（滑退/下拉）或键盘动画时，后台那几件重活（会话轮询、任务快照、目录、秒表 tick）
+ * 全部让路：一份会话的解析与整棵重渲染落进动画里就是一帧几十毫秒的卡顿。
+ */
+function threadBusy() {
+  return isSwipeBackInFlight() || isPullRefreshInFlight() || isKeyboardMoving();
 }
 
 function formatDate(value) {
@@ -1297,7 +1311,7 @@ const LiveRunBubble = React.memo(function LiveRunBubble({ liveRun, running }) {
     if (!running) return undefined;
     setNow(Date.now());
     const timer = window.setInterval(() => {
-      if (isSwipeBackInFlight() || isPullRefreshInFlight()) return;
+      if (threadBusy()) return;
       setNow(Date.now());
     }, 1000);
     return () => window.clearInterval(timer);
@@ -1348,6 +1362,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
   const swipeFrameRef = useRef(0);
   const swipePendingRef = useRef(null);
   const deferredRefreshRef = useRef(false);
+  const conversationSignatureRef = useRef('');
   const swipeBlockedRef = useRef(false);
   const dismissHandoffRef = useRef(null);
   // 收起那个动作会一直活着（`createDismissHandoff` 只在第一次收起时建一次），所以 `onBack` 得穿过一层
@@ -1359,23 +1374,48 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
   const runConfigQuickRef = useRef(null);
   const localStreamRef = useRef(false);
   const liveRunRef = useRef(null);
+  const liveRunFrameRef = useRef(0);
   const runConfigRef = useRef(null);
   const loadedTraceIdsRef = useRef(new Set());
 
-  useEffect(() => { liveRunRef.current = liveRun; }, [liveRun]);
+  // 流式回答是一串很密的事件（每几个字一条）：一条一条 setState 就是每几个字把整页重渲染一次，
+  // 真机上跑任务时整页都在抖。改成先折进 ref，每帧最多往 React 递一次；这一趟收尾由调用方
+  // （`flushLiveRun`）落地，别把最后一帧留在动画里。
+  const scheduleLiveRun = useCallback((nextRun) => {
+    liveRunRef.current = nextRun;
+    if (liveRunFrameRef.current) return;
+    liveRunFrameRef.current = window.requestAnimationFrame(() => {
+      liveRunFrameRef.current = 0;
+      setLiveRun(liveRunRef.current);
+    });
+  }, []);
+
+  const flushLiveRun = useCallback(() => {
+    if (liveRunFrameRef.current) window.cancelAnimationFrame(liveRunFrameRef.current);
+    liveRunFrameRef.current = 0;
+    setLiveRun(liveRunRef.current);
+  }, []);
+
+  // 这个 ref 是流式的缓冲：动画帧还挂着的时候别用 state 把它盖回去（那一帧接着读的就是它）。
+  useEffect(() => { if (!liveRunFrameRef.current) liveRunRef.current = liveRun; }, [liveRun]);
   useEffect(() => { runConfigRef.current = runConfig; }, [runConfig]);
   useEffect(() => { composerImagesRef.current = composerImages; }, [composerImages]);
   useEffect(() => { optimisticUserMessagesRef.current = optimisticUserMessages; }, [optimisticUserMessages]);
   useEffect(() => { swipeBlockedRef.current = Boolean(previewImage || showRunConfig); }, [previewImage, showRunConfig]);
   useEffect(() => { onBackRef.current = onBack; }, [onBack]);
 
-  // 输入框高度跟着草稿走（见 composer-height.js）：展开态不再预留一行空白。
-  // 宽度变化（旋转屏幕、右侧配置图标出现/收起）会改变折行，所以这些时候也要重新量一次。
+  // 输入框高度跟着草稿走（见 composer-height.js）：展开态不再预留一行空白。打字这条走便宜路
+  // （不写 `auto`、没变高就不写 CSS），只有草稿变短时才重量一次——每个按键都量一次就是每键一次
+  // 强制布局，手机上的「打字不跟手」。
   useEffect(() => {
     fitComposerTextarea(messageInputRef.current);
-  }, [id, message, composerExpanded, runConfig, runConfigExpanded]);
+  }, [message]);
+  // 宽度变化（展开、旋转屏幕、右侧配置图标出现/收起）会改变折行，这些时候必须重量一次。
   useEffect(() => {
-    const fit = () => fitComposerTextarea(messageInputRef.current);
+    fitComposerTextarea(messageInputRef.current, { force: true });
+  }, [id, composerExpanded, runConfig, runConfigExpanded]);
+  useEffect(() => {
+    const fit = () => fitComposerTextarea(messageInputRef.current, { force: true });
     window.addEventListener('resize', fit);
     return () => window.removeEventListener('resize', fit);
   }, []);
@@ -1670,16 +1710,27 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
 
   const refresh = useCallback(async ({ keep = false } = {}) => {
     if (localStreamRef.current) return null;
+    // 这份会话最大 1.7MB：解析一遍 + 整棵重渲染一次，落进手势或键盘动画里就是一帧几十毫秒。
+    // 检查放在 fetch 之前——已经发出的请求收不回来，但至少别把这份活排到动画中间才开始。
+    if (!keep && threadBusy()) {
+      deferredRefreshRef.current = true;
+      return null;
+    }
     try {
       const nextConversation = await api.conversation(id);
       // A poll that resolves while a gesture owns the thread would rebuild the message list
       // under the finger; drop it here and let the post-gesture catch-up fetch it again.
       // `keep` is the pull-to-refresh call itself, which is the point of the gesture.
-      if (!keep && (isSwipeBackInFlight() || isPullRefreshInFlight())) {
+      if (!keep && threadBusy()) {
         deferredRefreshRef.current = true;
         return null;
       }
-      setConversation(nextConversation);
+      // 内容没变就别写 state：写下去就是整棵详情树重渲染一次，而这轮轮询多半什么都没带回来。
+      const signature = conversationSignature(nextConversation);
+      if (signature !== conversationSignatureRef.current) {
+        conversationSignatureRef.current = signature;
+        setConversation(nextConversation);
+      }
       setConversationHydrated(true);
       setError('');
       return nextConversation;
@@ -1707,12 +1758,10 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
     // A poll rebuilds and re-renders the whole thread; while a pull is on the way that
     // work would land mid-gesture, so it waits for the surface to settle.
     const timer = window.setInterval(() => {
-      if (isSwipeBackInFlight() || isPullRefreshInFlight()) {
-        deferredRefreshRef.current = true;
-        return;
-      }
+      // `refresh` 自己会挡（这里不再重复一遍条件）：手势或键盘动画期间整圈跳过并记下 deferred，
+      // 收敛后由 `flushDeferredRefresh` 补一次。
       refresh();
-    }, 5000);
+    }, CONVERSATION_POLL_MS);
     return () => window.clearInterval(timer);
   }, [refresh]);
 
@@ -1812,7 +1861,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
       const cancelledAt = Date.now();
       const cancelledRun = liveRunRef.current ? { ...liveRunRef.current, status: 'cancelled', completedAt: cancelledAt } : null;
       liveRunRef.current = cancelledRun;
-      setLiveRun(cancelledRun);
+      flushLiveRun();
       const cancelledTaskId = activeTaskId || cancelledRun?.taskId;
       if (cancelledTaskId) {
         // The runtime never stores an assistant message for a cancelled task, so
@@ -1855,7 +1904,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
 
     // A backgrounded app paints nothing: keep the payloads for when it does.
     function tick() {
-      if (isSwipeBackInFlight() || isPullRefreshInFlight()) return;
+      if (threadBusy()) return;
       if (document.visibilityState === 'hidden') return;
       hydrateActiveTask();
     }
@@ -2028,16 +2077,15 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
         firstTokenAt: 0,
       };
       liveRunRef.current = initialRun;
-      setLiveRun(initialRun);
+      flushLiveRun();
       await api.startTask(
         conversation,
         nextMessage,
         imageAttachments,
         taskOptionsForRunConfig(runConfig, providers),
         (streamEvent) => {
-          const nextRun = applyTaskStreamEvent(liveRunRef.current, streamEvent);
-          liveRunRef.current = nextRun;
-          setLiveRun(nextRun);
+          // 每个 token 一条事件：折进 ref，每帧最多往 React 递一次（见 `scheduleLiveRun`）。
+          scheduleLiveRun(applyTaskStreamEvent(liveRunRef.current, streamEvent));
         },
         () => {
           accepted = true;
@@ -2062,10 +2110,10 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
           completedAt: streamedRun.completedAt || Date.now(),
         };
         liveRunRef.current = failedRun;
-        setLiveRun(failedRun);
+        flushLiveRun();
       } else {
         liveRunRef.current = null;
-        setLiveRun(null);
+        flushLiveRun();
       }
     } catch (nextError) {
       // A steering send or a task the runtime never accepted: the message is not
@@ -2093,7 +2141,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
         completedAt: failedAt,
       };
       liveRunRef.current = failedRun;
-      setLiveRun(failedRun);
+      flushLiveRun();
       releaseSubmittedImages();
       setError(nextError.message);
     } finally {
@@ -2338,6 +2386,7 @@ export default function App() {
   const startupRequestRef = useRef(false);
   const detailOpenRef = useRef(false);
   const directorySignatureRef = useRef('');
+  const statusSignatureRef = useRef('');
   // A failed directory load has to stay visible until the directory itself answers. The 5s
   // status poll succeeds on its own and used to clear the banner, so a list that never
   // loaded turned into “No conversations yet” a few seconds later — with nothing left to
@@ -2348,8 +2397,13 @@ export default function App() {
   const loadStatus = useCallback(async () => {
     const next = await api.status();
     if (api.isNative && !next.paired) await api.forgetConnection();
-    setStatus(next);
     if (!directoryErrorRef.current) setFatalError('');
+    // 这一份几乎从不变化（`device.last_seen_at` 那种每次都在动的字段不在签名里，见
+    // poll-signature.js）：一样就不写 state，不然整棵目录树每 5 秒跟着重渲染一次。
+    const signature = statusSignature(next);
+    if (signature === statusSignatureRef.current) return next;
+    statusSignatureRef.current = signature;
+    setStatus(next);
     return next;
   }, []);
 
@@ -2409,8 +2463,10 @@ export default function App() {
       const connection = await api.initialize();
       // iOS 会在键盘上方压一条系统表单栏（◀ ▶ Done）；它不属于本 App，开机就交给 Keyboard 插件隐藏。
       await hideKeyboardAccessoryBar();
-      if (api.isNative && !connection) setStatus({ paired: false, runtime_online: false });
-      else await loadStatus();
+      if (api.isNative && !connection) {
+        statusSignatureRef.current = '';
+        setStatus({ paired: false, runtime_online: false });
+      } else await loadStatus();
     } catch (error) {
       setFatalError(error.message);
     } finally {
@@ -2443,17 +2499,21 @@ export default function App() {
     if (!status?.paired) return undefined;
     loadTasks();
     loadApprovals();
+    let sinceDirectory = 0;
     const timer = window.setInterval(() => {
-      // A pull owns the thread while it is on its way: no background work may start
-      // under the finger.
-      if (isSwipeBackInFlight() || isPullRefreshInFlight()) return;
+      // A pull (or a keyboard animation) owns the thread while it is on its way: no background
+      // work may start under the finger.
+      if (threadBusy()) return;
       loadStatus().catch((error) => setFatalError(error.message));
       loadApprovals();
+      sinceDirectory += STATUS_POLL_MS;
+      if (sinceDirectory < DIRECTORY_POLL_MS) return;
+      sinceDirectory = 0;
       // The directory payload is ~3.5 MB and hands every row a fresh object; behind an
       // open detail none of that is visible, and the parse would land on the main thread
       // while the user reads or types. The list refreshes as it comes back into view.
       if (!detailOpenRef.current) loadTasks();
-    }, 5000);
+    }, STATUS_POLL_MS);
     return () => window.clearInterval(timer);
   }, [status?.paired, loadStatus, loadTasks, loadApprovals]);
 
@@ -2506,6 +2566,7 @@ export default function App() {
     directorySignatureRef.current = '';
     directoryErrorRef.current = false;
     approvalsSignatureRef.current = '';
+    statusSignatureRef.current = '';
     setStatus({ paired: false, runtime_online: false });
   }
 

@@ -178,6 +178,17 @@ export function translateYOf(transform) {
 
 let keyboardSurface = null;
 
+/** 正在动的控制器个数，见 `isKeyboardMoving`。 */
+let movingControllers = 0;
+
+/**
+ * 键盘正在动（合成层上的动画还没落地）：轮询这类后台重活在这几百毫秒里让路——一份会话的解析与
+ * 重渲染落进键盘动画里，看到的就是动画一顿一顿。与滑退/下拉的守卫放在同一处用（App.jsx）。
+ */
+export function isKeyboardMoving() {
+  return movingControllers > 0;
+}
+
 /** 打开的会话把跟键盘一起移动的两块（消息列表、输入框）交给控制器，离开时收回。 */
 export function registerKeyboardSurface(next) {
   keyboardSurface = next;
@@ -222,6 +233,7 @@ export function createKeyboardInsetController({
   // 输入框静息底边离屏幕底有多远。只有真正静息（布局没抬起、也没在动）时才重新量一次。
   let restGap = 0;
   let motion = null;
+  let moving = false;
   let handles = [];
   let stopped = false;
 
@@ -271,9 +283,17 @@ export function createKeyboardInsetController({
       : null;
   }
 
+  // 有动画在合成层上跑的时候整页得知道（那条键盘 motion 的守卫）：`moving` 与模块级计数同进同出。
+  function setMoving(active) {
+    if (moving === active) return;
+    moving = active;
+    movingControllers += active ? 1 : -1;
+  }
+
   function stopMotion() {
     const pending = motion;
     motion = null;
+    setMoving(false);
     if (!pending) return;
     if (pending.timer) clearTimeout(pending.timer);
     pending.animations.forEach((animation) => animation.cancel());
@@ -285,6 +305,7 @@ export function createKeyboardInsetController({
     const pending = motion;
     if (!pending || !pending.landed || !pending.moved) return;
     motion = null;
+    setMoving(false);
     if (pending.timer) clearTimeout(pending.timer);
     writeInset(pending.target);
     writeLift(pending.settledLift);
@@ -393,6 +414,7 @@ export function createKeyboardInsetController({
       }
     }
     pending.moved = pending.animations.length === 0;
+    setMoving(!pending.moved);
     settleMotion();
     pending.animations.forEach((animation) => {
       animation.finished.then(() => {

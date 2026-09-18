@@ -271,7 +271,17 @@ WKWebView 里的输入框获得焦点时，iOS 会在键盘上方压一条系统
 - 键盘抬着的时候高度又变了一次（换输入法、切 emoji、系统键盘上多一条提示栏）：这一趟要走的位移是**新旧高度之差**，不是整个上移量。布局里已经抬着上一把键盘的那一段，再补一整段就等于把输入框甩到键盘上方一整段——用户报的「切换键盘，输入框又往上跑」。配平那条规则也按同一个差值看：只有往下走、且布局里没抬够时才在动画开始前把 `--keyboard-lift` 换过去；落地时 `--keyboard-lift` 也按新高度重算（1.38 之前取的是新旧高度里大的那个，换成矮键盘后会多留一段窗口）；
 - 换键盘在 iOS 上常常只发 `UIKeyboardWillChangeFrameNotification`，不发 `will/didShow`：Capacitor 的 Keyboard 插件只订阅后两者，这种时候它一声不响（现场截图里输入框就停在上一把键盘的高度上——键盘与输入框之间一整片页面底色，约 100pt）。所以 `ios/App/App/AppDelegate.swift` 另挂一个 `keyboardWillChangeFrame` 观察者，把键盘在屏幕上真正盖住的高度（点；键盘挪出屏幕时为 0）和这一趟的动画时长（秒，`UIKeyboardAnimationDurationUserInfoKey`）用 `window.dispatchEvent(new CustomEvent('haishKeyboardFrame', { detail: { height, duration } }))` 转给 Web 层，`src/ios-keyboard.js` 收到后走同一套逻辑（0 等于收起）。原生那一侧只报这两个数、不碰布局；事件用 `eval` 自己发，不走 `bridge.triggerWindowJSEvent`——Capacitor 8 的 JS 侧已经没有 `Capacitor.triggerEvent`（只剩类型声明），那条路只会变成一次没人看的 JS 报错；构建那一步会分别到包里的二进制和 JS bundle 里找这个名字，确认这条通道的两端都在包里（`height` / `duration` 这两个名字两端必须一致，改名要一起改）；
 - 答案框这类落在消息列表内部的输入框，浏览器自己那次滚动发生在布局挪动之前，落地后再把它拉回输入框上方一次。
-- 展开态的输入框不再钉死 82px：`src/composer-height.js` 在草稿变化、进入展开态、宽度变化（旋转屏幕、右侧配置图标出现/收起）时重新量一次内容高度，夹在 CSS 的 `min-height: 48px` / `max-height: 132px` 之间。短草稿不再留一条空白（单行 121px → 之前 155px 的整个盒子），长草稿长到 132px 才在框内滚动；上下限仍然只在 `src/styles.css` 的 `.composer textarea` 里定义一份。`.detail-screen` 只在浏览器（`html:not(.native-app)`）里写 `height: 100dvh`，免得 PWA 里被地址栏遮住；App 里靠 `inset: 0`。
+- 展开态的输入框不再钉死 82px：`src/composer-height.js` 按内容算高度，夹在 CSS 的 `min-height: 48px` / `max-height: 132px` 之间。短草稿不再留一条空白（单行 121px → 之前 155px 的整个盒子），长草稿长到 132px 才在框内滚动；上下限仍然只在 `src/styles.css` 的 `.composer textarea` 里定义一份。重量时机见下面《主线程上的三笔活》——打字那条路不再每键走一遍 `auto`。`.detail-screen` 只在浏览器（`html:not(.native-app)`）里写 `height: 100dvh`，免得 PWA 里被地址栏遮住；App 里靠 `inset: 0`。
+
+### 主线程上的三笔活：打字、轮询、流式
+
+会话最大的一份是 1.7MB（396 条消息、约 1.4 万个 DOM 节点）。在这样一页上，笔笔后台活都得从主线程过，所以三处的做法都是“先问一下真的变了吗”，而且手势与键盘动画期间一律让路：
+
+- **打字**：`fitComposerTextarea` 原来每个按键都走「写 `height: auto`（把整页布局打脏）→ 读 `scrollHeight`（当场把它算回来）→ 写回高度」，一页几千个节点时一次就是几十毫秒——真机上的「打字不跟手」就是它。现在分三条路：草稿没变就直接返回上次的结果（连 `scrollHeight` 都不读）；草稿变长不写 `auto`，只读一次 `scrollHeight`，没变高连 CSS 都不写（写样式同样让布局失效）；只有草稿变短、或调用方标了 `force`（进入展开态、旋转屏幕、右侧配置图标出现/收起）才走完整的那一趟。上下限是样式表里的 px 常量，每个元素只读一次（`getComputedStyle` 也不便宜）；
+- **轮询**：目录与详情以前都是 5 秒重拉一次，现在的节奏是状态与审批 5 秒、目录 15 秒、详情 15 秒；而且拿回来的东西先过一道“画出来的字段有没有变”的签名（`src/poll-signature.js`，字段是照着 `src/App.jsx` 里真读的那些列的；`device.last_seen_at` 这种服务端每次鉴权都刷新的故意不比），一样就不写 state——写下去就是整棵详情树重渲染一次，而这轮多半什么都没带回来。手势（右滑、下拉）与键盘动画期间整圈跳过，检查点有两个（`fetch` 之前与拿回来之后），结束后由原来的补拉逻辑补一次；
+- **流式**：回答是一串很密的 token 事件，一条一条 `setState` 就是每几个字把整页重渲染一次。现在事件先折进 `liveRunRef`，每帧最多往 React 递一次（`scheduleLiveRun`）；任务落地（成功/失败/取消）用 `flushLiveRun` 立刻写下去，最后一帧不会留在动画里。键盘正在动这件事由一个模块级标志报出来（`isKeyboardMoving`，由键盘控制器在动画起飞/落地时维护），它与右滑、下拉两个标志并排成 `threadBusy`，秒表 tick、任务快照、状态轮询都走同一个判断。
+
+三处都只动本仓库：`src/composer-height.js`、`src/poll-signature.js`、`src/App.jsx`（轮询节奏与守卫在调用点，不改桌面仓）。限速测量（Chromium + 4 倍 CPU）里这三笔分别对应每键约 85ms、空闲每 5 秒一次 97–110ms 的长任务、流式期间每 token 一次重渲染；真机手感仍由用户复验。
 
 推送通知需要 APNs 设备注册和服务端推送链路，等前台闭环通过后单独实现。
 

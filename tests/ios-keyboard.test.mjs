@@ -17,6 +17,7 @@ import {
   keyboardLift,
   keyboardMotionEasing,
   keyboardMotionMs,
+  isKeyboardMoving,
   mountKeyboardInset,
   registerKeyboardSurface,
   translateYOf,
@@ -604,4 +605,29 @@ test('the browser leaves the keyboard to the browser', async () => {
   });
   assert.deepEqual(calls, []);
   stop();
+});
+
+test('the keyboard only reports itself as moving while the animation is in flight', async () => {
+  const region = fakeTraveler();
+  const dock = fakeDock();
+  const scroller = fakeScroll({ contentHeight: 4000, viewportHeight: 585, scrollTop: 3415 });
+  const { controller, listeners } = controllerFor({ region, dock, scroller });
+  await controller.start();
+  assert.equal(isKeyboardMoving(), false);
+
+  // 抬起：两个合成层动画开跑，这几百毫秒里轮询那类后台活得让路。
+  listeners.get('keyboardWillShow')({ keyboardHeight: 336 });
+  await null;
+  assert.equal(isKeyboardMoving(), true);
+
+  // 落地事件收掉动画、换回布局，也就交回「没在动」。
+  listeners.get('keyboardDidShow')({ keyboardHeight: 336 });
+  assert.equal(isKeyboardMoving(), false);
+
+  // 收起那一趟同理，而且 `stop()`（会话关掉）也得保证不留下一个「永远在动」。
+  listeners.get('keyboardWillHide')();
+  await null;
+  assert.equal(isKeyboardMoving(), true);
+  controller.stop();
+  assert.equal(isKeyboardMoving(), false);
 });
