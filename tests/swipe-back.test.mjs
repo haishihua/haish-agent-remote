@@ -84,6 +84,11 @@ test('swipe back completes a flick that never crossed half the screen', () => {
   assert.equal(swipeBackRelease({ offset: 90, width: 390, velocity: 0.1 }).complete, false);
   // Released while travelling back to the left: the pull returns even past halfway.
   assert.equal(swipeBackRelease({ offset: 240, width: 390, velocity: -0.4 }).complete, false);
+  // 但只是抬手指时往回抖了一点点（速度负不到阈值）不算往回甩：过了半屏就该返回。
+  assert.equal(swipeBackRelease({ offset: 240, width: 390, velocity: -0.05 }).complete, true);
+  assert.equal(swipeBackRelease({ offset: 240, width: 390, velocity: -0.2 }).complete, false);
+  // 过了半屏且不是往回甩：走完成那条收尾曲线。
+  assert.equal(swipeBackRelease({ offset: 240, width: 390, velocity: -0.05 }).easing, SWIPE_BACK_COMPLETE_EASING);
 });
 
 test('swipe back settles over the remaining distance at the speed of the release', () => {

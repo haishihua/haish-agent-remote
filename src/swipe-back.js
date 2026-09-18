@@ -8,12 +8,17 @@
 //   for the whole message list, moving an animation's own time does not;
 // - release completes on a fling (> 0.2 px/ms) or past half the screen, and settles
 //   over the remaining distance / velocity, which is what keeps the page attached to
-//   the finger instead of to a fixed duration.
+//   the finger instead of to a fixed duration. A flick *back* to the left cancels it,
+//   but only a real one: the few pixels the finger drifts back while it lifts off
+//   (velocity a hair below zero) used to cancel a pull that had already crossed half
+//   the screen — iOS decides on the position in that case, so we do too.
 
 export const SWIPE_BACK_EDGE_PX = 50;
 export const SWIPE_BACK_THRESHOLD_PX = 8;
 export const SWIPE_BACK_MAX_ANGLE_DEG = 40;
 export const SWIPE_BACK_FLING_VELOCITY = 0.2;
+/** 明确往回（向左）甩才取消：手指离屏那一下的抖动不该把过了半屏的一划弹回来。 */
+export const SWIPE_BACK_CANCEL_VELOCITY = -0.2;
 export const SWIPE_BACK_VELOCITY_SMOOTHING = 0.7;
 export const SWIPE_BACK_SETTLE_VELOCITY_FLOOR = 0.5;
 export const SWIPE_BACK_MIN_SETTLE_MS = 90;
@@ -69,7 +74,11 @@ export function swipeBackVelocity(previous, { deltaX = 0, deltaMs = 0 } = {}) {
  */
 export function swipeBackRelease({ offset = 0, width = 0, velocity = 0 } = {}) {
   const step = swipeBackProgress(offset, width);
-  const complete = velocity >= 0 && (velocity > SWIPE_BACK_FLING_VELOCITY || offset > width / 2);
+  // 和 iOS 的滑退一样：甩过去就算，或者看松手时过了半屏没有。只有明确往回甩才取消——
+  // 手指离开屏幕前回那一点点（速度只负一丁点）不算，否则拖过了半屏也会弹回去。
+  const flung = velocity > SWIPE_BACK_FLING_VELOCITY;
+  const pulledBack = velocity <= SWIPE_BACK_CANCEL_VELOCITY;
+  const complete = flung || (!pulledBack && offset > width / 2);
   const missing = (complete ? 1 - step : step) * width;
   const speed = Math.max(Math.abs(velocity), SWIPE_BACK_SETTLE_VELOCITY_FLOOR);
   const durationMs = missing <= 5
