@@ -74,11 +74,21 @@ haish-agent-remote/
 
 **不搬**：桌面 `ChatPanel`（拖 Lexical 输入框、ModelPickers、标注、搜索）、`createTaskStreamHandlers.js`（1003 行，接的是桌面的 socket 与 store）——手机只搬行、时间线、卡片和纯函数模型，composer / 目录 / 滚动仍是手机自己的。
 
+### 手机上故意画得跟桌面不一样的三处
+
+只有这三处，都是用户拍过的，其余一律照桌面：
+
+1. **thinking 折叠 chip 不画**（桌面 `ChatTimelineNodes.jsx` 的 `.chat-timeline-thinking-*`：灯泡 + `N chars`）。用户说那是老 UI 的观感。事件日志照桌面折，只在 `chat-runtime.js` 交给行之前把 `kind === 'thinking'` 的节点滤掉——活动 orb 的文案仍走桌面那份（流式时它本来就在，只是少了一个可点的折叠块）。
+2. **取消 / 失败任务的本地回复去重**（`withoutTimelineDuplicates`）。被 `cancel` 打断的那次回答没定稿，过程文本（commentary）已经是时间线上的一个节点，`answer_text` 又是同一段，正文整段去重就少一遍。只对这一种行生效：持久化消息的正文就是答案本身，done 行的时间线默认折着，去掉它就等于把答案藏起来。
+3. **browser_use 的截图位降级成占位**。桌面靠 Electron IPC `readToolScreenshot` 读图，手机端 v1 不建 artifact 路由（core 只有会话图片预览，adapter 没有 artifact 通道）。卡片其余字段照搬。
+
+另外 `src/main.jsx` 必须包一层桌面 `AppTooltipProvider`：行 / 时间线 / 工具卡里的 tooltip 会抛 `useContext must be used within GlobalTooltipProvider`，整条线程白屏。
+
 ### bump pin 的顺序
 
 1. 在桌面检出里核一遍要 import 的符号在新 ref 上存在（import 任何 pin 之后才有的文件会**本地过、CI 挂**：CI 只 build、不跑测试，没有测试能发现这种漂移）；
 2. 改 `.github/workflows/build-ios-unsigned.yml` 的 `ref`；
-3. 本地 `node --test tests/*.test.mjs` + `npm run build`（本地桌面检出切到同一个 ref，能提前发现解析失败）；
+3. 本地三连：`node --test tests/*.test.mjs`、`npm run test:server`、`npm run build`（必须整跑——少一级 `..` 这类解析失败 `node --test` 看不见，只有 build 会报；`tests/desktop-imports.test.mjs` 把跨仓库 import 的路径也钉住）；
 4. 重跑 `build-ios-unsigned.yml`。
 
 > 桌面 `shared/api/base.js` 在**模块初始化**时读 `window.HAISH_API_BASE`，而 `chat-runtime.js → task-runtime.js → workspace-state.js → base.js` 这条链会被手机的纯函数模块拉进来。node 单测要先 `import './support/window-stub.mjs'`（见 `tests/support/window-stub.mjs`）。
