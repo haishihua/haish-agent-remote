@@ -31,8 +31,9 @@ export async function hideKeyboardAccessoryBar({ keyboard = Keyboard, native = i
  *
  * - 只有读者贴着底端时才让消息列表跟着走：翻上去看历史时键盘只是盖住列表下缘，内容留在原处
  *   （ChatGPT 那种「只在贴着底时才抬」；Telegram/WhatsApp 是无条件抬），输入框照走不误；
- * - 输入框永远贴着键盘上沿，中途也不脱开——上移量算的是「输入框静息底边到键盘上沿」那段，不是键盘高
- *   度。静息时输入框底边离屏幕底还留着 8px + 安全区（styles.css），那一段本来就不该走（`keyboardLift`）；
+ * - 输入框停在键盘上沿再往上 `KEYBOARD_DOCK_GAP`（12pt，照参考图量的那条线）上，中途也不脱开——上移量
+ *   算的是「输入框静息底边到那条线」那段，不是键盘高度。静息时输入框底边离屏幕底还留着 8px + 安全区
+ *   （styles.css），那一段本来就不该走（`keyboardLift`）；
  * - 消息列表的窗口连内容一起动，没有任何一块被推出自己的裁剪框。上一版把消息列表单独 translate，收起
  *   键盘时它会整块滑出 `.message-region`，于是整片区域露出页面底色——用户报的「短暂黑屏」；
  * - 键盘抬起时这一层还向上多长一段（`--keyboard-lift`，默认等到落地才写，见下一条例外）：收起的那一段里，窗口上沿跟着
@@ -58,8 +59,12 @@ export async function hideKeyboardAccessoryBar({ keyboard = Keyboard, native = i
  *   两个落地事件里各把 `window.scrollY / scrollX` 按回 0 一次（`pinDocumentOffset`）：整页是个 `inset: 0`
  *   的固定壳，文档本来就不该滚动，没被顶走时一次也不碰；
  *
- * 落地的时刻取 `keyboardDidShow` / `keyboardDidHide`；时长与曲线是 iOS 自己的（250ms、curve 7 的近
- * 似，插件不向外暴露这两个值），差一点也会被落地事件纠正回来。
+ * 落地的时刻取 `keyboardDidShow` / `keyboardDidHide`。时长与曲线都尽量取 iOS 自己的：曲线是 curve 7（一条
+ * 无过冲的弹簧，起步快、收尾慢）的采样，时长由 AppDelegate 那条 frame 通道从
+ * `UIKeyboardAnimationDurationUserInfoKey` 带过来（这两个值插件都不往外报）。之前那条
+ * `cubic-bezier(0.32, 0.72, 0, 1)` 是滑退/下拉用的，比键盘快得多——走到两成时它已经走完六成半，弹簧那时
+ * 只有四成，现场就是输入框比键盘先到、中途甩开一段再被追上，也就是用户报的「拉起键盘和收起都不自然」。
+ * 差一点由落地事件纠正回来。
  */
 
 /** 键盘占的高度，写在 `:root` 上供布局使用。 */
@@ -68,21 +73,57 @@ export const KEYBOARD_INSET_VAR = '--keyboard-inset';
 export const KEYBOARD_LIFT_VAR = '--keyboard-lift';
 /** 与 `ScrollToBottomButton` 一致：离底不超过这个距离就算「看着最新消息」。 */
 export const KEYBOARD_FOLLOW_SLACK = 96;
-/** iOS 键盘动画时长；插件不暴露 `UIKeyboardAnimationDurationUserInfoKey`。 */
+/**
+ * 输入框底边停在「键盘上沿再往上」这一段（12pt，照用户给的参考图 ChatGPT 量的）。输入框两侧本来就留 10px，
+ * 底下也留一段，整块才是浮在键盘上，而不是长在键盘上。改这个数要同时改 styles.css 里 `.composer-dock` 的
+ * 同名取值，两处必须一致，否则落地换手时输入框会跳。
+ */
+export const KEYBOARD_DOCK_GAP = 12;
+/** iOS 键盘动画时长；插件不暴露 `UIKeyboardAnimationDurationUserInfoKey`，原生那条 frame 通道会把它带过来。 */
 export const KEYBOARD_MOTION_MS = 250;
+/** 原生报来的时长只在这个区间里认，免得某个版本报个离谱的值把动画拉长或压没。 */
+export const KEYBOARD_MOTION_MS_RANGE = [100, 600];
 /** 事件丢了也不能把布局留在抬起的状态上：落地事件的兜底等待。 */
 export const KEYBOARD_LANDING_GRACE_MS = 650;
-/** curve 7 的近似，与滑退、下拉收敛用的是同一条曲线。 */
-export const KEYBOARD_MOTION_EASING = 'cubic-bezier(0.32, 0.72, 0, 1)';
+/**
+ * curve 7（键盘那条曲线）是一条无过冲的弹簧：起步快、收尾慢、落在目标上不带弹跳。这里把临界阻尼弹簧
+ * `x(u) = 1 - (1 + 7u)e^(-7u)` 采样成 `linear()`（21 个停靠点，误差 < 0.5%）。
+ */
+export const KEYBOARD_MOTION_EASING = 'linear(0, 0.04903 5%, 0.1569 10%, 0.2847 15%, 0.4112 20%, 0.526 25%, 0.6249 30%, 0.7074 35%, 0.7746 40%, 0.8282 45%, 0.8705 50%, 0.9034 55%, 0.9288 60%, 0.9483 65%, 0.9631 70%, 0.9743 75%, 0.9828 80%, 0.9891 85%, 0.9938 90%, 0.9974 95%, 1)';
+/** 老 WebKit 不认 `linear()` 时的退路：同一条弹簧曲线的三次贝塞尔拟合（最大偏差 1.8%）。 */
+export const KEYBOARD_MOTION_EASING_FALLBACK = 'cubic-bezier(0.3, 0.35, 0.15, 1)';
 /** 键盘运动期间挂在跟键盘走的那一层上：层内部的定时渐变/阴影在这 250ms 里停一停。 */
 export const KEYBOARD_MOTION_CLASS = 'keyboard-moving';
 /**
  * AppDelegate 转发的键盘 frame 事件（`UIKeyboardWillChangeFrameNotification`）。
  *
  * `detail.height` 是键盘在屏幕上真正盖住的高度（点），0 表示键盘已经离开屏幕（收起时 iOS 就是把 frame
- * 挪到屏幕外）。名字要和 ios/App/App/AppDelegate.swift 里的一致——构建那一步会到包里的二进制里找它。
+ * 挪到屏幕外）；`detail.duration` 是这一趟的动画时长（秒，`UIKeyboardAnimationDurationUserInfoKey`，插件
+ * 不报它）。名字要和 ios/App/App/AppDelegate.swift 里的一致——构建那一步会到包里的二进制里找它。
  */
 export const KEYBOARD_FRAME_EVENT = 'haishKeyboardFrame';
+
+/** 浏览器认不认这条 `linear()`：不认就用贝塞尔那条退路，别让整条动画掉回 linear。 */
+export function keyboardMotionEasing({ supports = defaultSupportsEasing } = {}) {
+  return supports(KEYBOARD_MOTION_EASING) ? KEYBOARD_MOTION_EASING : KEYBOARD_MOTION_EASING_FALLBACK;
+}
+
+function defaultSupportsEasing(value) {
+  if (typeof CSS === 'undefined' || typeof CSS.supports !== 'function') return false;
+  try {
+    return CSS.supports('animation-timing-function', value);
+  } catch {
+    return false;
+  }
+}
+
+/** 原生报的键盘动画时长（秒）换算成毫秒；没有或者离谱就沿用上一把键盘的值。 */
+export function keyboardMotionMs(seconds, fallback = KEYBOARD_MOTION_MS) {
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value <= 0) return fallback;
+  const [min, max] = KEYBOARD_MOTION_MS_RANGE;
+  return Math.min(max, Math.max(min, Math.round(value * 1000)));
+}
 
 /**
  * 键盘要从布局里拿走多少高度：插件报的就是键盘 frame 的高度（已经包含它盖住的底部安全区，所以不扣）。
@@ -99,8 +140,19 @@ export function keyboardInset(keyboardHeight) {
  * 框放到 `keyboardHeight` 那个位置、静息时放在 `restGap`，所以这中间的差就是移动量。
  */
 export function keyboardLift({ keyboardHeight = 0, restGap = 0 } = {}) {
+  const height = keyboardInset(keyboardHeight);
+  if (!height) return 0;
   const gap = Number(restGap);
-  return Math.max(0, keyboardInset(keyboardHeight) - (Number.isFinite(gap) ? Math.max(0, Math.round(gap)) : 0));
+  return Math.max(0, height + KEYBOARD_DOCK_GAP - (Number.isFinite(gap) ? Math.max(0, Math.round(gap)) : 0));
+}
+
+/**
+ * 布局把输入框底边放在离屏幕底多远：键盘抬着时是键盘上沿再往下 `KEYBOARD_DOCK_GAP`（那一段不该走），静息时
+ * 是输入框自己那段底边距。`moveTo` 的起止点都用这把尺子，动画跨过的才是真正要走的像素。
+ */
+function dockOffset(height, restGap) {
+  const inset = keyboardInset(height);
+  return inset > 0 ? inset + KEYBOARD_DOCK_GAP : restGap;
 }
 
 /**
@@ -142,10 +194,10 @@ function revealFocusedField(scroller) {
   active.scrollIntoView({ block: 'nearest' });
 }
 
-function animateTravel(element, from, to, duration) {
+function animateTravel(element, from, to, duration, easing) {
   return element.animate(
     [{ transform: `translate3d(0, ${from}px, 0)` }, { transform: `translate3d(0, ${to}px, 0)` }],
-    { duration, easing: KEYBOARD_MOTION_EASING, fill: 'both' },
+    { duration, easing, fill: 'both' },
   );
 }
 
@@ -159,7 +211,11 @@ export function createKeyboardInsetController({
   readViewportHeight = () => window.innerHeight,
   viewport = typeof window === 'undefined' ? null : window,
   motionMs = KEYBOARD_MOTION_MS,
+  supportsEasing = defaultSupportsEasing,
 } = {}) {
+  // 曲线一次定死（curve 7 是常量，只有认不认 `linear()` 这一件事），时长跟着原生报的走（`frame`）。
+  const motionEasing = keyboardMotionEasing({ supports: supportsEasing });
+  let durationMs = keyboardMotionMs(motionMs / 1000);
   let inset = 0;
   // 已经写进布局的 `--keyboard-lift`：换手时要知道「现在抬着多少」才能配平滚动位置。
   let liftValue = 0;
@@ -293,10 +349,10 @@ export function createKeyboardInsetController({
     const scroller = next?.scroller || null;
     const geometry = geometryOf(scroller);
     if (next) measureRestGap(next);
-    // 布局现在把输入框放在哪：键盘抬着时是键盘上沿，静息时是输入框自己那段底边距。
-    const from = inset > 0 ? inset : restGap;
-    // 目标：新键盘的上沿；`target` 为 0（收起）就是静息位。
-    const to = target > 0 ? target : restGap;
+    // 布局现在把输入框放在哪：键盘抬着时是键盘上沿再往上 `KEYBOARD_DOCK_GAP`，静息时是它自己那段底边距。
+    const from = dockOffset(inset, restGap);
+    // 目标：新键盘上沿再往上同样一段；`target` 为 0（收起）就是静息位。
+    const to = dockOffset(target, restGap);
     // 要补的是两者之差。键盘还抬着的时候高度又变了一次时，布局里已经抬着上一把键盘的那一段，
     // 再补一整段就是「输入框又往上跑」；布局和动画在落地那一刻描述同一批像素，差值才对。
     const travel = from - to;
@@ -333,7 +389,7 @@ export function createKeyboardInsetController({
       if (following) next.region.classList.add(KEYBOARD_MOTION_CLASS);
       for (const element of following ? [next.region, next.dock] : [next.dock]) {
         const startY = element === next.region ? start : translateYOf(readTransform(element));
-        if (startY !== travel) pending.animations.push(animateTravel(element, startY, travel, motionMs));
+        if (startY !== travel) pending.animations.push(animateTravel(element, startY, travel, durationMs, motionEasing));
       }
     }
     pending.moved = pending.animations.length === 0;
@@ -350,7 +406,7 @@ export function createKeyboardInsetController({
       pending.moved = true;
       pending.landed = true;
       settleMotion();
-    }, motionMs + KEYBOARD_LANDING_GRACE_MS);
+    }, durationMs + KEYBOARD_LANDING_GRACE_MS);
   }
 
   function raise(height) {
@@ -370,13 +426,15 @@ export function createKeyboardInsetController({
    * 键盘的高度——用户报的「切换键盘，输入框又往上跑」。高度交给同一套逻辑；0 表示键盘离场（收起时 iOS 把
    * frame 挪到屏幕外），和 `keyboardWillHide` 是一回事。
    */
-  function frame(height) {
+  function frame(height, seconds) {
+    // 时长先记住：这条通道是唯一带着它的地方，插件那四个事件都没有。
+    durationMs = keyboardMotionMs(seconds, durationMs);
     if (keyboardInset(height)) raise(height);
     else lower();
   }
 
   function onKeyboardFrame(event) {
-    frame(event?.detail?.height);
+    frame(event?.detail?.height, event?.detail?.duration);
   }
 
   // 落地事件自己带着高度：`willShow` 整个丢掉时直接落地，不补一段已经过时的动画。

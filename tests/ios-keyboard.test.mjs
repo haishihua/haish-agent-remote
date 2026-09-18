@@ -4,14 +4,19 @@ import test from 'node:test';
 import {
   createKeyboardInsetController,
   hideKeyboardAccessoryBar,
+  KEYBOARD_DOCK_GAP,
   KEYBOARD_FRAME_EVENT,
   KEYBOARD_INSET_VAR,
   KEYBOARD_LIFT_VAR,
   KEYBOARD_MOTION_CLASS,
   KEYBOARD_MOTION_EASING,
+  KEYBOARD_MOTION_EASING_FALLBACK,
+  KEYBOARD_MOTION_MS,
   keyboardFollowing,
   keyboardInset,
   keyboardLift,
+  keyboardMotionEasing,
+  keyboardMotionMs,
   mountKeyboardInset,
   registerKeyboardSurface,
   translateYOf,
@@ -53,28 +58,47 @@ test('a reader within the slack of the bottom is following the thread', () => {
   assert.equal(keyboardFollowing({ contentHeight: 4000, viewportHeight: 585, scrollTop: 3015 }), false);
 });
 
-test('the lift is the gap between where the composer rests and where the keyboard lands', () => {
-  // 852 高的屏幕、键盘 336、输入框静息时离底 42（8px + 安全区）：走 294。
-  assert.equal(keyboardLift({ keyboardHeight: 336, restGap: 42 }), 294);
-  // 没有安全区（或量不到）时退化成整个键盘高度。
-  assert.equal(keyboardLift({ keyboardHeight: 336, restGap: 0 }), 336);
-  // 键盘比输入框静息的那段空隙还矮：不动，免得把输入框推到键盘下面。
+test('the lift is the gap between where the composer rests and where it stops above the keyboard', () => {
+  // 852 高的屏幕、键盘 336、输入框静息时离底 42（8px + 安全区）：走到键盘上沿再往上 12pt = 336 + 12 - 42。
+  assert.equal(keyboardLift({ keyboardHeight: 336, restGap: 42 }), 306);
+  // 没有安全区（或量不到）时整个上移量再加上那段呼吸位。
+  assert.equal(keyboardLift({ keyboardHeight: 336, restGap: 0 }), 336 + KEYBOARD_DOCK_GAP);
+  // 键盘比输入框静息的那段空隙 + 呼吸位还矮：不动，免得把输入框推到键盘下面。
   assert.equal(keyboardLift({ keyboardHeight: 20, restGap: 42 }), 0);
-  assert.equal(keyboardLift({ keyboardHeight: 336, restGap: -5 }), 336);
+  assert.equal(keyboardLift({ keyboardHeight: 336, restGap: -5 }), 336 + KEYBOARD_DOCK_GAP);
+  // 收起（高度 0）时不走：静息位就是目标位。
+  assert.equal(keyboardLift({ keyboardHeight: 0, restGap: 42 }), 0);
   assert.equal(keyboardLift({}), 0);
 });
 
+test('the keyboard animation follows the curve and the duration iOS reports', () => {
+  // 原生那条 frame 通道报的是秒，换算成毫秒；没有/离谱就沿用上一把键盘的值。
+  assert.equal(keyboardMotionMs(0.25), 250);
+  assert.equal(keyboardMotionMs(0.35), 350);
+  assert.equal(keyboardMotionMs(undefined, 250), 250);
+  assert.equal(keyboardMotionMs(0, 250), 250);
+  assert.equal(keyboardMotionMs(-1, 250), 250);
+  assert.equal(keyboardMotionMs(9, 250), 600);
+  assert.equal(keyboardMotionMs(0.01, 250), 100);
+  assert.equal(keyboardMotionMs(undefined), KEYBOARD_MOTION_MS);
+
+  // curve 7 是弹簧：认识的 WebKit 用采样出来的 linear()，不认识的退到同形状的贝塞尔（别掉回 linear）。
+  assert.equal(keyboardMotionEasing({ supports: () => true }), KEYBOARD_MOTION_EASING);
+  assert.equal(keyboardMotionEasing({ supports: () => false }), KEYBOARD_MOTION_EASING_FALLBACK);
+  assert.match(KEYBOARD_MOTION_EASING, /^linear\(0, /);
+});
+
 test('the lift is exactly the distance that keeps the composer on the same pixel across the handoff', () => {
-  // 静息：输入框底边 = 屏高 - restGap。落地后布局把它放在 屏高 - keyboardHeight。
+  // 静息：输入框底边 = 屏高 - restGap。落地后布局把它放在 屏高 - max(restGap, 键盘高 + 呼吸位)。
   // 动画走 lift 之后，两个位置必须重合，否则换手时输入框会跳。
   const viewport = 852;
   for (const gap of [0, 8, 42, 68]) {
     for (const keyboardHeight of [0, 20, 291, 336, 367]) {
       const lift = keyboardLift({ keyboardHeight, restGap: gap });
       const animating = viewport - gap - lift;
-      const landed = viewport - keyboardInset(keyboardHeight);
-      if (keyboardInset(keyboardHeight) >= gap) assert.equal(animating, landed);
-      else assert.equal(animating, viewport - gap);
+      const height = keyboardInset(keyboardHeight);
+      const landed = height ? viewport - Math.max(gap, height + KEYBOARD_DOCK_GAP) : viewport - gap;
+      assert.equal(animating, landed);
     }
   }
 });
@@ -154,7 +178,7 @@ function fakeViewport() {
   };
 }
 
-function controllerFor({ region, dock, scroller, viewportHeight = 852, listeners = new Map(), writes = [], viewport = null }) {
+function controllerFor({ region, dock, scroller, viewportHeight = 852, listeners = new Map(), writes = [], viewport = null, supportsEasing = () => true }) {
   const controller = createKeyboardInsetController({
     native: true,
     keyboard: {
@@ -173,6 +197,7 @@ function controllerFor({ region, dock, scroller, viewportHeight = 852, listeners
     readRect: (element) => ({ bottom: element.bottom }),
     readViewportHeight: () => viewportHeight,
     viewport,
+    supportsEasing,
   });
   return { controller, listeners, writes };
 }
@@ -192,10 +217,11 @@ test('the list and the composer travel together and the layout does not move unt
   await null;
   // 展开期间布局一次都不动：动的只有合成层上的那一个位移。
   assert.deepEqual(writes, []);
-  // 852 - 810 = 42 是输入框静息时离屏幕底的那段，336 - 42 = 294 才是这两块要走的路。
+  // 852 - 810 = 42 是输入框静息时离屏幕底的那段，336 + 12 - 42 = 306 才是这两块要走的路（12 是键盘上沿
+  // 往上留的那段呼吸位，见 KEYBOARD_DOCK_GAP）。
   const expected = [
     { transform: 'translate3d(0, 0px, 0)' },
-    { transform: 'translate3d(0, -294px, 0)' },
+    { transform: 'translate3d(0, -306px, 0)' },
   ];
   assert.deepEqual(travelKeyframes(region), expected);
   assert.deepEqual(travelKeyframes(dock), expected);
@@ -205,7 +231,7 @@ test('the list and the composer travel together and the layout does not move unt
   assert.equal(region.classes.has(KEYBOARD_MOTION_CLASS), true);
 
   listeners.get('keyboardDidShow')({ keyboardHeight: 336 });
-  assert.deepEqual(writes, [[KEYBOARD_INSET_VAR, '336px'], [KEYBOARD_LIFT_VAR, '294px']]);
+  assert.deepEqual(writes, [[KEYBOARD_INSET_VAR, '336px'], [KEYBOARD_LIFT_VAR, '306px']]);
   assert.equal(region.animations.at(-1).cancelled, true);
   assert.equal(dock.animations.at(-1).cancelled, true);
   assert.equal(region.classes.has(KEYBOARD_MOTION_CLASS), false);
@@ -213,8 +239,8 @@ test('the list and the composer travel together and the layout does not move unt
   // 收起：位移反向，落地之后布局才回到 0。
   listeners.get('keyboardWillHide')();
   await null;
-  assert.equal(travelKeyframes(region).at(-1).transform, 'translate3d(0, 294px, 0)');
-  assert.equal(travelKeyframes(dock).at(-1).transform, 'translate3d(0, 294px, 0)');
+  assert.equal(travelKeyframes(region).at(-1).transform, 'translate3d(0, 306px, 0)');
+  assert.equal(travelKeyframes(dock).at(-1).transform, 'translate3d(0, 306px, 0)');
   listeners.get('keyboardDidHide')();
   assert.deepEqual(writes.slice(-2), [[KEYBOARD_INSET_VAR, '0px'], [KEYBOARD_LIFT_VAR, '0px']]);
   controller.stop();
@@ -229,10 +255,10 @@ test('the landing writes the thread back to the bottom itself, without waiting f
 
   listeners.get('keyboardWillShow')({ keyboardHeight: 336 });
   await null;
-  // 落地后的消息列表只矮了「上移量」那一段：键盘拿走 336，输入框自己的静息空隙 42 同时收掉。
-  scroller.clientHeight = 585 - 336 + 42;
+  // 落地后的消息列表只矮了「上移量」那一段：键盘拿走 336，跟键盘走的那一层向上多长了 306。
+  scroller.clientHeight = 585 - 336 + 306;
   listeners.get('keyboardDidShow')({ keyboardHeight: 336 });
-  assert.equal(scroller.scrollTop, 4000 - (585 - 336 + 42));
+  assert.equal(scroller.scrollTop, 4000 - (585 - 336 + 306));
   controller.stop();
 });
 
@@ -248,7 +274,7 @@ test('a reader who scrolled up is left exactly where they are when the layout la
   await null;
   assert.equal(region.animations.length, 0);
   assert.equal(region.classes.has(KEYBOARD_MOTION_CLASS), false);
-  assert.equal(dock.animations.at(-1).keyframes.at(-1).transform, 'translate3d(0, -294px, 0)');
+  assert.equal(dock.animations.at(-1).keyframes.at(-1).transform, 'translate3d(0, -306px, 0)');
 
   scroller.clientHeight = 585 - 336;
   listeners.get('keyboardDidShow')({ keyboardHeight: 336 });
@@ -268,7 +294,7 @@ test('a landing event without its show still raises the layout', async () => {
   // `keyboardWillShow` 丢过一次：落地事件自己带着高度，布局照旧抬起（这一步允许直接落地）。
   listeners.get('keyboardDidShow')({ keyboardHeight: 336 });
   await null;
-  assert.deepEqual(writes, [[KEYBOARD_INSET_VAR, '336px'], [KEYBOARD_LIFT_VAR, '294px']]);
+  assert.deepEqual(writes, [[KEYBOARD_INSET_VAR, '336px'], [KEYBOARD_LIFT_VAR, '306px']]);
   controller.stop();
 });
 
@@ -282,13 +308,13 @@ test('a QuickType-bar report of 0 does not lower the layout while the keyboard i
   listeners.get('keyboardWillShow')({ keyboardHeight: 336 });
   await null;
   listeners.get('keyboardDidShow')({ keyboardHeight: 336 });
-  assert.deepEqual(writes, [[KEYBOARD_INSET_VAR, '336px'], [KEYBOARD_LIFT_VAR, '294px']]);
+  assert.deepEqual(writes, [[KEYBOARD_INSET_VAR, '336px'], [KEYBOARD_LIFT_VAR, '306px']]);
 
   // 只多了一条 QuickType 提示栏（插件把这种变动报成 0）：键盘还在，布局不动。
   listeners.get('keyboardWillShow')({ keyboardHeight: 0 });
   await null;
   listeners.get('keyboardDidShow')({ keyboardHeight: 0 });
-  assert.deepEqual(writes, [[KEYBOARD_INSET_VAR, '336px'], [KEYBOARD_LIFT_VAR, '294px']]);
+  assert.deepEqual(writes, [[KEYBOARD_INSET_VAR, '336px'], [KEYBOARD_LIFT_VAR, '306px']]);
   controller.stop();
 });
 
@@ -367,7 +393,7 @@ test('a collapse that animates the thread lifts the layout in the same frame, so
   // 先在翻上去看历史时抬起键盘：列表不动，布局里也不抬（窗口就矮一段，读者位置不变）。
   listeners.get('keyboardWillShow')({ keyboardHeight: 336 });
   await null;
-  scroller.clientHeight = 585 - 294;
+  scroller.clientHeight = 585 - 336;
   listeners.get('keyboardDidShow')({ keyboardHeight: 336 });
   assert.deepEqual(writes, [[KEYBOARD_INSET_VAR, '336px'], [KEYBOARD_LIFT_VAR, '0px']]);
 
@@ -377,15 +403,16 @@ test('a collapse that animates the thread lifts the layout in the same frame, so
   scroller.clientHeight = 585;
   listeners.get('keyboardWillHide')();
   await null;
-  assert.deepEqual(writes.at(-1), [KEYBOARD_LIFT_VAR, '294px']);
+  assert.deepEqual(writes.at(-1), [KEYBOARD_LIFT_VAR, '306px']);
   assert.deepEqual(travelKeyframes(region), [
     { transform: 'translate3d(0, 0px, 0)' },
-    { transform: 'translate3d(0, 294px, 0)' },
+    { transform: 'translate3d(0, 306px, 0)' },
   ]);
-  // 布局换手和滚动在同一个任务里：抬起来的那 294px 从滚动位置上扣掉，画面不动（扣完正好贴底）。
-  assert.equal(scroller.scrollTop, 4000 - 585);
+  // 布局换手和滚动在同一个任务里：抬起来的那 306px 从滚动位置上扣掉，读者正看着的那一屏不动
+  // （扣完比新窗口的贴底位高 30px，浏览器下一次会把多出的一截截到贴底——正是「窗口向上长」的样子）。
+  assert.equal(scroller.scrollTop, 4000 - (585 - 336) - 306);
 
-  // 落地：布局回到 0，滚动还是同一个落点。
+  // 落地：布局回到 0，滚动贴底（配平之后读者就贴着底，这一步写的是同一个落点）。
   listeners.get('keyboardDidHide')();
   assert.deepEqual(writes.slice(-2), [[KEYBOARD_INSET_VAR, '0px'], [KEYBOARD_LIFT_VAR, '0px']]);
   assert.equal(scroller.scrollTop, 4000 - 585);
@@ -413,7 +440,7 @@ test('a collapse that leaves the thread alone still keeps the reader on the same
   await null;
   assert.equal(region.animations.length, animated);
   listeners.get('keyboardDidHide')();
-  assert.equal(scroller.scrollTop, 2000 + 294);
+  assert.equal(scroller.scrollTop, 2000 + 306);
   controller.stop();
 });
 
@@ -452,10 +479,10 @@ test('a keyboard that changes height while it is up moves the two blocks by the 
   listeners.get('keyboardWillShow')({ keyboardHeight: 336 });
   await null;
   listeners.get('keyboardDidShow')({ keyboardHeight: 336 });
-  assert.deepEqual(writes, [[KEYBOARD_INSET_VAR, '336px'], [KEYBOARD_LIFT_VAR, '294px']]);
+  assert.deepEqual(writes, [[KEYBOARD_INSET_VAR, '336px'], [KEYBOARD_LIFT_VAR, '306px']]);
 
-  // 换上一把更高的键盘（带工具栏的第三方输入法）：布局里已经抬着 336-42 = 294，这一次要走的只是
-  // 431-336 = 95。再补一整段（-389）就是把输入框甩到键盘上方一百多点——用户报的「切换键盘，输入框又往上跑」。
+  // 换上一把更高的键盘（带工具栏的第三方输入法）：布局里已经抬着 336 + 12 - 42 = 306，这一次要走的只是
+  // 431 - 336 = 95。再补一整段（-401）就是把输入框甩到键盘上方一百多点——用户报的「切换键盘，输入框又往上跑」。
   listeners.get('keyboardWillShow')({ keyboardHeight: 431 });
   await null;
   assert.deepEqual(travelKeyframes(region), [
@@ -468,9 +495,9 @@ test('a keyboard that changes height while it is up moves the two blocks by the 
   ]);
 
   // 落地时布局接到新高度上，滚动位置还是贴底。
-  scroller.clientHeight = 585 - 431 + 42;
+  scroller.clientHeight = 585 - 431 + 401;
   listeners.get('keyboardDidShow')({ keyboardHeight: 431 });
-  assert.deepEqual(writes.slice(-2), [[KEYBOARD_INSET_VAR, '431px'], [KEYBOARD_LIFT_VAR, '389px']]);
+  assert.deepEqual(writes.slice(-2), [[KEYBOARD_INSET_VAR, '431px'], [KEYBOARD_LIFT_VAR, '401px']]);
   assert.equal(scroller.scrollTop, 4000 - scroller.clientHeight);
   controller.stop();
 });
@@ -493,10 +520,46 @@ test('a keyboard that comes back shorter lands on the new height, not on the tal
     { transform: 'translate3d(0, 140px, 0)' },
   ]);
 
-  // 上移量也要跟着缩到 291-42 = 249：消息列表的窗口不能一直按高的那把算。
-  scroller.clientHeight = 585 - 291 + 42;
+  // 上移量也要跟着缩到 291 + 12 - 42 = 261：消息列表的窗口不能一直按高的那把算。
+  scroller.clientHeight = 585 - 291 + 261;
   listeners.get('keyboardDidShow')({ keyboardHeight: 291 });
-  assert.deepEqual(writes.slice(-2), [[KEYBOARD_INSET_VAR, '291px'], [KEYBOARD_LIFT_VAR, '249px']]);
+  assert.deepEqual(writes.slice(-2), [[KEYBOARD_INSET_VAR, '291px'], [KEYBOARD_LIFT_VAR, '261px']]);
+  controller.stop();
+});
+
+test('a WebKit without linear() easing falls back to the fitted bezier, not to linear', async () => {
+  const region = fakeTraveler();
+  const dock = fakeDock();
+  const scroller = fakeScroll({ contentHeight: 4000, viewportHeight: 585, scrollTop: 3415 });
+  const { controller, listeners } = controllerFor({ region, dock, scroller, supportsEasing: () => false });
+  await controller.start();
+
+  listeners.get('keyboardWillShow')({ keyboardHeight: 336 });
+  await null;
+  assert.equal(region.animations.at(-1).options.easing, KEYBOARD_MOTION_EASING_FALLBACK);
+  assert.equal(dock.animations.at(-1).options.easing, KEYBOARD_MOTION_EASING_FALLBACK);
+  controller.stop();
+});
+
+test('a duration that is missing or absurd leaves the last known one alone', async () => {
+  const region = fakeTraveler();
+  const dock = fakeDock();
+  const scroller = fakeScroll({ contentHeight: 4000, viewportHeight: 585, scrollTop: 3415 });
+  const viewport = fakeViewport();
+  const { controller, listeners } = controllerFor({ region, dock, scroller, viewport });
+  await controller.start();
+
+  // 原生报了时长：这一趟就按它走（插件那四个事件里没有这个值，只有这条通道带）。
+  viewport.dispatch(KEYBOARD_FRAME_EVENT, { detail: { height: 336, duration: 0.4 } });
+  assert.equal(region.animations.at(-1).options.duration, 400);
+  assert.equal(dock.animations.at(-1).options.duration, 400);
+  listeners.get('keyboardDidShow')({ keyboardHeight: 336 });
+  await null;
+
+  // 收起时没带时长（报了个 0）：沿用上一把键盘的 400，不退回默认的 250。
+  viewport.dispatch(KEYBOARD_FRAME_EVENT, { detail: { height: 0, duration: 0 } });
+  assert.equal(dock.animations.at(-1).options.duration, 400);
+  assert.equal(dock.animations.at(-1).keyframes.at(-1).transform, 'translate3d(0, 306px, 0)');
   controller.stop();
 });
 
@@ -510,19 +573,21 @@ test('the frame the app forwards is what tells the layout the keyboard changed',
   assert.deepEqual(viewport.listening, [KEYBOARD_FRAME_EVENT]);
 
   // 换键盘时插件一声不响（iOS 只发了 UIKeyboardWillChangeFrameNotification）：AppDelegate 转发的
-  // frame 自己把这一层带到新高度上——从静息位（离底 42）起走 431-42 = 389。
-  viewport.dispatch(KEYBOARD_FRAME_EVENT, { detail: { height: 431 } });
+  // frame 自己把这一层带到新高度上——从静息位（离底 42）起走 431 + 12 - 42 = 401。通知里一并带着
+  // 这一趟的动画时长（`UIKeyboardAnimationDurationUserInfoKey`），跟键盘走的那一段用同一个时长。
+  viewport.dispatch(KEYBOARD_FRAME_EVENT, { detail: { height: 431, duration: 0.35 } });
   assert.deepEqual(travelKeyframes(region), [
     { transform: 'translate3d(0, 0px, 0)' },
-    { transform: 'translate3d(0, -389px, 0)' },
+    { transform: 'translate3d(0, -401px, 0)' },
   ]);
+  assert.equal(region.animations.at(-1).options.duration, 350);
   listeners.get('keyboardDidShow')({ keyboardHeight: 431 });
   await null;
 
   // 键盘离开屏幕（收起时 iOS 把 frame 挪到屏幕外，报 0）：和 `keyboardWillHide` 是一回事，
   // 这一趟把已经写在布局里的 431 放回去。
   viewport.dispatch(KEYBOARD_FRAME_EVENT, { detail: { height: 0 } });
-  assert.deepEqual(travelKeyframes(dock).at(-1).transform, 'translate3d(0, 389px, 0)');
+  assert.deepEqual(travelKeyframes(dock).at(-1).transform, 'translate3d(0, 401px, 0)');
   listeners.get('keyboardDidHide')();
 
   // 会话关掉就把监听收回：回到目录页之后不再有人往这一层报键盘。

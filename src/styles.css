@@ -260,7 +260,7 @@ input::placeholder, textarea::placeholder { color: var(--muted-2); }
 /* 浏览器（含 PWA）里高度跟着可见视口走，免得输入框被地址栏挡住；App 里 WebView 的高度就是窗口
    （键位不缩 WebView，见 src/ios-keyboard.js），`inset: 0` 已经是全部。 */
 html:not(.native-app) .detail-screen { height: 100dvh; }
-/* 消息列表和输入框是同一层：键盘抬起时两者一起平移（src/ios-keyboard.js），输入框贴着键盘上沿，
+/* 消息列表和输入框是同一层：键盘抬起时两者一起平移（src/ios-keyboard.js），输入框停在键盘上沿上方一段，
    消息列表的窗口连内容一起动——没有任何一块会被推出自己的裁剪框，也没有背景从缺口里露出来。落地后
    transform 换回布局，两者描述同一批像素。
    `--keyboard-lift` 是同一个“落地才写”的高度：键盘抬着的时候消息列表再向上长一段（负的 margin-top
@@ -457,10 +457,11 @@ html.detail-closing .remote-topbar { backdrop-filter: none; }
 .agent-phase-gradient { color: transparent; background: linear-gradient(90deg, #efbf64 0%, #ffe9a8 14%, #69c8f6 30%, #8f8cff 44%, #d58cff 58%, #69c8f6 72%, #ffe9a8 86%, #efbf64 100%); background-size: 240% 100%; background-position: 100% 50%; background-clip: text; -webkit-background-clip: text; filter: drop-shadow(0 0 7px rgba(105, 200, 246, 0.22)); animation: agent-phase-gradient 2.6s linear infinite; }
 .agent-phase-spark { animation: agent-phase-gradient 2.6s linear infinite, agent-phase-blink 0.9s steps(2, start) infinite; }
 .agent-phase-verb::after { content: 'Synthesis...'; animation: agent-phase-words 28s step-end infinite; }
-.composer-dock { min-width: 0; margin-bottom: max(0px, 8px + var(--safe-bottom) - var(--keyboard-inset)); }
-/* 输入框那一叠的位置由上面那行和这一行一起管：静息时离屏幕底 8px + 安全区，键盘上来时收成 0——输入
-   框直接贴在键盘上沿（用户报的「有 padding」就是这里原来一直留着的那一段）。收掉的量与跟键盘走的那
-   一层上移的距离正好抵消，落地换手才看不见，见 src/ios-keyboard.js。 */
+.composer-dock { min-width: 0; margin-bottom: max(12px, 8px + var(--safe-bottom) - var(--keyboard-inset)); }
+/* 输入框那一叠的位置由上面那行和这一行一起管：静息时离屏幕底 8px + 安全区；键盘上来时收成 12px——那是照
+   用户给的参考图（ChatGPT）量的一条呼吸位：输入框两侧本来就留 10px，底下也留一段，整块才是浮在键盘上，
+   而不是长在键盘上。收掉的量与跟键盘走的那一层上移的距离正好抵消，落地换手才看不见，见 src/ios-keyboard.js
+   的 KEYBOARD_DOCK_GAP（两处必须一致）。 */
 .composer { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 48px; gap: 7px; margin: 8px 10px 0; padding: 6px; border: 1px solid rgba(138, 166, 209, 0.28); border-radius: 18px; background: rgba(13, 16, 24, 0.96); transition: border-color 160ms ease, box-shadow 160ms ease; }
 .composer.has-config-icon { grid-template-columns: minmax(0, 1fr) 44px 48px; }
 .composer textarea { max-height: 132px; min-height: 48px; padding: 13px 11px; border: 0; border-radius: 12px; outline: 0; background: transparent; }
