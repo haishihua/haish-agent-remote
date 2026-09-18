@@ -1535,9 +1535,13 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
   /**
    * 收起详情页。收尾那一帧上挤着三笔重活：卸掉整棵详情树、目录几十个定时动画重新交给合成器、顶栏的
    * backdrop-filter 第一次渲染（一整屏背景模糊）——挤在一起就是滑退动画最后那一下的卡顿。交给
-   * `createDismissHandoff` 排期：动画最后那一帧先画出去，再卸层；目录那头多挂两帧 `detail-closing` 才恢复。
+   * `createDismissHandoff` 排期：动画最后那一帧先画出去，再卸层。
+   *
+   * 滑退过来的（`keepDirectoryLive`）不再挂 `detail-closing`：手指一松开、`swipe-dismissing` 一挂上，目录的
+   * 定时动画和顶栏模糊已经由 styles.css 那两条 `:has` 规则放回来了，再冻两帧看到的就是「收尾卡一下」。
+   * 按钮返回那条路上没有动画，仍然靠 hold 把恢复推到卸层之后。
    */
-  function dismissToDirectory() {
+  function dismissToDirectory({ keepDirectoryLive = false } = {}) {
     if (!dismissHandoffRef.current) {
       dismissHandoffRef.current = createDismissHandoff({
         // 挂到 <html> 上：React 会在这一帧重写 `.app-shell` 的 className，挂在那儿的类会被抹掉。
@@ -1546,7 +1550,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
         unmount: () => onBackRef.current(),
       });
     }
-    dismissHandoffRef.current();
+    dismissHandoffRef.current({ hold: !keepDirectoryLive });
   }
 
   function finishSwipeBack(event) {
@@ -1579,7 +1583,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
         // Leave the settle holding its last frame: the surface is unmounted on a later frame.
         swipeSettleRef.current = null;
         setSwipeBackInFlight(false);
-        dismissToDirectory();
+        dismissToDirectory({ keepDirectoryLive: true });
         return;
       }
       stopSwipeBackMotion();
@@ -2138,7 +2142,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
     <main className="detail-screen" ref={detailScreenRef}>
       <div className="detail-top">
         <header className="detail-header">
-          <button className="icon-button ghost" onClick={dismissToDirectory} aria-label="Back to conversations"><ArrowLeft size={22} /></button>
+          <button className="icon-button ghost" onClick={() => dismissToDirectory()} aria-label="Back to conversations"><ArrowLeft size={22} /></button>
           <div><strong>{conversation?.title || 'Task'}</strong><span>{projectName || 'Project'}</span></div>
           <span className="header-spacer" />
         </header>

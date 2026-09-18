@@ -25,6 +25,8 @@
   --safe-top: env(safe-area-inset-top, 0px);
   /* 键盘占掉的高度，由 src/ios-keyboard.js 在键盘落地时写入（键盘不缩 WebView，见该模块）。 */
   --keyboard-inset: 0px;
+  /* 目录顶栏那层背景模糊。详情页开着（或手指正拖着滑退）时置 none，见下面的说明。 */
+  --topbar-backdrop: blur(22px) saturate(130%);
 }
 
 * { box-sizing: border-box; }
@@ -59,7 +61,7 @@ code { padding: 2px 6px; border: 1px solid var(--border); border-radius: 6px; ba
 .pull-refresh { position: absolute; z-index: 6; top: 0; left: 50%; display: grid; width: 34px; height: 34px; place-items: center; color: var(--accent); opacity: 0; pointer-events: none; transform: translate(-50%, -100%); }
 .pull-refresh svg { width: 21px; height: 21px; }
 .pull-refresh.spinning svg { animation: spin 900ms linear infinite; }
-.remote-topbar { position: sticky; z-index: 15; top: 0; padding-bottom: 1px; border-bottom: 1px solid rgba(53, 64, 90, 0.62); background: rgba(6, 7, 12, 0.92); backdrop-filter: blur(22px) saturate(130%); }
+.remote-topbar { position: sticky; z-index: 15; top: 0; padding-bottom: 1px; border-bottom: 1px solid rgba(53, 64, 90, 0.62); background: rgba(6, 7, 12, 0.92); backdrop-filter: var(--topbar-backdrop); }
 .remote-header { display: grid; grid-template-columns: 48px minmax(0, 1fr) 48px; min-height: calc(82px + var(--safe-top)); padding: calc(10px + var(--safe-top)) 12px 6px; align-items: center; }
 .header-brand { display: block; width: 38px; height: 38px; object-fit: contain; user-select: none; -webkit-user-drag: none; }
 .remote-title { min-width: 0; text-align: center; }
@@ -274,21 +276,24 @@ html:not(.native-app) .detail-screen { height: 100dvh; }
 .app-shell.detail-open > :not(.detail-screen) { pointer-events: none; }
 /* The directory keeps animating behind an open conversation even though it is
    fully covered: 3 status spinners alone cost more main-thread time than the
-   whole thread. Pause them whenever a conversation is open — including while a
-   back swipe is revealing the list under the finger. Releasing them mid-gesture
-   is what that swipe felt like: a style recalc across every row plus per-frame
-   work from the spinners and phase gradients while a full-screen layer is
-   already moving. They come back the moment the detail is gone.
-   `detail-closing` 是同一个「先别恢复」的延长段：滑退动画把详情层送到位、React 把整棵详情树卸掉，
-   都落在收尾那一帧上；目录这一头同时把几十个定时动画重新交给合成器、再给顶栏糊一层背景
-   （backdrop-filter 的第一次渲染要一整屏背景模糊），两笔重活挤在一起就是用户报的「滑到最右边
-   卡一下」。这个类由 App.jsx 在收起时挂到 `<html>` 上、那一帧画完之后摘掉。 */
+   whole thread. Pause them while a conversation is open — including while the
+   finger is still down on a back swipe. Releasing them mid-drag is what that
+   swipe felt like: a style recalc across every row plus per-frame work from the
+   spinners and phase gradients while a full-screen layer is moving under the
+   finger.
+   手指一松手（`swipe-dismissing`）就把它们放回来：从那一刻起被揭开的就是目录本身，正在走的是自己往外飞
+   的详情层——原生滑退里被揭开的那一层从来不是冻着的。搁到最后（动画结束、详情树卸掉、`detail-closing`
+   也摘掉）才恢复，看到的是目录先冻几十毫秒、再连着一笔恢复的代价一起跳一下，也就是用户报的「能返回，
+   但收尾卡/跳」。`detail-closing` 现在只管按钮返回那条路（那条路没有动画，恢复落在卸层的下一帧）。 */
 .app-shell.detail-open > :not(.detail-screen) *,
 html.detail-closing .app-shell > :not(.detail-screen) * { animation-play-state: paused; }
+.app-shell.detail-open:has(.detail-screen.swipe-dismissing) > :not(.detail-screen) * { animation-play-state: running; }
 /* 详情页滑走时，目录顶栏那层 backdrop-filter 会让 iOS 每一帧重算一次背景模糊：正在移动的详情层压在
-   它上面，模糊就得跟着重算，滑动因此一卡一卡。详情开着（或正在收起）时它本来就被盖住，直接关掉。 */
-.app-shell.detail-open .remote-topbar,
-html.detail-closing .remote-topbar { backdrop-filter: none; }
+   它上面，模糊就得跟着重算，拖动因此一卡一卡（手指还在，图层跟着手指走）——详情开着时先关掉。
+   松手那一下就放回来：整屏背景模糊的第一次渲染如果攒到收尾动画之后，那一帧正好是目录刚刚露全、眼睛盯着
+   的地方。 */
+.app-shell.detail-open .remote-topbar { backdrop-filter: none; }
+.app-shell.detail-open:has(.detail-screen.swipe-dismissing) .remote-topbar { backdrop-filter: var(--topbar-backdrop); }
 .detail-top { touch-action: none; }
 /* The pull is a Web Animations transform owned by App.jsx; this class promotes the layer
    before the finger moves (so the first tracked frame does not build it) and stays on

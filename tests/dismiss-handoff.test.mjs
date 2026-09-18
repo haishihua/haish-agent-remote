@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import { afterPaint, createDismissHandoff, DIRECTORY_HOLD_CLASS } from '../src/dismiss-handoff.js';
@@ -16,8 +17,45 @@ function fakeRaf() {
   };
 }
 
-test('the hold class matches the one styles.css pauses the directory with', () => {
+test('the hold class matches the one styles.css pauses the directory with', async () => {
   assert.equal(DIRECTORY_HOLD_CLASS, 'detail-closing');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  assert.match(css, /html\.detail-closing \.app-shell > :not\(\.detail-screen\) \*/);
+});
+
+test('a swipe dismissal leaves the directory live but still schedules the unmount', () => {
+  const steps = [];
+  const { raf, flush } = fakeRaf();
+  const dismiss = createDismissHandoff({
+    addHold: () => steps.push('hold'),
+    removeHold: () => steps.push('release'),
+    unmount: () => steps.push('unmount'),
+    raf,
+  });
+
+  dismiss({ hold: false });
+  assert.deepEqual(steps, []);
+  flush();
+  flush();
+  // 排期照旧：动画最后那一帧先画出去，再卸层；只是不再拿 detail-closing 把目录冻两帧。
+  assert.deepEqual(steps, ['unmount']);
+  flush();
+  flush();
+  assert.deepEqual(steps, ['unmount']);
+});
+
+test('styles.css hands the directory back on release, and keeps it frozen while the finger is down', async () => {
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const release = css.match(/\.app-shell\.detail-open:has\(\.detail-screen\.swipe-dismissing\)[^{]*\{[^}]*\}/g) || [];
+  assert.equal(release.length, 2);
+  const joined = release.join('\n');
+  // 目录的定时动画与顶栏模糊都在松手那一下回来（:has(swipe-dismissing)），而不是等收尾动画彻底结束。
+  assert.match(joined, /> :not\(\.detail-screen\) \* \{ animation-play-state: running; \}/);
+  assert.match(joined, /backdrop-filter: var\(--topbar-backdrop\)/);
+  // 手指还按着（只有 detail-open）时两样都是关的：拖动里恢复等于每帧重算一次模糊、每行重算一次样式。
+  assert.match(css, /\.app-shell\.detail-open \.remote-topbar \{ backdrop-filter: none; \}/);
+  // hold 不再自己关模糊：它是按钮返回那条路的（那条路不传 keepDirectoryLive）。
+  assert.doesNotMatch(css, /html\.detail-closing \.remote-topbar/);
 });
 
 test('afterPaint waits for two frames: the current one is painted before the work runs', () => {
