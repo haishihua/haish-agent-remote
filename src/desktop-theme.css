@@ -5,7 +5,7 @@
  *   approval-surface.css、quote/edit-message/error/loading-state.css、agent-elements/elements.css），
  *   那些跟着组件走，不在这里列。
  * - 剩下的是桌面 styles.css 里按段拆的**全局段**：聊天区、审批、工作流运行时、委派。它们内部
- *   全是带前缀的类名（.chat-*/.aui-*/.workflow-*/.td-*），没有 html/body 这类全局规则，
+ *   全是带前缀的类名（chat- / aui- / workflow- / td- 开头），没有 html/body 这类全局规则，
  *   整段接进来不会串味。顺序照桌面 styles.css。
  * - 桌面 base.css 里的 :root token、.ico-* 遮罩图标、portal-tooltip 由生成器摘出来
  *   （scripts/gen-desktop-base-css.mjs → desktop-base.generated.css）：base.css 同时含

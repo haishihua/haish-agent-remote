@@ -9,6 +9,11 @@
 //      在滚动加载更早的轮次，手机这边用 IntersectionObserver 触发（行上会说
 //      「Steps load when you scroll up.」）。
 import React from 'react';
+// 桌面那几份带前缀的全局样式段（chat / approvals / workflow-runtime / delegation）
+// 和 base.css 摘出来的 token：桌面组件自己只 import 组件级样式，这几段得由这一层
+// 带进模块图。顺序上它排在 main.jsx 的 styles.css 之前（App.jsx 先被 import），
+// 所以两边同名的 token 和类名由手机这边说了算。
+import './desktop-theme.css';
 import { ChatMessageRow } from '../../haish-agent/app-web/src/features/chat/components/ChatMessageRow.jsx';
 import { api } from './api.js';
 
