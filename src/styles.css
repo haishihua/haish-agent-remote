@@ -344,7 +344,7 @@ html.detail-closing .app-shell > :not(.detail-screen) * { animation-play-state: 
 .scroll-to-bottom-button.is-visible { opacity: 1; pointer-events: auto; transform: translate(-50%, 0); }
 .scroll-to-bottom-button:focus-visible { border-color: rgba(239, 191, 100, 0.5); outline: none; }
 .scroll-to-bottom-button svg { width: 23px; height: 23px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-.composer-dock { min-width: 0; margin-bottom: max(12px, 8px + var(--safe-bottom) - var(--keyboard-inset)); }
+.composer-dock { position: relative; min-width: 0; margin-bottom: max(12px, 8px + var(--safe-bottom) - var(--keyboard-inset)); }
 /* 输入框那一叠的位置由上面那行和这一行一起管：静息时离屏幕底 8px + 安全区；键盘上来时收成 12px——那是照
    用户给的参考图（ChatGPT）量的一条呼吸位：输入框两侧本来就留 10px，底下也留一段，整块才是浮在键盘上，
    而不是长在键盘上。收掉的量与跟键盘走的那一层上移的距离正好抵消，落地换手才看不见，见 src/ios-keyboard.js
@@ -370,23 +370,31 @@ html.detail-closing .app-shell > :not(.detail-screen) * { animation-play-state: 
 .composer-image-remove { position: absolute; z-index: 3; top: 2px; right: 2px; display: grid; width: 20px; height: 20px; padding: 0; place-items: center; border: 0; border-radius: 50%; background: rgba(0, 0, 0, 0.7); color: white; }
 .composer-image-remove::before { position: absolute; inset: -9px; content: ''; }
 .composer-image-error { margin: -1px 6px 2px; grid-column: 1 / -1; color: var(--danger); font-size: 11px; line-height: 1.35; }
-/* 引用批注（桌面的「添加注释」，手机端「Add to chat」）：块本体、编辑器、高亮那一整份都在
-   桌面的 message-annotations.css / quote.css 里（见 src/message-annotations.jsx），
-   这里只写手机上非改不可的两处。 */
-/* 1) 选区菜单是 App 自绘的（系统选择菜单加不进项，见 message-annotations.jsx）：一块深色浮层，
-   一项「Add to chat」，尺寸照 iOS 的编辑菜单（44px 高、圆角、细描边）。它排在选区下方，
-   系统那条默认在选区上方（floating-ui 的 flip/shift 各自避让）。 */
-.annotation-menu { display: flex; z-index: 1700; padding: 4px; border: 1px solid rgba(140, 158, 196, 0.22); border-radius: 14px; background: rgba(28, 31, 42, 0.94); backdrop-filter: blur(24px) saturate(140%); box-shadow: 0 12px 34px rgba(0, 0, 0, 0.5); animation: annotation-menu-in 140ms ease-out; }
-.annotation-menu-item { display: flex; min-height: 44px; padding: 0 14px; align-items: center; gap: 7px; border: 0; border-radius: 10px; background: transparent; color: #f2f4fa; font-family: var(--conversation-font); font-size: 15px; font-weight: 550; white-space: nowrap; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+/* 引用批注：桌面提供数据模型与 QuoteBlock，手机覆写交互壳和紧凑布局。 */
+/* 浏览器/PWA 没有 UIKit 原生选区菜单，才使用这个后备入口；原生 App 中不会渲染它。 */
+.annotation-menu { display: flex; z-index: 1700; padding: 4px; border: 1px solid rgba(140, 158, 196, 0.22); border-radius: 12px; background: rgba(28, 31, 42, 0.96); box-shadow: 0 10px 28px rgba(0, 0, 0, 0.42); }
+.annotation-menu-item { display: flex; min-height: 42px; padding: 0 13px; align-items: center; gap: 7px; border: 0; border-radius: 9px; background: transparent; color: #f2f4fa; font-family: var(--conversation-font); font-size: 14px; font-weight: 600; white-space: nowrap; }
 .annotation-menu-item svg { flex: 0 0 auto; color: var(--accent); }
-.annotation-menu-item:active { background: rgba(239, 191, 100, 0.16); }
-/* 只做透明度：菜单的位置是 floating-ui 写在 transform 上的，动 transform 会把定位顶掉。 */
-@keyframes annotation-menu-in { from { opacity: 0; } }
-/* 2) 输入框里的引用草稿：桌面上是一行里并排几块（每块最宽 480px），手机上就这么宽，
-   改成一块一行、占满，动作键也放到手指点得着的大小。 */
-.haish-annotation-drafts { padding: 8px 8px 0; gap: 6px; }
+/* iOS 编辑器固定在 composer dock 上方并随 dock 一起走，不再以原文选区为锚；这样键盘弹出后
+   不会被浮层定位算法推到屏幕外，也不会遮住原文中段。浏览器继续使用 floating-ui 的邻近定位。 */
+html.native-app .haish-annotation-floating { position: absolute !important; z-index: 1750; inset: auto 10px calc(100% + 8px) !important; width: auto; max-width: none; transform: none !important; }
+.haish-annotation-editor { width: min(420px, calc(100vw - 20px)); max-width: none; padding: 10px; border-color: rgba(138, 166, 209, 0.34); border-radius: 16px; background: rgba(13, 16, 24, 0.98); box-shadow: 0 14px 42px rgba(0, 0, 0, 0.52); }
+html.native-app .haish-annotation-editor { width: 100%; }
+.haish-annotation-editor > .haish-quote-block.is-preview { max-height: 72px; padding: 8px 10px; overflow: hidden; border-radius: 10px; background: rgba(138, 166, 209, 0.09); }
+.haish-annotation-editor textarea { min-height: 48px; max-height: 112px; margin-top: 8px; padding: 11px 12px; resize: none; border: 1px solid rgba(138, 166, 209, 0.22); border-radius: 11px; background: rgba(24, 33, 49, 0.88); font-size: 16px; }
+.haish-annotation-editor-actions { gap: 6px; padding-top: 8px; }
+.haish-annotation-editor-actions button { min-height: 38px; padding: 0 14px; border-radius: 10px; font-size: 14px; }
+.haish-annotation-editor-actions button:last-child { background: var(--accent); color: #17130b; font-weight: 700; }
+/* 输入框里的引用草稿：一块一行，但限制总高，避免多条引用把主输入框顶出屏幕。 */
+.haish-annotation-drafts { max-height: 164px; padding: 8px 8px 0; gap: 6px; overflow-y: auto; overscroll-behavior: contain; }
 .haish-annotation-drafts > .haish-quote-block { width: 100%; max-width: 100%; margin: 0; }
 .haish-annotation-drafts .haish-quote-actions button { width: 32px; height: 32px; padding: 8px; }
+/* 已发送的批注属于用户消息气泡内部：去掉桌面版的外边距与大间距，并限制引用文本行数，
+   防止长选区在 iPhone 上把气泡撑成整屏。模型上下文不变，只压显示。 */
+.chat-message-row.user .haish-sent-annotations { gap: 5px; margin: 0; }
+.chat-message-row.user .haish-sent-annotations .haish-quote-block { gap: 5px; margin: 0; padding: 7px 9px; border-left: 2px solid rgba(239, 191, 100, 0.55); border-radius: 8px; background: rgba(10, 16, 28, 0.22); }
+.chat-message-row.user .haish-sent-annotations .haish-quote-text { -webkit-line-clamp: 3; font-size: 12px; line-height: 1.4; }
+.chat-message-row.user .haish-sent-annotations .haish-quote-comment { margin-top: 3px; font-size: 13px; line-height: 1.4; }
 .send-button { display: grid; grid-column: -2 / -1; width: 48px; height: 48px; padding: 0; place-items: center; align-self: end; border: 0; border-radius: 14px; background: var(--accent); color: #f7e7b0; }
 .send-button.stop { padding: 0; border: 1px solid #d05050; background: linear-gradient(180deg, #d65a5a 0%, #b73a3a 55%, #8b2a2a 100%); color: #fff8f3; box-shadow: inset 0 1px 0 rgba(255, 220, 220, 0.28), inset 0 -1px 0 rgba(70, 20, 20, 0.28), 0 1px 2px rgba(0, 0, 0, 0.16); }
 .send-spinner { display: block; width: 20px; height: 20px; box-sizing: border-box; border: 2px solid color-mix(in srgb, currentColor 28%, transparent); border-top-color: currentColor; border-radius: 50%; transform-origin: 50% 50%; animation: spin 720ms linear infinite; }

@@ -33,17 +33,18 @@ test('check:styles 会核这条覆盖有没有落进构建产物', async () => {
   );
 });
 
-// 引用批注（桌面的「添加注释」）那几块在手机上要改的就一处：桌面的草稿行是一行里并排几块
-// （每块最宽 480px），手机上就这么宽，得一块一行。桌面那份 `message-annotations.css` 与手机
-// 这份是两张表（见 scripts/gen-desktop-base-css.mjs 那条注），所以这一条也是产物上的事。
+// 引用批注在手机上要压三层：输入区草稿占满一行但不能无限增高；原生编辑器固定在 dock
+// 上方；发出去后的引用在用户气泡里保持紧凑。桌面样式与手机覆盖是两张表，所以这里钉最终覆盖。
 const ANNOTATION_DRAFT_RULE = '.haish-annotation-drafts > .haish-quote-block { width: 100%; max-width: 100%; margin: 0; }';
 
-test('手机样式表把引用草稿改成一块一行', async () => {
+test('手机样式表约束批注草稿、编辑器和已发送引用', async () => {
   const css = await readFile(path.join(repoRoot, 'src', 'styles.css'), 'utf8');
   assert.ok(css.includes(ANNOTATION_DRAFT_RULE), `src/styles.css 里应当有 \`${ANNOTATION_DRAFT_RULE}\``);
-  // 选区菜单是 App 自绘的那一块（深色浮层），跟草稿行一起钉住：菜单的浮层是手机自己画的，
-  // 这条没了就是「选中文字后什么都没出现」。
-  assert.ok(css.includes('.annotation-menu-item {'), 'src/styles.css 里应当有自绘选区菜单的样式');
+  assert.ok(css.includes('.composer-dock { position: relative;'), 'composer dock 应为原生评论编辑器提供定位容器');
+  assert.ok(css.includes('html.native-app .haish-annotation-floating { position: absolute !important;'), '原生评论编辑器应固定在 composer dock 上方');
+  assert.ok(css.includes('.chat-message-row.user .haish-sent-annotations .haish-quote-text { -webkit-line-clamp: 3;'), '已发送长引用应在 iPhone 上截行');
+  // 浏览器/PWA 没有 UIKit 菜单，仍需要这个后备入口。
+  assert.ok(css.includes('.annotation-menu-item {'), '浏览器后备选区菜单样式不应被移除');
 });
 
 test('check:styles 的清单里也有这一条', async () => {
@@ -52,6 +53,8 @@ test('check:styles 的清单里也有这一条', async () => {
     script.includes('.haish-annotation-drafts>.haish-quote-block{width:100%;max-width:100%;margin:0}'),
     '清单里要比对压缩后的引用草稿覆盖',
   );
+  assert.ok(script.includes('html.native-app.haish-annotation-floating{position:absolute!important'), '清单里要核原生编辑器定位');
+  assert.ok(script.includes('.chat-message-row.user.haish-sent-annotations.haish-quote-text{-webkit-line-clamp:3'), '清单里要核已发送引用的截行');
 });
 
 // 消息行的时间（与它同排的复制按钮）在手机上常显：桌面那份是「悬停那一行才亮」，触摸设备靠

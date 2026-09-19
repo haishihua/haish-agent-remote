@@ -9,13 +9,11 @@
 //   - conversation-search.js 的 scrollToConversationMatch：引用跳转。
 //
 // 手机端自己只有两件事：
-//   1) 入口。桌面是「选中 → 工具栏 Add comment → 编辑器里写评论 → Add to chat」两步；手机上
-//      一步：选中（iOS 原生的选区与手柄）→ 菜单上一项「Add to chat」→ 引用落进输入框，光标也交回去，
-//      评论就直接在输入框里跟这句话一起写（要单独给一条引用写评论时点草稿块上的铅笔，编辑器跟桌面同一份）。
-//   2) 菜单的皮。系统选择菜单（拷贝 / 粘贴 / 查询…）没法从 Web 侧加项（WebKit 没有公开接口，
-//      只有 swizzle WKContentView 那条私有路），所以菜单由 App 自绘：深色、圆角、模糊，一项，
-//      样式照参考图（见 src/styles.css 的 .annotation-menu）。它们可能和系统菜单同时出现——
-//      我们的菜单排在选区下方，系统那条默认在选区上方（flip/shift 会各自避让）。
+//   1) 入口。iOS 原生选区菜单由 HaishWebView 通过公开的 UIResponder/UIMenuController 接口加入
+//      Add Comment；点它时原生只发一个事件，选区抓取、偏移校验和草稿仍由桌面模型负责。浏览器/PWA
+//      没有这条原生命令，保留一个轻量的自绘 Add Comment 入口。
+//   2) 编辑器。选中后先进入与桌面一致的「引用预览 + 可选评论」，保存后才把草稿放进输入区；不再把
+//      “Add to chat”误当作系统选区菜单动作。
 import React from 'react';
 import {
   autoUpdate,
@@ -30,6 +28,8 @@ import {
   useInteractions,
 } from '@floating-ui/react';
 import { Quote } from 'lucide-react';
+import { isNativeApp } from './native-connection.js';
+import { addNativeCommentListener, reportNativeAnnotationSelection } from './native-comment-menu.js';
 import { QuoteBlock } from '../../haish-agent/app-web/src/shared/ui/agent-elements/Quote.jsx';
 import {
   annotationError,
@@ -57,24 +57,20 @@ if (typeof globalThis.crypto?.randomUUID !== 'function' && globalThis.crypto) {
   try { Object.defineProperty(globalThis.crypto, 'randomUUID', { value: randomUuid, configurable: true }); } catch { /* 见上 */ }
 }
 
-/**
- * 选区到菜单之间那口气：iOS 上点系统菜单外面那一下会顺手把选区收掉，如果我们在
- * 「选区没了」的那一刻立刻收菜单，同一个点按就会把它一起打掉（菜单永远点不着）。
- * 收掉选区后先留这么一小会儿，菜单还在原地，用户第二下能落在上面。
- */
-const SELECTION_LOST_GRACE_MS = 700;
-
 export const MessageAnnotations = React.forwardRef(function MessageAnnotations(
-  { listRef, highlightItems = [], drafts, onAdd, onSave, onSaved, onError },
+  { listRef, highlightItems = [], drafts, onSave, onError },
   ref,
 ) {
   const [selection, setSelection] = React.useState(null);
   const [editor, setEditor] = React.useState(null);
   const [comment, setComment] = React.useState('');
   const inputRef = React.useRef(null);
-  const hideTimerRef = React.useRef(0);
   const frameRef = React.useRef(0);
+  const selectionRef = React.useRef(null);
   const close = React.useCallback(() => {
+    selectionRef.current = null;
+    window.getSelection()?.removeAllRanges();
+    if (isNativeApp) reportNativeAnnotationSelection(false);
     setEditor(null);
     setSelection(null);
     setComment('');
@@ -99,19 +95,26 @@ export const MessageAnnotations = React.forwardRef(function MessageAnnotations(
     });
   }, [refs]);
 
-  const begin = () => {
-    const item = selection?.annotation;
+  const begin = React.useCallback(() => {
+    // UIKit 点菜单项时选区有可能已经进入收起阶段，因此优先用最后一次有效抓取；如果 selectionchange
+    // 还没来得及跑，就现场抓一次。原文/偏移仍由桌面模型生成，原生层不复制这套规则。
+    const captured = selectionRef.current || captureAnnotationSelection(listRef.current);
+    const item = captured?.annotation;
     if (!item) return;
     const error = annotationError([...drafts, item]);
     if (error) { onError(error); close(); return; }
     onError('');
-    // 一步落进输入框：草稿与编号由 App 那边的 useAnnotationDraft 管（与桌面同一份语义）。
-    // id 是 captureAnnotationSelection 发的（见上面那段 randomUUID 的补丁）。
-    onAdd(item);
-    window.getSelection()?.removeAllRanges();
-    close();
-    onSaved?.();
-  };
+    if (captured.range) anchorTo(captured.range);
+    selectionRef.current = captured;
+    setSelection(null);
+    setEditor(item);
+    setComment('');
+  }, [anchorTo, close, drafts, listRef, onError]);
+
+  React.useEffect(() => {
+    if (!isNativeApp) return undefined;
+    return addNativeCommentListener(begin);
+  }, [begin]);
 
   const jump = React.useCallback((item) => {
     const range = findAnnotationRange(listRef.current, item);
@@ -142,18 +145,26 @@ export const MessageAnnotations = React.forwardRef(function MessageAnnotations(
         frameRef.current = 0;
         if (refs.floating.current?.contains(document.activeElement)) return;
         const captured = captureAnnotationSelection(listRef.current);
-        setSelection(captured);
+        const domSelection = window.getSelection();
+        const hasDocumentSelection = Boolean(domSelection?.rangeCount && !domSelection.isCollapsed);
+        const active = document.activeElement;
+        const isEditableSelection = active instanceof HTMLInputElement
+          || active instanceof HTMLTextAreaElement
+          || active?.isContentEditable;
         if (captured) {
-          window.clearTimeout(hideTimerRef.current);
-          hideTimerRef.current = 0;
+          selectionRef.current = captured;
           anchorTo(captured.range);
-        } else if (!hideTimerRef.current) {
-          // 选区没了（点了一下页面、或者收键盘）：菜单留一口气再收，见上面的常量。
-          hideTimerRef.current = window.setTimeout(() => {
-            hideTimerRef.current = 0;
-            setSelection(null);
-          }, SELECTION_LOST_GRACE_MS);
+        } else if (hasDocumentSelection || isEditableSelection) {
+          // A real selection somewhere else supersedes the last annotatable one. Do not clear only
+          // because UIKit temporarily collapsed the DOM range while handing off its menu command.
+          selectionRef.current = null;
         }
+        // iOS 的入口属于系统菜单，不再画第二块浮层；同时把“这是不是可批注选区”报给
+        // HaishWebView。UIKit 收起 DOM range 的瞬间继续保留最后一次有效抓取，避免用户点菜单项
+        // 时 Add Comment 先一步消失；输入框或无关页面出现真实选区时则立即禁用。
+        const nativeSelectionAvailable = Boolean(captured || (!hasDocumentSelection && !isEditableSelection && selectionRef.current));
+        if (isNativeApp) reportNativeAnnotationSelection(nativeSelectionAvailable);
+        setSelection(isNativeApp ? null : captured);
       });
     };
     document.addEventListener('selectionchange', capture);
@@ -165,8 +176,7 @@ export const MessageAnnotations = React.forwardRef(function MessageAnnotations(
       document.removeEventListener('touchend', capture);
       if (frameRef.current) window.cancelAnimationFrame(frameRef.current);
       frameRef.current = 0;
-      window.clearTimeout(hideTimerRef.current);
-      hideTimerRef.current = 0;
+      if (isNativeApp) reportNativeAnnotationSelection(false);
     };
   }, [editor, listRef, refs, anchorTo]);
 
@@ -174,7 +184,11 @@ export const MessageAnnotations = React.forwardRef(function MessageAnnotations(
   React.useEffect(() => {
     const container = listRef.current;
     if (!container) return undefined;
-    const hide = () => setSelection(null);
+    const hide = () => {
+      selectionRef.current = null;
+      setSelection(null);
+      if (isNativeApp) reportNativeAnnotationSelection(false);
+    };
     container.addEventListener('scroll', hide, { passive: true });
     return () => container.removeEventListener('scroll', hide);
   }, [listRef]);
@@ -243,51 +257,52 @@ export const MessageAnnotations = React.forwardRef(function MessageAnnotations(
     const item = { ...editor, comment: comment.trim() };
     if (onSave(item) === false) return;
     window.getSelection()?.removeAllRanges();
+    selectionRef.current = null;
     close();
   };
 
-  return (
-    <FloatingPortal>
-      {(selection || editor) && (
-        <FloatingFocusManager context={context} modal={false} disabled={!editor} initialFocus={inputRef} returnFocus>
-          <div
-            ref={refs.setFloating}
-            style={floatingStyles}
-            className={editor ? 'haish-annotation-floating' : 'annotation-menu'}
-            {...getFloatingProps()}
-            role={editor ? 'dialog' : 'toolbar'}
-            aria-label={editor ? 'Comment on selected text' : 'Selected text'}
-          >
-            {editor ? (
-              <div className="haish-annotation-editor">
-                <QuoteBlock item={{ ...editor, comment: '' }} preview />
-                <textarea
-                  ref={inputRef}
-                  value={comment}
-                  maxLength={2000}
-                  rows={2}
-                  placeholder="Add an optional comment…"
-                  aria-label="Optional comment"
-                  onChange={(event) => setComment(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.nativeEvent.isComposing) return;
-                    // Enter 就是主按钮；Shift+Enter 留默认换行（桌面同款）。
-                    if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); save(); }
-                  }}
-                />
-                <div className="haish-annotation-editor-actions">
-                  <button type="button" onClick={close}>Cancel</button>
-                  <button type="button" onClick={save}>{drafts.some((item) => item.id === editor.id) ? 'Save comment' : 'Add to chat'}</button>
-                </div>
-              </div>
-            ) : (
-              <button type="button" className="annotation-menu-item" onMouseDown={(event) => event.preventDefault()} onClick={begin}>
-                <Quote size={15} aria-hidden="true" /> Add to chat
-              </button>
-            )}
+  const floating = (selection || editor) ? (
+    <FloatingFocusManager context={context} modal={false} disabled={!editor} initialFocus={inputRef} returnFocus>
+      <div
+        ref={refs.setFloating}
+        style={floatingStyles}
+        className={editor ? 'haish-annotation-floating' : 'annotation-menu'}
+        {...getFloatingProps()}
+        role={editor ? 'dialog' : 'toolbar'}
+        aria-label={editor ? 'Comment on selected text' : 'Selected text'}
+      >
+        {editor ? (
+          <div className="haish-annotation-editor">
+            <QuoteBlock item={{ ...editor, comment: '' }} preview />
+            <textarea
+              ref={inputRef}
+              value={comment}
+              maxLength={2000}
+              rows={2}
+              placeholder="Add an optional comment…"
+              aria-label="Optional comment"
+              onChange={(event) => setComment(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.nativeEvent.isComposing) return;
+                // Enter 就是主按钮；Shift+Enter 留默认换行（桌面同款）。
+                if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); save(); }
+              }}
+            />
+            <div className="haish-annotation-editor-actions">
+              <button type="button" onClick={close}>Cancel</button>
+              <button type="button" onClick={save}>{drafts.some((item) => item.id === editor.id) ? 'Save Comment' : 'Add Comment'}</button>
+            </div>
           </div>
-        </FloatingFocusManager>
-      )}
-    </FloatingPortal>
-  );
+        ) : (
+          <button type="button" className="annotation-menu-item" onMouseDown={(event) => event.preventDefault()} onClick={begin}>
+            <Quote size={15} aria-hidden="true" /> Add Comment
+          </button>
+        )}
+      </div>
+    </FloatingFocusManager>
+  ) : null;
+
+  // Native renders inside composer-dock so the existing keyboard controller moves editor and input
+  // together. Browser/PWA keeps the body portal because it has no native keyboard surface.
+  return isNativeApp ? floating : <FloatingPortal>{floating}</FloatingPortal>;
 });

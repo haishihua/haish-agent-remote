@@ -50,7 +50,7 @@ import { ScrollToBottomButton } from './ScrollToBottomButton.jsx';
 import { ChatThread, releaseConversationImageUrls } from './chat-view.jsx';
 // 线程末尾那个审批 / 提问插槽：卡片是桌面的，作用域是手机的（见 approval-slot.jsx）。
 import { ChatApprovalSlot } from './approval-slot.jsx';
-// 引用批注（桌面的「添加注释」，手机端叫「Add to chat」）：模型、草稿 hook、引用块与
+// 引用批注（桌面与 iOS 原生菜单都叫「Add Comment」）：模型、草稿 hook、引用块与
 // 选区菜单都在 message-annotations.jsx 里，这里只接线。
 import { MessageAnnotations } from './message-annotations.jsx';
 import { QuoteBlock } from '../../haish-agent/app-web/src/shared/ui/agent-elements/Quote.jsx';
@@ -1522,7 +1522,6 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
   const previewThreadImage = useCallback((image) => {
     setPreviewImage({ src: image?.src, name: image?.title });
   }, []);
-  const focusComposer = useCallback(() => messageInputRef.current?.focus(), []);
   // 与桌面 ChatPanel 同一套判定：先拿整份草稿验一遍（上限、长度、id 唯一），过了才落盘。
   const saveAnnotation = useCallback((item) => {
     const exists = annotationSnapshots.some((draft) => draft.id === item.id);
@@ -1576,19 +1575,17 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
         </div>
         <ScrollToBottomButton scrollRef={messageScrollRef} resetKey={id} />
       </div>
-      {/* 选区菜单与评论编辑器（浮层，挂到 body）：listRef 就是线程本身，选中的那句从行上的
-          data-annotation-source 认领（只有已完成回答的那层 div 带这个属性，跟桌面一致）。 */}
-      <MessageAnnotations
-        ref={annotationUiRef}
-        listRef={messageScrollRef}
-        highlightItems={highlightedAnnotations}
-        drafts={annotationDrafts}
-        onAdd={saveAnnotation}
-        onSave={saveAnnotation}
-        onSaved={focusComposer}
-        onError={setAnnotationNotice}
-      />
       <div className="composer-dock" ref={composerDockRef}>
+        {/* iOS 的 Add Comment 在系统选区菜单里；编辑器放在 dock 内，和主输入区共用原生键盘位移。
+            浏览器/PWA 的后备入口仍由组件 portal 到 body。 */}
+        <MessageAnnotations
+          ref={annotationUiRef}
+          listRef={messageScrollRef}
+          highlightItems={highlightedAnnotations}
+          drafts={annotationDrafts}
+          onSave={saveAnnotation}
+          onError={setAnnotationNotice}
+        />
         {runConfig && runConfigExpanded ? <div className={`run-config-quick-controls thinking-${runConfig.thinking}`} ref={runConfigQuickRef}>
           <button type="button" className="run-config-summary" onClick={() => setShowRunConfig(true)} disabled={running} aria-label="Open advanced run configuration">
             <span>{compactModel || 'Model'}</span><strong>{selectedThinking?.label || 'Thinking'}</strong><ChevronRight size={19} aria-hidden="true" />

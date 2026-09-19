@@ -37,6 +37,8 @@ const REQUIRED_SELECTORS = ['[data-streamdown=table-wrapper]', '.haish-markdown'
 const REQUIRED_OVERRIDES = [
   ['.chat-trace-pending{display:none}', '不画桌面那句「Steps load when you scroll up.」'],
   ['.haish-annotation-drafts>.haish-quote-block{width:100%;max-width:100%;margin:0}', '引用批注的草稿在手机上占满一行（桌面是最宽 480px 的并排块）'],
+  ['html.native-app.haish-annotation-floating{position:absolute!important', 'iOS 评论编辑器固定在 composer dock 上方，随键盘一起移动'],
+  ['.chat-message-row.user.haish-sent-annotations.haish-quote-text{-webkit-line-clamp:3', '已发送的长引用在用户气泡里截为三行'],
   ['.chat-message-row.message-shell~.chat-message-actions{opacity:1;pointer-events:auto}', '消息行的时间与复制按钮常显（桌面是悬停那一行才亮）'],
 ];
 

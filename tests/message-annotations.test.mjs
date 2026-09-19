@@ -1,4 +1,4 @@
-// 引用批注（桌面的「添加注释」，手机端「Add to chat」）在**手机这一侧**的接线：
+// 引用批注（桌面与 iOS 原生菜单都叫「Add Comment」）在**手机这一侧**的接线：
 // 行的形状（chat-runtime.js 的 buildChatRows）与桌面那套模型层
 // （../../haish-agent/app-web/src/features/chat/model/message-annotations.js）拼在一起对不对。
 // 手机不复制桌面的模型，所以这里要钉的是「接线」而不是规则本身：桌面的

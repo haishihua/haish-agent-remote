@@ -29,7 +29,7 @@ export function chatMessageText(content) {
 /**
  * 一条用户消息「显示上」说的是什么。
  *
- * 带引用的那一轮（桌面「添加注释」/ 手机「Add to chat」）在 runtime 落库的正文是
+ * 带引用的那一轮（桌面与 iOS 都从「Add Comment」进入）在 runtime 落库的正文是
  * 「用户打的字 + 拼给模型看的引用块」（core 的 `app/annotations.py`：一段
  * `Quoted feedback (…)` 加 JSON；只带引用不带正文时整条正文就只剩那一段）。那是给模型
  * 看的；用户打的那几个字 runtime 记在任务的 `display_text` 上（普通轮次是 null），桌面
