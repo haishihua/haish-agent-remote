@@ -333,15 +333,15 @@ html.detail-closing .app-shell > :not(.detail-screen) * { animation-play-state: 
 .detail-error-banner.connecting svg { color: var(--accent); }
 .message-region { position: relative; min-height: 0; overflow: hidden; }
 .detail-body { height: 100%; }
-/* 线程贴着键盘那一端（原生聊天的样子）：内容比窗口短时，空白留在上面，最后一条消息就在输入框上方，
-   而不是浮在顶上、下面空一大片。键盘那一套位移也靠这个锚：跟键盘一起动的是窗口的**下**沿，内容贴着
-   它，开合全程都跟在输入框上方；布局里那段负 margin（`--keyboard-lift`，见 src/ios-keyboard.js）只抬
-   窗口自己，不再把内容顶出页头。`flex: 0 0 auto` 是必须的：滚动容器里的 flex 子项默认会被压扁。 */
+/* 线程从顶上往下排，跟桌面 `.chat-message-list` 一样：它那边 padding-top 的 24px 之后直接是第一行，
+   没有 `margin-top: auto` 这种东西。内容比窗口短时，空白留在下面。以前这里把首行压到底（首行的
+   margin-top: auto），手机上看着就是「消息浮在中间、离页头空一大截」。键盘那一套位移不靠这个锚：跟
+   键盘一起动的是窗口的**下**沿（`--keyboard-lift` 那段负 margin，见 src/ios-keyboard.js），内容按
+   自己的方向排就行。`flex: 0 0 auto` 是必须的：滚动容器里的 flex 子项默认会被压扁。 */
 /* 行与行之间留桌面那 15px（桌面落在 .chat-message-list 的 gap 上；手机这边线程的行是直接挂在
    滚动窗口下的，所以这一条写在 .message-scroll 上）。 */
 .message-scroll { display: flex; height: 100%; flex-direction: column; overflow-x: hidden; overflow-y: auto; padding: 20px 16px 28px; gap: 15px; overscroll-behavior: contain; scrollbar-width: none; -ms-overflow-style: none; }
 .message-scroll > * { flex: 0 0 auto; }
-.message-scroll > :first-child { margin-top: auto; }
 .message-scroll::-webkit-scrollbar { display: none; width: 0; height: 0; }
 /* 气泡吃满行宽：桌面的两条上限（`.chat-bubble` 的 min(680px, 72%)、助手行的 82%）是给
    1000px 往上的窗口留的余量，到 390px 的屏上只剩 258 / 293px——正文挤成一根条，表格和

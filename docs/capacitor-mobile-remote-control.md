@@ -201,6 +201,7 @@ haish://pair?v=1&endpoint=https%3A%2F%2F47.97.24.242&code=12345678
 - `GET /api/tasks/{id}?event_view=runtime`、`GET /api/tasks/{id}/events`：加载任务状态和事件；
 - `GET /api/agents`、`GET /api/settings/llm`、`POST /api/llm/models`：加载运行配置；
 - `POST /api/conversations`：创建会话；
+- `PATCH /api/conversations/{id}`：第一条消息把占位名换成一句话摘要（桌面同样在客户端侧 PATCH 会话，判据与摘要都在 `src/conversation-title.js`）；
 - `POST /api/messages/images` 及会话图片预览接口：上传和查看图片；
 - `POST /api/tasks/{id}/inputs`：发送 steering 输入；
 - `POST /api/tasks/{id}/cancel`、`POST /api/conversations/{id}/tasks/cancel`：停止任务；
@@ -445,8 +446,9 @@ npm run mobile:sync
 - GitHub Actions workflow：已配置为唯一 IPA 构建入口；
 - 会话内执行 UI：直接渲染桌面 chat 的行 / 时间线 / 工具卡 / 审批与提问卡（pin 桌面 0.0.20，见上文「会话内的执行 UI 直接复用桌面 chat」）；审批 / ask_user / 浏览器安装卡的数据走 `src/haish-bridge.js` 接出来的 `window.haish`（5s 快照轮询 → `approval_snapshot`），四张卡都是桌面组件、落在线程里；composer 的发送/停止图标已换成桌面那套 `ArrowUp` / 实心圆角 `Square`；行距 15px、气泡吃满行宽；桌面 `markdown.css` 的 `@source` 已改指本仓 node_modules（表格 / 代码块工具类，见上文），CI 里 `npm run check:styles` 兜底；
 - 最新移动端 UI：已通过 Actions 成功构建并验证 artifact 内容；
+- 会话名与线程锚点：手机 New task 建出的会话带的是桌面认得的占位名（`NEW_CONVERSATION_TITLE`），第一条消息一发出就由客户端 PATCH 成一句话摘要（`src/conversation-title.js` + `src/api.js` 的 `updateConversation`，与桌面 `startDeploy` 同一套判据：占位名 + 还没跑过任务才换；换名失败只报错条，消息照发）；线程从顶上往下排（与桌面 `.chat-message-list` 一致，内容比窗口短时空白落在下面）；
+- 本地 adapter：`127.0.0.1:8766` 正常，但跑的是 release `adapter-v0.2.0` 的二进制（桌面 `scripts/remote-adapter.lock.json` 钉住的），比本仓源码旧：上面那条 `PATCH` 路由与 CORS 放行要到下一版 adapter release 才会跟着二进制上机（现在预检回的是 `400 Disallowed CORS method`）；
 - 公网 HTTPS：`https://47.97.24.242/remote/status` 已验证返回 `200`；
 - FRP：服务器 `7000` 与 Mac client 隧道已验证可用；
-- 本地 adapter：`127.0.0.1:8766` 正常；
 - SideStore 真机安装：仍需在目标 iPhone 上执行；
 - 签名：当前使用 SideStore 个人签名，不是 App Store/TestFlight 分发。

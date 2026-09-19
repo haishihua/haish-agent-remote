@@ -82,6 +82,9 @@ _ALLOWED_CORE_ROUTES: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
     for method, pattern in (
         ("GET", r"conversations"),
         ("POST", r"conversations"),
+        # 第一条消息把占位名换成一句话摘要：桌面同样在客户端侧 PATCH（core 的
+        # `update_conversation`），所以这条路由和 GET 一样只是转发给 runtime。
+        ("PATCH", r"conversations/[^/]+"),
         ("GET", r"projects"),
         ("GET", r"agents"),
         ("GET", r"settings/llm"),
@@ -766,7 +769,7 @@ def create_app(*, data_dir: Path | None = None, dist_dir: Path | None = None) ->
         CORSMiddleware,
         allow_origins=["capacitor://localhost", "https://localhost"],
         allow_credentials=False,
-        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Accept", "Authorization", "Content-Type"],
     )
     app.state.device_store = store
@@ -958,8 +961,9 @@ def create_app(*, data_dir: Path | None = None, dist_dir: Path | None = None) ->
             return rewritten_json(_compact_project_listing(payload))
 
         # The runtime API never exposes the provider a task ran with, so the phone
-        # would have to guess it from the coarse `provider_key`.
-        if request.method == "GET" and upstream_response.is_success and _is_conversation_detail(path):
+        # would have to guess it from the coarse `provider_key`. PATCH answers with
+        # the same record (the first-message rename reads it back), same fill-in.
+        if request.method in {"GET", "PATCH"} and upstream_response.is_success and _is_conversation_detail(path):
             raw, payload = await read_upstream_json()
             if payload is None:
                 return upstream_error(raw)

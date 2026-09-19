@@ -272,6 +272,8 @@ class RemoteProxyTest(unittest.TestCase):
         self.assertTrue(_route_allowed("POST", "llm/models"))
         self.assertTrue(_route_allowed("POST", "messages/images"))
         self.assertTrue(_route_allowed("GET", "conversations/abc/messages/images/preview"))
+        # 第一条消息把占位名换成一句话摘要：桌面同样在客户端侧 PATCH 会话。
+        self.assertTrue(_route_allowed("PATCH", "conversations/abc"))
         self.assertFalse(_route_allowed("POST", "projects"))
         self.assertTrue(_route_allowed("POST", "tasks/abc/cancel"))
         self.assertTrue(_route_allowed("GET", "approvals/state"))
@@ -282,6 +284,23 @@ class RemoteProxyTest(unittest.TestCase):
         self.assertFalse(_route_allowed("POST", "user-inputs/abc/resolve"))
         self.assertFalse(_route_allowed("GET", "settings/memory"))
         self.assertFalse(_route_allowed("DELETE", "conversations/abc"))
+
+    def test_capacitor_origin_can_preflight_the_first_message_rename(self):
+        # 手机发第一条消息要把占位名 PATCH 成一句话摘要：预检不允许 PATCH 的话，WebView 连
+        # 请求都不会发出去（装着的 adapter-v0.2.0 就是这么拒的：400 Disallowed CORS method）。
+        with TemporaryDirectory() as directory:
+            app = create_app(data_dir=Path(directory), dist_dir=Path(directory))
+            client = TestClient(app)
+            response = client.options(
+                "/api/conversations/conversation-1",
+                headers={
+                    "Origin": "capacitor://localhost",
+                    "Access-Control-Request-Method": "PATCH",
+                    "Access-Control-Request-Headers": "authorization,content-type",
+                },
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("PATCH", response.headers["access-control-allow-methods"])
 
     def test_stopped_runtime_is_reported_as_unavailable(self):
         with TemporaryDirectory() as directory:

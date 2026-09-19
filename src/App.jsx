@@ -91,6 +91,8 @@ import {
 import { isCurrentTaskRunning, isFailureStatus } from './task-stream.js';
 import { createTaskRuntimeSync } from './task-sync.js';
 import { conversationSignature, statusSignature } from './poll-signature.js';
+// 会话名：桌面那套占位名 + 第一条消息的一句话摘要（判据与 API 都在 conversation-title.js）。
+import { conversationTitleForMessage, isPlaceholderConversationTitle } from './conversation-title.js';
 import {
   CONVERSATION_PREVIEW_LIMIT,
   orderConversations,
@@ -1565,6 +1567,20 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
       }
 
       localStreamRef.current = true;
+      // 第一条消息给会话起名：`New Chat` 这种占位名 + 还没跑过任务时，换成 `titleFromTaskText` 的
+      // 一句话摘要（桌面在提交那一趟里做的是同一件事：`startDeploy` 算名字 + 客户端 PATCH）。
+      // 服务端不会自己改名，所以这一步得在这里发；换名失败只报到错误条上，这一轮消息照发——
+      // 收回去的是名字，不是消息。
+      const nextTitle = conversationTitleForMessage(nextMessage);
+      if (nextTitle && isPlaceholderConversationTitle(conversation.title || conversation.label) && !(conversation.tasks || []).length) {
+        try {
+          const renamed = await api.updateConversation(conversation.conversation_id, { title: nextTitle });
+          conversationSignatureRef.current = conversationSignature(renamed);
+          setConversation(renamed);
+        } catch (renameError) {
+          setError(renameError.message);
+        }
+      }
       // 本地草稿：任务号还没回来（第一个事件带到之前）时的壳。
       const initialRun = draftRuntimeTask();
       liveRunRef.current = initialRun;

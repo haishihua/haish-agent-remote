@@ -124,9 +124,15 @@ export const api = {
     }),
   }),
   approvals: () => request('/api/approvals/state'),
+  // 占位名取桌面默认名里那句中性的（`conversation-title.js` 的 `NEW_CONVERSATION_TITLE`，两处
+  // 必须一致）：两边都认它是占位名，谁先把第一条消息发出去，谁就把它换成一句话摘要。
   createConversation: (projectId) => request('/api/conversations', {
     method: 'POST',
-    body: JSON.stringify({ title: 'New task', execution_mode: 'chat', project_id: projectId || undefined }),
+    body: JSON.stringify({ title: 'New Chat', execution_mode: 'chat', project_id: projectId || undefined }),
+  }),
+  updateConversation: (id, patch) => request(`/api/conversations/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
   }),
   uploadImage: (conversationId, file) => {
     const body = new FormData();

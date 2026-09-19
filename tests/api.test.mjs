@@ -130,3 +130,27 @@ test('task reads stay on the runtime view and carry the incremental cursor', asy
     globalThis.fetch = originalFetch;
   }
 });
+
+test('the first message renames the conversation through the core PATCH route', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (path, init = {}) => {
+    calls.push([path, init.method, init.body ? JSON.parse(init.body) : null]);
+    return new Response(JSON.stringify({ conversation_id: 'abc', title: '修一下键盘' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+
+  try {
+    const renamed = await api.updateConversation('abc', { title: '修一下键盘' });
+    assert.deepEqual(calls, [['/api/conversations/abc', 'PATCH', { title: '修一下键盘' }]]);
+    assert.equal(renamed.title, '修一下键盘');
+
+    // 会话号里带斜杠这类字符也要转义，路由别被拆成两段。
+    await api.updateConversation('a/b', { title: 'x' });
+    assert.equal(calls.at(-1)[0], '/api/conversations/a%2Fb');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
