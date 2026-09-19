@@ -62,13 +62,29 @@ haish-agent-remote/
 桌面 0.0.20 = 97aaa54a359eabd4f2a225868df5e19aac8baf9e   # 当前 pin
 ```
 
-### 手机侧的三个接缝
+### 手机侧的四个接缝
 
 | 接缝 | 文件 | 干什么 |
 | --- | --- | --- |
 | 数据 | `src/chat-runtime.js` | 三条入口（详情/游标轮询、NDJSON 流、本地草稿）都折成**桌面形状**的 runtime task（`eventLog` + 记录字段），行由 `buildChatRows` 拼 |
 | 视图 | `src/chat-view.jsx` | 直接渲染桌面 `ChatMessageRow` / `ChatAgentTimeline`；图片走 `api.imagePreview` 取字节 |
+| 审批 | `src/haish-bridge.js` + `src/approval-slot.jsx` | 把 App 那支 5s 审批快照轮询接成桌面那层 `window.haish`（`approval_snapshot` + `resolveApproval`），于是工具审批 / ask_user 提问 / 浏览器运行时装四张卡全部是桌面组件，落在线程里 |
 | 样式 | `src/desktop-theme.css` + `scripts/gen-desktop-base-css.mjs` + `scripts/gen-desktop-markdown-css.mjs` | 引用桌面的 `styles/*.css`；生成的 `src/desktop-base.generated.css` 把桌面 `base.css` 的 `:root` token / `.ico-*` / portal tooltip 摘过来，`src/desktop-markdown.generated.css` 是桌面 `markdown.css` 的副本（只改 `@source` 的起点，见下）；两份都已 gitignore，prebuild/predev 重生成 |
+
+#### 审批 / 提问 / 浏览器安装卡：`window.haish` 的接缝
+
+桌面那四张卡（`ApprovalOverlay.jsx` 的 `ToolApprovalCard` / `BrowserRuntimeCard` / `WorkflowApprovalInline`、`AskUserInlineForm.jsx`）自己不取数据：它们读的是 `approval-store.js` 那个单例，而 store 只认 Electron 主进程暴露的 `window.haish.onApprovalEvent`（收 runtime WebSocket 转发的 `approval_snapshot` / `approval_requested` / `input_requested` …）与 `window.haish.resolveApproval(kind, id, payload)`（见桌面 `src/preload/preload.ts`）。手机的适配器没有这套 IPC：状态只有一份快照（`GET /api/approvals/state`），下决定是三个 HTTP 端点（适配器内部再转成 realtime socket 上的 `approval.resolve`）。
+
+`src/haish-bridge.js` 就是把两边对上的那层：
+
+- App 那支已有的 5s 轮询（`loadApprovals`）把快照递进来 → 桥发一份 `approval_snapshot`，事件名与负载形状照桌面，**store 与卡片一行都不用改**；
+- `resolveApproval('tool' | 'workflow' | 'user_input', …)` → 适配器的 `/api/approvals/…`、`/api/workflow-approvals/…`、`/api/user-inputs/…`；
+- 手机本地下过决定的请求先从后续快照里摘掉，直到后端也不再回报它（秒级轮询的延迟；不摘的话卡片会“决定完又回来几秒”）；
+- **browser_runtime 是唯一没有通道的种类**（适配器只认 tool / workflow / user_input 三个 `approval_kind`）：卡片上按按钮会明着报这句话，v1 不假装装上了。
+
+装的位置在 `src/main.jsx` 模块级（渲染之前）：桌面组件挂载时就会 `subscribe`（store 的 `ensureStream`），晚一步只会 warn 一句、之后再也不收事件。工具截图那个 `readToolScreenshot` 故意不提供——`BrowserToolDetail.jsx` 自己会降级成 “Screenshot unavailable”（与第 3 条同一个理由）。
+
+四张卡落在哪、以及手机上比桌面多做的那一步收窄，见下面第 5 条。
 
 #### 为什么 markdown.css 要复制一份（`@source` 的位置）
 
@@ -85,14 +101,15 @@ haish-agent-remote/
 
 **不搬**：桌面 `ChatPanel`（拖 Lexical 输入框、ModelPickers、标注、搜索）、`createTaskStreamHandlers.js`（1003 行，接的是桌面的 socket 与 store）——手机只搬行、时间线、卡片和纯函数模型，composer / 目录 / 滚动仍是手机自己的。只有发送/停止两个键的**图标**照桌面聊天区来（`ArrowUp` 与实心圆角 `Square`，即 `chat.css` 的 `.chat-send-icon` / `.chat-stop-icon`；桌面按钮 40px 配 22px/12px，手机按钮 48px 因此放成 26px/14px，进场动画沿用桌面的 `chat-send-icon-in`），不再用 `deploy.png` / `stop.png` 两个遮罩字形。
 
-### 手机上故意画得跟桌面不一样的四处
+### 手机上故意画得跟桌面不一样的五处
 
-只有这四处，都是用户拍过的，其余一律照桌面：
+只有这五处，都是用户拍过的，其余一律照桌面：
 
 1. **thinking 折叠 chip 不画**（桌面 `ChatTimelineNodes.jsx` 的 `.chat-timeline-thinking-*`：灯泡 + `N chars`）。用户说那是老 UI 的观感。事件日志照桌面折，只在 `chat-runtime.js` 交给行之前把 `kind === 'thinking'` 的节点滤掉——活动 orb 的文案仍走桌面那份（流式时它本来就在，只是少了一个可点的折叠块）。
 2. **取消 / 失败任务的本地回复去重**（`withoutTimelineDuplicates`）。被 `cancel` 打断的那次回答没定稿，过程文本（commentary）已经是时间线上的一个节点，`answer_text` 又是同一段，正文整段去重就少一遍。只对这一种行生效：持久化消息的正文就是答案本身，done 行的时间线默认折着，去掉它就等于把答案藏起来。
 3. **browser_use 的截图位降级成占位**。桌面靠 Electron IPC `readToolScreenshot` 读图，手机端 v1 不建 artifact 路由（core 只有会话图片预览，adapter 没有 artifact 通道）。卡片其余字段照搬。
 4. **气泡吃满行宽**。桌面两条上限（`.chat-bubble` 的 `min(680px, 72%)`、助手行的 82%）是给 1000px 往上的窗口留的余量，到 390px 的屏上只剩 258 / 293px，正文挤成一根条、表格和代码没地方放（用户：「优化一下现在是太挤了，根本看不了」）。手机在 `src/styles.css` 里覆盖成 `max-width: 100%`——气泡内部那 38px 是头像的让位（助手行在左、用户行在右），取满也不会顶到行外。其余尺寸（字号、内边距、头像槽）仍照桌面。
+5. **审批插槽按会话收窄**。四张卡在桌面上的落位是：工具审批 / 浏览器运行时装嵌在对应的工具节点里（`ChatTimelineToolNode` 里的 `ToolApprovalCard` / `BrowserRuntimeCard`，认领机制管着“时间线里画了就不重复”），ask_user 的问答表单嵌在 ask_user 那个工具行里（`AskUserInlineForm`），剩下够不着节点的排在与消息同级的一个插槽里（`ApprovalInline`，一次一张 + “N pending requests queued”）。手机把这四种落位原样搬了过来（内嵌的三种是桌面组件自己画的），只把**插槽**重写成 `src/approval-slot.jsx`：桌面只有一个窗口、一份 store，那个插槽不分会话；手机一屏只有一个会话，而 store 是整个 runtime 的，照搬会把**别的会话**的审批画进这一轮。收窄按请求自带的 `conversation_id`（没有就看 `task_id` 是不是本会话的任务）——卡面、类名、队列文案与桌面一字不差。
 
 另外 `src/main.jsx` 必须包一层桌面 `AppTooltipProvider`：行 / 时间线 / 工具卡里的 tooltip 会抛 `useContext must be used within GlobalTooltipProvider`，整条线程白屏。
 
@@ -423,7 +440,7 @@ npm run mobile:sync
 ## 当前状态
 
 - GitHub Actions workflow：已配置为唯一 IPA 构建入口；
-- 会话内执行 UI：直接渲染桌面 chat 的行 / 时间线 / 工具卡 / 审批与提问卡（pin 桌面 0.0.20，见上文「会话内的执行 UI 直接复用桌面 chat」）；composer 的发送/停止图标已换成桌面那套 `ArrowUp` / 实心圆角 `Square`；行距 15px、气泡吃满行宽；桌面 `markdown.css` 的 `@source` 已改指本仓 node_modules（表格 / 代码块工具类，见上文），CI 里 `npm run check:styles` 兜底；
+- 会话内执行 UI：直接渲染桌面 chat 的行 / 时间线 / 工具卡 / 审批与提问卡（pin 桌面 0.0.20，见上文「会话内的执行 UI 直接复用桌面 chat」）；审批 / ask_user / 浏览器安装卡的数据走 `src/haish-bridge.js` 接出来的 `window.haish`（5s 快照轮询 → `approval_snapshot`），四张卡都是桌面组件、落在线程里；composer 的发送/停止图标已换成桌面那套 `ArrowUp` / 实心圆角 `Square`；行距 15px、气泡吃满行宽；桌面 `markdown.css` 的 `@source` 已改指本仓 node_modules（表格 / 代码块工具类，见上文），CI 里 `npm run check:styles` 兜底；
 - 最新移动端 UI：已通过 Actions 成功构建并验证 artifact 内容；
 - 公网 HTTPS：`https://47.97.24.242/remote/status` 已验证返回 `200`；
 - FRP：服务器 `7000` 与 Mac client 隧道已验证可用；

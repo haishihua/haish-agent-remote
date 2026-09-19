@@ -457,6 +457,11 @@ html.detail-closing .app-shell > :not(.detail-screen) * { animation-play-state: 
 .load-failed p { margin: 6px 0 0; font-size: 13.5px; line-height: 1.5; }
 .pending-banner, .offline-banner { display: flex; align-items: center; gap: 9px; padding: calc(10px + var(--safe-top)) 18px 10px; font-size: 13px; font-weight: 650; }
 .pending-banner { color: var(--accent-strong); background: rgba(239, 191, 100, 0.1); }
+/* 横幅现在是按钮（点进去就是在等回话的那个会话）：把浏览器的按钮默认样子抹掉——
+   宽度吃满、左对齐、字体照旧，右边那个箭头推到最右。 */
+button.pending-banner { width: 100%; border: 0; font-family: inherit; text-align: left; }
+button.pending-banner:disabled { cursor: default; }
+button.pending-banner svg:last-child { margin-left: auto; opacity: 0.7; }
 .offline-banner { color: #ffd0d7; background: #3a161f; }
 .offline-banner.connecting { color: var(--accent-strong); background: rgba(48, 39, 23, 0.98); }
 

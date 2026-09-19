@@ -59,7 +59,7 @@ if (missing.length) {
   console.error('verify-bundled-styles: 构建产物里少了桌面 markdown 要用的样式：');
   for (const item of missing) console.error(`  ${item}`);
   console.error('多半是桌面 markdown.css 的 @source 又扫不到包了——看 scripts/gen-desktop-markdown-css.mjs');
-  console.error('（它把 @source 改指到手机自己的 node_modules）与 vite.config.js 里的 alias。');
+  console.error('（它把 @source 改指到手机自己的 node_modules）与 vite.config.js 里的 desktopMarkdownSeam 插件。');
   process.exit(1);
 }
 

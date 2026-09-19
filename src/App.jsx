@@ -47,6 +47,10 @@ import penguinLogo from './assets/penguin_logo_user.png';
 import { ScrollToBottomButton } from './ScrollToBottomButton.jsx';
 // 会话线程直接用桌面的行与时间线（见 chat-view.jsx / chat-runtime.js）。
 import { ChatThread, releaseConversationImageUrls } from './chat-view.jsx';
+// 线程末尾那个审批 / 提问插槽：卡片是桌面的，作用域是手机的（见 approval-slot.jsx）。
+import { ChatApprovalSlot } from './approval-slot.jsx';
+// `window.haish` 的接缝：审批快照 → 桌面那套 store，下决定 → 适配器的三个端点（见 haish-bridge.js）。
+import { publishApprovalState, waitingRequestConversation } from './haish-bridge.js';
 import {
   buildChatRows,
   draftRuntimeTask,
@@ -299,56 +303,6 @@ function ConnectionScreen({ error, retrying, onRetry }) {
       </section>
       <p className="connection-security"><ShieldCheck size={15} aria-hidden="true" /> End-to-end access to your paired computer</p>
     </main>
-  );
-}
-
-function ApprovalCard({ approvals, onResolved }) {
-  const tool = approvals?.pending?.[0];
-  const workflow = approvals?.pending_workflow_approvals?.[0];
-  const input = approvals?.pending_user_inputs?.[0];
-  const [answer, setAnswer] = useState('');
-  const [busy, setBusy] = useState(false);
-  const pending = tool || workflow || input;
-  if (!pending) return null;
-
-  async function act(action) {
-    setBusy(true);
-    try {
-      if (tool) await api.resolveApproval(tool.request_id, action);
-      if (workflow) await api.resolveWorkflow(workflow.request_id, action, action === 'reject' ? answer || 'Rejected remotely' : '');
-      if (input) {
-        const question = input.questions?.[0];
-        await api.resolveInput(input.request_id, [{ question_id: question?.id, kind: 'freeform', text: answer }]);
-      }
-      setAnswer('');
-      await onResolved();
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <section className="approval-card" aria-live="polite">
-      <div className="approval-icon"><ShieldCheck size={20} /></div>
-      <div className="approval-copy">
-        <p className="eyebrow">ACTION REQUIRED</p>
-        <h2>{tool?.tool_name || workflow?.title || input?.questions?.[0]?.header || 'Agent is waiting'}</h2>
-        <p>{tool?.raw_command || workflow?.summaryText || input?.questions?.[0]?.question || 'Confirm whether to continue.'}</p>
-      </div>
-      {(workflow || input) ? (
-        <label className="approval-feedback">
-          <span>{input ? 'Your answer' : 'Reason for rejection (optional)'}</span>
-          <textarea value={answer} onChange={(event) => setAnswer(event.target.value)} rows={2} />
-        </label>
-      ) : null}
-      <div className="approval-actions">
-        {!input ? <button className="secondary-button danger-text" disabled={busy} onClick={() => act(tool ? 'deny' : 'reject')}><X size={18} />Reject</button> : null}
-        <button className="primary-button compact" disabled={busy || (input && !answer.trim())} onClick={() => act(tool ? 'allow_once' : workflow ? 'approve' : 'answer')}>
-          {busy ? <LoaderCircle className="spin" size={18} /> : <Check size={18} />}
-          {input ? 'Submit answer' : 'Allow'}
-        </button>
-      </div>
-    </section>
   );
 }
 
@@ -814,7 +768,12 @@ function ImagePreview({ image, onClose }) {
   );
 }
 
-function ConversationDetail({ id, projectName, initialConversation, onBack, approvals, refreshApprovals, connection }) {
+// 审批插槽按会话收窄时的兜底作用域（请求自己带 conversation_id 就用不上它，见 approval-slot.jsx）。
+function taskIdsOf(conversation) {
+  return (conversation?.tasks || []).map((task) => task?.task_id).filter(Boolean);
+}
+
+function ConversationDetail({ id, projectName, initialConversation, onBack, connection }) {
   const [conversation, setConversation] = useState(initialConversation || null);
   const [conversationHydrated, setConversationHydrated] = useState(false);
   const [message, setMessage] = useState('');
@@ -1712,10 +1671,10 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, appr
               loadTaskTrace={loadTaskTrace}
               onPreviewImage={(image) => setPreviewImage({ src: image?.src, name: image?.title })}
             />
-            {/* 卡片属于线程最新的一端，不属于历史之前：详情页一挂载就滚到最新消息并跟着它走，
+            {/* 插槽属于线程最新的一端，不属于历史之前：详情页一挂载就滚到最新消息并跟着它走，
                 把卡片摆在整段历史之前等于一进来就被滚出视野（看起来只闪了一下就没了）。
-                桌面端同样把审批行排在所有消息之后。 */}
-            <ApprovalCard approvals={approvals} onResolved={refreshApprovals} />
+                桌面端同样把审批行排在所有消息之后，卡片本体也是桌面那几个组件。 */}
+            <ChatApprovalSlot conversationId={id} taskIds={taskIdsOf(conversation)} />
             {detailLoadFailed ? (
               <div className="load-failed"><CircleAlert size={28} aria-hidden="true" /><h2>Couldn’t load this conversation</h2><p>Pull down to try again.</p></div>
             ) : null}
@@ -1914,10 +1873,15 @@ export default function App() {
   const loadApprovals = useCallback(async () => {
     try {
       const nextApprovals = await api.approvals();
-      const signature = JSON.stringify(nextApprovals);
+      // 同一份快照顺手喂给 `window.haish` 的接缝：桌面的审批卡 / 提问卡 / 浏览器安装卡
+      // 就是从那条事件流里拿数据的（见 src/haish-bridge.js）。手机上只留这一支轮询，
+      // 桥不另开一条；返回的是「本地已经下过决定的请求摘掉之后」的那一份，列表行的
+      // 状态坑位与横幅也照这一份画。
+      const visible = publishApprovalState(nextApprovals);
+      const signature = JSON.stringify(visible);
       if (signature === approvalsSignatureRef.current) return;
       approvalsSignatureRef.current = signature;
-      setApprovals(nextApprovals);
+      setApprovals(visible);
     } catch { /* Pairing screen handles auth. */ }
   }, []);
 
@@ -2040,6 +2004,14 @@ export default function App() {
     setSelectedId(conversation.conversation_id);
   }, []);
 
+  // 「N actions waiting」那条横幅点进去：开正在等的那个会话（第一条带 conversation_id 的
+  // 请求说了算，见 haish-bridge.js 的 waitingRequestConversation）。列表里还没刷新到它也能
+  // 开——详情页自己去取。
+  const openWaitingConversation = useCallback(() => {
+    const conversationId = waitingRequestConversation(approvals);
+    if (conversationId) openConversation({ conversation_id: conversationId });
+  }, [approvals, openConversation]);
+
   const showSettings = useCallback(() => setTab('settings'), []);
 
   function closeConversation() {
@@ -2082,12 +2054,11 @@ export default function App() {
     projectName={selectedProject?.name || 'Project'}
     initialConversation={selectedConversation}
     onBack={closeConversation}
-    approvals={approvals}
-    refreshApprovals={loadApprovals}
     connection={connection}
   /> : null;
 
   const approvalCount = (approvals?.pending?.length || 0) + (approvals?.pending_workflow_approvals?.length || 0) + (approvals?.pending_user_inputs?.length || 0);
+  const waitingConversationId = waitingRequestConversation(approvals);
   const reconnecting = connection && !connection.timedOut;
 
   return (
@@ -2098,7 +2069,7 @@ export default function App() {
       </div> : null}
       {tab === 'tasks' ? (
         <>
-          {approvalCount ? <div className="pending-banner"><ShieldCheck size={18} /><span>{approvalCount} {approvalCount === 1 ? 'action' : 'actions'} waiting</span></div> : null}
+          {approvalCount ? <button type="button" className="pending-banner" onClick={openWaitingConversation} disabled={!waitingConversationId}><ShieldCheck size={18} /><span>{approvalCount} {approvalCount === 1 ? 'action' : 'actions'} waiting</span>{waitingConversationId ? <ChevronRight size={17} aria-hidden="true" /> : null}</button> : null}
           <ConversationList projects={projects} conversations={conversations} tasks={tasks} status={status} loading={loading} error={fatalError} onRefresh={refreshDirectory} onOpen={openConversation} onNew={createConversation} onSettings={showSettings} />
         </>
       ) : <SettingsScreen status={status} onLogout={logout} onBack={() => setTab('tasks')} />}

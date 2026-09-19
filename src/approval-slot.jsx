@@ -1,0 +1,79 @@
+// 线程末尾那个「还等着人回」的插槽。
+//
+// 桌面把这件事写成 `ApprovalInline`（ApprovalOverlay.jsx）：整份 store 里除了工作流审批和
+// 已经被工具节点认领的请求，剩下的排在当前会话所有消息之后，一次显示一条 + “N pending
+// requests queued”。手机一屏只有一个会话，而 store 是整个 runtime 的一份——照搬那个组件会
+// 把**别的会话**的审批画进这一轮，所以这里做同一件事、按会话收窄（见 haish-bridge.js 的
+// `scopedPendingRequests`）。
+//
+// 卡片本体一行都没有自己画：
+//   * 工具审批 / 浏览器运行时装 → 桌面的 `ToolApprovalCard`（= BrowserRuntimeCard）；
+//   * 工作流审批 → 桌面的 `WorkflowApprovalInline`（传请求自己的 task_id，把它的作用域
+//     钉死在这一条上）；
+//   * 外层行与气泡用的是桌面 ApprovalInline 那套类名（`.chat-message-row.agent
+//     .haish-approval-row` + `.haish-approval-slot`），样式在 approvals.css 里，手机已经
+//     把它整段接进来了（src/desktop-theme.css）。
+//
+// 认领机制照桌面：工具节点里那张内嵌卡（`embedded`）先挂就先认领，认领过的请求这里不再画，
+// 于是「时间线里能看到就不重复、看不到才落到末尾」这条规矩在手机上一样成立。
+import React from 'react';
+import { approvalStore, isBrowserRuntimeRequest, isWorkflowApprovalRequest } from '../../haish-agent/app-web/src/features/approvals/model/approval-store.js';
+import {
+  BrowserRuntimeCard,
+  ToolApprovalCard,
+  WorkflowApprovalInline,
+} from '../../haish-agent/app-web/src/features/approvals/components/ApprovalOverlay.jsx';
+import { scopedPendingRequests } from './haish-bridge.js';
+
+function usePendingApprovals() {
+  const [pending, setPending] = React.useState([]);
+  React.useEffect(() => approvalStore.subscribe(setPending), []);
+  return pending;
+}
+
+function scopeKey(conversationId, taskIds) {
+  return `${conversationId}\u0000${(taskIds || []).join('\u0000')}`;
+}
+
+export function ChatApprovalSlot({ conversationId = '', taskIds = [] }) {
+  const pending = usePendingApprovals();
+  const scope = scopeKey(conversationId, taskIds);
+  const scoped = React.useMemo(
+    () => scopedPendingRequests(pending, { conversationId, taskIds }),
+    // scope 把 conversationId / taskIds 摊平成一个字符串：taskIds 每次渲染都是新数组。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pending, scope],
+  );
+
+  const workflow = scoped.find(isWorkflowApprovalRequest) || null;
+  const active = scoped.find((request) => !isWorkflowApprovalRequest(request)) || null;
+  const rest = scoped.length - (workflow ? 1 : 0) - (active ? 1 : 0);
+  if (!active && !workflow) return null;
+
+  return (
+    <>
+      {active ? (
+        <div className="chat-message-row agent haish-approval-row">
+          <div className="chat-bubble">
+            <div className="haish-approval-slot">
+              {isBrowserRuntimeRequest(active)
+                ? <BrowserRuntimeCard request={active} />
+                : <ToolApprovalCard request={active} />}
+              {rest > 0 ? (
+                <div className="haish-approval-queue">
+                  {rest} pending request{rest === 1 ? '' : 's'} queued
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {workflow ? (
+        <WorkflowApprovalInline
+          conversationId={conversationId}
+          taskId={workflow.task_id || ''}
+        />
+      ) : null}
+    </>
+  );
+}
