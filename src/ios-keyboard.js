@@ -62,7 +62,7 @@ export async function hideKeyboardAccessoryBar({ keyboard = Keyboard, native = i
  * 落地的时刻取 `keyboardDidShow` / `keyboardDidHide`。时长与曲线都尽量取 iOS 自己的：曲线是 curve 7（一条
  * 无过冲的弹簧，起步快、收尾慢）的采样，时长由 AppDelegate 那条 frame 通道从
  * `UIKeyboardAnimationDurationUserInfoKey` 带过来（这两个值插件都不往外报）。之前那条
- * `cubic-bezier(0.32, 0.72, 0, 1)` 是滑退/下拉用的，比键盘快得多——走到两成时它已经走完六成半，弹簧那时
+ * `cubic-bezier(0.32, 0.72, 0, 1)` 是下拉收敛用的，比键盘快得多——走到两成时它已经走完六成半，弹簧那时
  * 只有四成，现场就是输入框比键盘先到、中途甩开一段再被追上，也就是用户报的「拉起键盘和收起都不自然」。
  * 差一点由落地事件纠正回来。
  */
@@ -183,7 +183,7 @@ let movingControllers = 0;
 
 /**
  * 键盘正在动（合成层上的动画还没落地）：轮询这类后台重活在这几百毫秒里让路——一份会话的解析与
- * 重渲染落进键盘动画里，看到的就是动画一顿一顿。与滑退/下拉的守卫放在同一处用（App.jsx）。
+ * 重渲染落进键盘动画里，看到的就是动画一顿一顿。与下拉手势的守卫放在同一处用（App.jsx）。
  */
 export function isKeyboardMoving() {
   return movingControllers > 0;

@@ -69,17 +69,12 @@ import {
   runtimeTaskWithEvent,
 } from './chat-runtime.js';
 import {
-  SWIPE_BACK_CANCEL_EASING,
-  SWIPE_BACK_EDGE_PX,
-  SWIPE_BACK_TRACK_MS,
-  isSwipeBackInFlight,
-  setSwipeBackInFlight,
-  swipeBackAxis,
-  swipeBackOffset,
-  swipeBackProgress,
-  swipeBackRelease,
-  swipeBackVelocity,
-} from './swipe-back.js';
+  conversationIdFromHistory,
+  popConversationHistory,
+  pushConversationHistory,
+  replaceConversationHistory,
+  replacePendingConversationHistory,
+} from './conversation-navigation.js';
 import {
   PULL_REFRESH_EASING,
   PULL_REFRESH_HOLD_MS,
@@ -168,11 +163,11 @@ function saveStoredConversationId(id) {
 }
 
 /**
- * 手上正有手势（滑退/下拉）或键盘动画时，后台那几件重活（会话轮询、任务快照、目录、秒表 tick）
+ * 手上正有下拉手势或键盘动画时，后台那几件重活（会话轮询、任务快照、目录、秒表 tick）
  * 全部让路：一份会话的解析与整棵重渲染落进动画里就是一帧几十毫秒的卡顿。
  */
 function threadBusy() {
-  return isSwipeBackInFlight() || isPullRefreshInFlight() || isKeyboardMoving();
+  return isPullRefreshInFlight() || isKeyboardMoving();
 }
 
 function formatDate(value) {
@@ -520,10 +515,9 @@ function RunConfigSheet({ config, agentLabel, agentLocked, agents, providers, mo
   );
 }
 
-// Pull-to-refresh: the platform's refresh control, built the way this app builds gestures
-// (see swipe-back.js). The component owns the touch listeners, the surface travels under
-// the finger through one style write per frame, and the refresh only starts once the pull
-// passed the trigger distance. `listenRef` is the element that receives the touch,
+// Pull-to-refresh: the platform-style refresh control. The component owns the touch listeners;
+// the surface travels under the finger through one style write per frame, and refresh starts
+// only once the pull passed the trigger distance. `listenRef` is the element that receives the touch,
 // `surfaceRef` the one that travels, and the indicator is pinned above the surface's first
 // pixel so the pull reveals it from under the header, the way a native control slides out.
 function usePullToRefresh({ listenRef, surfaceRef, indicatorRef, canStart, onRefresh }) {
@@ -567,8 +561,7 @@ function usePullToRefresh({ listenRef, surfaceRef, indicatorRef, canStart, onRef
     }
 
     // Hands the surface back to CSS once the motion has landed. `pull-active` deliberately
-    // stays on until then: dropping the promoted layer mid-flight rebuilds it, which reads
-    // as a hitch in the same way it did in the back swipe.
+    // stays on until then: dropping the promoted layer mid-flight rebuilds it and causes a hitch.
     function rest() {
       stopMotion();
       surface.classList.remove('pull-active');
@@ -834,7 +827,7 @@ function taskIdsOf(conversation) {
   return (conversation?.tasks || []).map((task) => task?.task_id).filter(Boolean);
 }
 
-function ConversationDetail({ id, projectName, initialConversation, onBack, connection }) {
+function ConversationDetail({ id, projectName, initialConversation, onBack, connection, nativeSwipeBack = false }) {
   const [conversation, setConversation] = useState(initialConversation || null);
   const [conversationHydrated, setConversationHydrated] = useState(false);
   const [message, setMessage] = useState('');
@@ -864,21 +857,11 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
   const photoInputRef = useRef(null);
   const photoLongPressRef = useRef(false);
   const photoLongPressTimerRef = useRef(0);
-  const detailScreenRef = useRef(null);
-  const swipeStartRef = useRef(null);
-  const swipeOffsetRef = useRef(0);
-  const swipeAnimationRef = useRef(null);
-  const swipeSettleRef = useRef(null);
-  const swipeFrameRef = useRef(0);
-  const swipePendingRef = useRef(null);
-  const deferredRefreshRef = useRef(false);
   const conversationSignatureRef = useRef('');
-  const swipeBlockedRef = useRef(false);
   const dismissHandoffRef = useRef(null);
   // 收起那个动作会一直活着（`createDismissHandoff` 只在第一次收起时建一次），所以 `onBack` 得穿过一层
-  // ref：否则它拿的永远是建它的那一次渲染的 `onBack`。这个文件里 `swipeHandlersRef` 也是这么做的。
+  // ref：否则它拿的永远是建它的那一次渲染的 `onBack`。
   const onBackRef = useRef(onBack);
-  const swipeHandlersRef = useRef(null);
   const composerImagesRef = useRef([]);
   const optimisticUserMessagesRef = useRef([]);
   const runConfigQuickRef = useRef(null);
@@ -911,7 +894,6 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
   useEffect(() => { runConfigRef.current = runConfig; }, [runConfig]);
   useEffect(() => { composerImagesRef.current = composerImages; }, [composerImages]);
   useEffect(() => { optimisticUserMessagesRef.current = optimisticUserMessages; }, [optimisticUserMessages]);
-  useEffect(() => { swipeBlockedRef.current = Boolean(previewImage || showRunConfig); }, [previewImage, showRunConfig]);
   useEffect(() => { onBackRef.current = onBack; }, [onBack]);
 
   // 输入框高度跟着草稿走（见 composer-height.js）：展开态不再预留一行空白。打字这条走便宜路
@@ -930,168 +912,13 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
     return () => window.removeEventListener('resize', fit);
   }, []);
 
-  function clearSwipeBackFrame() {
-    if (swipeFrameRef.current) window.cancelAnimationFrame(swipeFrameRef.current);
-    swipeFrameRef.current = 0;
-    swipePendingRef.current = null;
-  }
-
-  // Hands the surface back to CSS and forgets the pull: used when the touch turns out to
-  // belong to the thread, when it is cancelled, and when the screen unmounts.
-  function stopSwipeBackMotion() {
-    clearSwipeBackFrame();
-    swipeAnimationRef.current?.cancel();
-    swipeAnimationRef.current = null;
-    swipeSettleRef.current?.cancel();
-    swipeSettleRef.current = null;
-    detailScreenRef.current?.classList.remove('swipe-armed', 'swipe-dismissing');
-    swipeStartRef.current = null;
-    swipeOffsetRef.current = 0;
-    setSwipeBackInFlight(false);
-  }
-
-  function setSwipeBackProgress(progress) {
-    const animation = swipeAnimationRef.current;
-    if (!animation) return;
-    animation.currentTime = Math.min(1, Math.max(0, progress)) * SWIPE_BACK_TRACK_MS;
-  }
-
-  // Whatever a gesture pushed aside (a poll that would have landed mid-motion, or a pull
-  // that ends it) is fetched once the surface is back at rest.
-  function flushDeferredRefresh() {
-    if (!deferredRefreshRef.current) return;
-    deferredRefreshRef.current = false;
-    refresh();
-  }
-
-  function beginSwipeBack(event) {
-    const surface = detailScreenRef.current;
-    if (!surface || event.touches.length !== 1 || swipeBlockedRef.current) return;
-    const touch = event.touches[0];
-    if (touch.clientX > SWIPE_BACK_EDGE_PX) return;
-    stopSwipeBackMotion();
-    // Promote the surface before the finger moves, so the first tracked frame does not
-    // have to build the layer too, and let the directory behind it keep animating.
-    surface.classList.add('swipe-armed');
-    swipeStartRef.current = {
-      x: touch.clientX,
-      y: touch.clientY,
-      time: event.timeStamp,
-      lastX: touch.clientX,
-      lastY: touch.clientY,
-      lastTime: event.timeStamp,
-      velocity: 0,
-      width: surface.getBoundingClientRect().width || window.innerWidth,
-      claimed: false,
-    };
-  }
-
-  // The pull runs on a Web Animations timeline instead of a CSS custom property: moving an
-  // animation's time only reaches the compositor, while writing `--swipe-back-offset` on
-  // every touch move recalculates style for the whole message list underneath.
-  function claimSwipeBack() {
-    const surface = detailScreenRef.current;
-    if (!surface) return;
-    const animation = surface.animate(
-      [{ transform: 'translate3d(0%, 0px, 0px)' }, { transform: 'translate3d(100%, 0px, 0px)' }],
-      { duration: SWIPE_BACK_TRACK_MS, easing: 'linear', fill: 'both' },
-    );
-    animation.pause();
-    animation.currentTime = 0;
-    swipeAnimationRef.current = animation;
-    setSwipeBackInFlight(true);
-  }
-
-  function applySwipeBack(point) {
-    const start = swipeStartRef.current;
-    if (!start) return;
-    start.velocity = swipeBackVelocity(start.velocity, {
-      deltaX: point.x - start.lastX,
-      deltaMs: point.time - start.lastTime,
-    });
-    start.lastX = point.x;
-    start.lastY = point.y;
-    start.lastTime = point.time;
-    const offset = swipeBackOffset(start, { x: point.x, y: point.y });
-    swipeOffsetRef.current = offset;
-    setSwipeBackProgress(swipeBackProgress(offset, start.width));
-  }
-
-  function flushSwipeBack() {
-    swipeFrameRef.current = 0;
-    const point = swipePendingRef.current;
-    swipePendingRef.current = null;
-    if (!point || !swipeStartRef.current?.claimed) return;
-    applySwipeBack(point);
-  }
-
-  function moveSwipeBack(event) {
-    const start = swipeStartRef.current;
-    const touch = event.touches[0];
-    if (!start || !touch) return;
-    const point = { x: touch.clientX, y: touch.clientY, time: event.timeStamp };
-    if (!start.claimed) {
-      const axis = swipeBackAxis(point.x - start.x, point.y - start.y);
-      if (!axis) return;
-      if (axis !== 'horizontal') {
-        // A drag that leaves the cone belongs to the thread; let the scroll have it.
-        stopSwipeBackMotion();
-        return;
-      }
-      start.claimed = true;
-      claimSwipeBack();
-      // Non-passive listener: claiming the pull here is what stops the WebView from
-      // scrolling the thread and holding the touch stream back until it settles. The pull
-      // also follows the finger on the frame that claims it — waiting for the next one is
-      // what reads as lag at the start.
-      if (event.cancelable) event.preventDefault();
-      applySwipeBack(point);
+  // 浏览器/PWA 没有原生交互式返回动画，返回键仍走原来的两帧交接；iOS 则只调用
+  // history.back()，由 WKWebView 的边缘手势自己驱动动画，popstate 到达时再关闭这层。
+  function dismissToDirectory() {
+    if (nativeSwipeBack) {
+      onBackRef.current();
       return;
     }
-    if (event.cancelable) event.preventDefault();
-    // Touch moves can arrive faster than the display refreshes; take one sample per frame.
-    swipePendingRef.current = point;
-    if (!swipeFrameRef.current) swipeFrameRef.current = window.requestAnimationFrame(flushSwipeBack);
-  }
-
-  // Where the surface is actually painted: touch samples are coalesced per frame, so the
-  // release offset can sit a frame ahead of it. Settling from the painted step keeps the
-  // page continuous at release instead of snapping it forward.
-  function paintedSwipeBackStep(fallback) {
-    const currentTime = Number(swipeAnimationRef.current?.currentTime);
-    if (!Number.isFinite(currentTime)) return fallback;
-    return Math.min(1, Math.max(0, currentTime / SWIPE_BACK_TRACK_MS));
-  }
-
-  // Replaces the tracking animation with a one-shot settle: the page keeps moving from
-  // where the finger left it, over the time the remaining distance needs at that speed.
-  // `swipe-armed` deliberately stays until the surface has arrived (stopSwipeBackMotion):
-  // dropping it here releases the promoted layer and re-pauses every animation in the
-  // directory while the page is still moving, which reads as a hitch in the fly-off.
-  function settleSwipeBack(step, complete, duration, easing) {
-    const surface = detailScreenRef.current;
-    if (!surface) return null;
-    const settle = surface.animate(
-      [{ transform: `translate3d(${step * 100}%, 0px, 0px)` }, { transform: `translate3d(${complete ? 100 : 0}%, 0px, 0px)` }],
-      { duration, easing, fill: 'both' },
-    );
-    swipeAnimationRef.current?.cancel();
-    swipeAnimationRef.current = null;
-    swipeSettleRef.current = settle;
-    surface.classList.toggle('swipe-dismissing', complete);
-    return settle;
-  }
-
-  /**
-   * 收起详情页。收尾那一帧上挤着三笔重活：卸掉整棵详情树、目录几十个定时动画重新交给合成器、顶栏的
-   * backdrop-filter 第一次渲染（一整屏背景模糊）——挤在一起就是滑退动画最后那一下的卡顿。交给
-   * `createDismissHandoff` 排期：动画最后那一帧先画出去，再卸层。
-   *
-   * 滑退过来的（`keepDirectoryLive`）不再挂 `detail-closing`：手指一松开、`swipe-dismissing` 一挂上，目录的
-   * 定时动画和顶栏模糊已经由 styles.css 那两条 `:has` 规则放回来了，再冻两帧看到的就是「收尾卡一下」。
-   * 按钮返回那条路上没有动画，仍然靠 hold 把恢复推到卸层之后。
-   */
-  function dismissToDirectory({ keepDirectoryLive = false } = {}) {
     if (!dismissHandoffRef.current) {
       dismissHandoffRef.current = createDismissHandoff({
         // 挂到 <html> 上：React 会在这一帧重写 `.app-shell` 的 className，挂在那儿的类会被抹掉。
@@ -1100,100 +927,8 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
         unmount: () => onBackRef.current(),
       });
     }
-    dismissHandoffRef.current({ hold: !keepDirectoryLive });
+    dismissHandoffRef.current();
   }
-
-  function finishSwipeBack(event) {
-    const start = swipeStartRef.current;
-    swipeStartRef.current = null;
-    clearSwipeBackFrame();
-    if (!start?.claimed) {
-      stopSwipeBackMotion();
-      return;
-    }
-    const touch = event.changedTouches?.[0];
-    if (touch) {
-      // Fold the last sample in, so a flick that ended between two frames still counts.
-      start.velocity = swipeBackVelocity(start.velocity, {
-        deltaX: touch.clientX - start.lastX,
-        deltaMs: event.timeStamp - start.lastTime,
-      });
-      swipeOffsetRef.current = swipeBackOffset(start, { x: touch.clientX, y: touch.clientY });
-    }
-    const release = swipeBackRelease({
-      offset: swipeOffsetRef.current,
-      width: start.width,
-      velocity: start.velocity,
-    });
-    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-    const duration = reducedMotion ? 0 : release.durationMs;
-    const settle = settleSwipeBack(paintedSwipeBackStep(release.step), release.complete, duration, release.easing);
-    const finish = () => {
-      if (release.complete) {
-        // Leave the settle holding its last frame: the surface is unmounted on a later frame.
-        swipeSettleRef.current = null;
-        setSwipeBackInFlight(false);
-        dismissToDirectory({ keepDirectoryLive: true });
-        return;
-      }
-      stopSwipeBackMotion();
-      flushDeferredRefresh();
-    };
-    if (!settle || duration <= 0) finish();
-    else settle.onfinish = finish;
-  }
-
-  function cancelSwipeBack() {
-    const start = swipeStartRef.current;
-    swipeStartRef.current = null;
-    clearSwipeBackFrame();
-    if (!start?.claimed) {
-      stopSwipeBackMotion();
-      return;
-    }
-    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-    const { step } = swipeBackRelease({ offset: swipeOffsetRef.current, width: start.width });
-    const settle = settleSwipeBack(paintedSwipeBackStep(step), false, reducedMotion ? 0 : 180, SWIPE_BACK_CANCEL_EASING);
-    const finish = () => {
-      stopSwipeBackMotion();
-      flushDeferredRefresh();
-    };
-    if (!settle || reducedMotion) finish();
-    else settle.onfinish = finish;
-  }
-
-  // React attaches its touch listeners passively, so `preventDefault()` in a
-  // synthetic touchmove never reaches the WebView: the scroll view keeps the
-  // gesture, touch delivery stalls until it settles, and the pull finishes long
-  // after the finger is gone. Own the listeners so a rightward pull is claimed —
-  // and scrolling blocked — from the first few pixels of movement.
-  useEffect(() => {
-    swipeHandlersRef.current = { start: beginSwipeBack, move: moveSwipeBack, end: finishSwipeBack, cancel: cancelSwipeBack };
-  });
-
-  useEffect(() => {
-    const surface = detailScreenRef.current;
-    if (!surface) return undefined;
-    const forward = (name) => (event) => swipeHandlersRef.current?.[name]?.(event);
-    const handlers = {
-      start: forward('start'),
-      move: forward('move'),
-      end: forward('end'),
-      cancel: forward('cancel'),
-    };
-    surface.addEventListener('touchstart', handlers.start, { passive: true });
-    surface.addEventListener('touchmove', handlers.move, { passive: false });
-    surface.addEventListener('touchend', handlers.end, { passive: true });
-    surface.addEventListener('touchcancel', handlers.cancel, { passive: true });
-    return () => {
-      surface.removeEventListener('touchstart', handlers.start);
-      surface.removeEventListener('touchmove', handlers.move);
-      surface.removeEventListener('touchend', handlers.end);
-      surface.removeEventListener('touchcancel', handlers.cancel);
-    };
-  }, []);
-
-  useEffect(() => () => stopSwipeBackMotion(), []);
 
   // 键盘跟着输入框走（见 ios-keyboard.js）：这个会话把会跟键盘移动的两块交给控制器——消息列表
   // （连窗口带内容）和输入框那一叠；离开会话时收回。
@@ -1221,21 +956,15 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
 
   const refresh = useCallback(async ({ keep = false } = {}) => {
     if (localStreamRef.current) return null;
-    // 这份会话最大 1.7MB：解析一遍 + 整棵重渲染一次，落进手势或键盘动画里就是一帧几十毫秒。
+    // 这份会话最大 1.7MB：解析一遍 + 整棵重渲染一次，落进下拉手势或键盘动画里就是一帧几十毫秒。
     // 检查放在 fetch 之前——已经发出的请求收不回来，但至少别把这份活排到动画中间才开始。
-    if (!keep && threadBusy()) {
-      deferredRefreshRef.current = true;
-      return null;
-    }
+    if (!keep && threadBusy()) return null;
     try {
       const nextConversation = await api.conversation(id);
       // A poll that resolves while a gesture owns the thread would rebuild the message list
-      // under the finger; drop it here and let the post-gesture catch-up fetch it again.
+      // under the finger; drop it here. The next interval catches up after the gesture.
       // `keep` is the pull-to-refresh call itself, which is the point of the gesture.
-      if (!keep && threadBusy()) {
-        deferredRefreshRef.current = true;
-        return null;
-      }
+      if (!keep && threadBusy()) return null;
       // 内容没变就别写 state：写下去就是整棵详情树重渲染一次，而这轮轮询多半什么都没带回来。
       const signature = conversationSignature(nextConversation);
       if (signature !== conversationSignatureRef.current) {
@@ -1258,21 +987,14 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
     surfaceRef: messageBodyRef,
     indicatorRef: refreshIndicatorRef,
     canStart: () => (messageScrollRef.current?.scrollTop || 0) <= 0,
-    onRefresh: async () => {
-      await refresh({ keep: true });
-      deferredRefreshRef.current = false;
-    },
+    onRefresh: () => refresh({ keep: true }),
   });
 
   useEffect(() => {
     refresh();
-    // A poll rebuilds and re-renders the whole thread; while a pull is on the way that
-    // work would land mid-gesture, so it waits for the surface to settle.
-    const timer = window.setInterval(() => {
-      // `refresh` 自己会挡（这里不再重复一遍条件）：手势或键盘动画期间整圈跳过并记下 deferred，
-      // 收敛后由 `flushDeferredRefresh` 补一次。
-      refresh();
-    }, CONVERSATION_POLL_MS);
+    // A poll rebuilds and re-renders the whole thread; `refresh` drops a round while a
+    // pull or keyboard animation owns the surface, and the next interval catches up.
+    const timer = window.setInterval(refresh, CONVERSATION_POLL_MS);
     return () => window.clearInterval(timer);
   }, [refresh]);
 
@@ -1778,7 +1500,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
   useEffect(() => { setAnnotationNotice(''); }, [id]);
 
   return (
-    <main className="detail-screen" ref={detailScreenRef}>
+    <main className="detail-screen">
       <div className="detail-top">
         <header className="detail-header">
           <button className="icon-button ghost" onClick={() => dismissToDirectory()} aria-label="Back to conversations"><ArrowLeft size={22} /></button>
@@ -1998,6 +1720,9 @@ export default function App() {
   const restoredConversationRef = useRef(false);
   const startupRequestRef = useRef(false);
   const detailOpenRef = useRef(false);
+  const selectedIdRef = useRef(selectedId);
+  const nativeHistoryReadyRef = useRef(!api.isNative);
+  const createConversationRequestRef = useRef(null);
   const directorySignatureRef = useRef('');
   const statusSignatureRef = useRef('');
   // A failed directory load has to stay visible until the directory itself answers. The 5s
@@ -2019,7 +1744,14 @@ export default function App() {
 
   const loadStatus = useCallback(async () => {
     const next = await api.status();
-    if (api.isNative && !next.paired) await api.forgetConnection();
+    if (api.isNative && !next.paired) {
+      await api.forgetConnection();
+      replaceConversationHistory(window.history, '', window.location.href);
+      selectedIdRef.current = null;
+      detailOpenRef.current = false;
+      saveStoredConversationId('');
+      setSelectedId(null);
+    }
     if (!directoryErrorRef.current) setFatalError('');
     // 这一份几乎从不变化（`device.last_seen_at` 那种每次都在动的字段不在签名里，见
     // poll-signature.js）：一样就不写 state，不然整棵目录树每 5 秒跟着重渲染一次。
@@ -2128,7 +1860,47 @@ export default function App() {
     else setRuntimeOfflineSince(0);
   }, [status?.runtime_online]);
 
-  useEffect(() => { detailOpenRef.current = Boolean(selectedId); }, [selectedId]);
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+    detailOpenRef.current = Boolean(selectedId);
+  }, [selectedId]);
+
+  // 这条 history 只描述“列表上面是否盖着一个会话详情”。原生 WKWebView 的边缘返回会
+  // 交互式地退回上一条；popstate 只摘掉详情层，不重启 App、不重建连接，也不重新进入会话。
+  useEffect(() => {
+    if (!api.isNative) return undefined;
+    replaceConversationHistory(window.history, '', window.location.href);
+    nativeHistoryReadyRef.current = true;
+    const handlePopState = (event) => {
+      const nextId = conversationIdFromHistory(event.state);
+      const currentId = selectedIdRef.current;
+      if (nextId === currentId) return;
+      if (currentId) markSeen(currentId);
+      restoredConversationRef.current = true;
+      selectedIdRef.current = nextId || null;
+      detailOpenRef.current = Boolean(nextId);
+      saveStoredConversationId(nextId);
+      setSelectedId(nextId || null);
+      // 和旧的关闭路径一样，等原生转场落地后在空闲时补目录；绝不把 3.5MB 的列表刷新
+      // 塞进 popstate 那一帧，否则就把刚换掉的收尾卡顿又带回来。
+      if (!nextId) {
+        const refreshDirectory = () => { if (!detailOpenRef.current) loadTasks(); };
+        if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(refreshDirectory, { timeout: 1000 });
+        else window.setTimeout(refreshDirectory, 300);
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [loadTasks, markSeen]);
+
+  useEffect(() => {
+    if (status?.paired !== false) return;
+    if (api.isNative) replaceConversationHistory(window.history, '', window.location.href);
+    selectedIdRef.current = null;
+    detailOpenRef.current = false;
+    saveStoredConversationId('');
+    setSelectedId(null);
+  }, [status?.paired]);
 
   useEffect(() => {
     if (!status?.paired) return undefined;
@@ -2156,29 +1928,67 @@ export default function App() {
     if (!status?.paired || loading || restoredConversationRef.current || selectedId || !conversations.length) return;
     restoredConversationRef.current = true;
     const lastId = storedConversationId();
-    if (lastId && conversations.some((item) => item.conversation_id === lastId)) {
+    // 原生交互返回只接受用户操作期间创建的 history 项（WebKit 248303）。冷启动时脚本
+    // 自动 push 会被系统返回跳过，退到旧文档并造成“重连后又自动进详情”的循环，所以 iOS
+    // 从稳定的列表根开始；浏览器仍保留原来的“重开上次会话”。
+    if (!api.isNative && lastId && conversations.some((item) => item.conversation_id === lastId)) {
       markSeen(lastId);
       setSelectedId(lastId);
     }
   }, [conversations, loading, selectedId, status?.paired, markSeen]);
 
-  // 传给 `ConversationList` 的几个回调必须是稳定的：它套了 memo，回调每次新建就等于没套。
-  const createConversation = useCallback(async (projectId) => {
-    const created = await api.createConversation(projectId);
+  const showConversation = useCallback((conversationId, { pushHistory = true } = {}) => {
+    if (!conversationId) return;
     restoredConversationRef.current = true;
-    saveStoredConversationId(created.conversation_id);
-    markSeen(created.conversation_id);
-    setSelectedId(created.conversation_id);
-    // The detail screen can render immediately; refresh the directory in the background.
-    loadTasks();
-  }, [loadTasks, markSeen]);
+    saveStoredConversationId(conversationId);
+    markSeen(conversationId);
+    if (api.isNative && pushHistory && nativeHistoryReadyRef.current) {
+      pushConversationHistory(window.history, conversationId, window.location.href);
+    }
+    selectedIdRef.current = conversationId;
+    detailOpenRef.current = true;
+    setSelectedId(conversationId);
+  }, [markSeen]);
+
+  // 传给 `ConversationList` 的几个回调必须是稳定的：它套了 memo，回调每次新建就等于没套。
+  const createConversation = useCallback((projectId) => {
+    // 新建也必须在点按这一个调用栈里给 WebKit 一条可交互返回的 history；请求回来后只
+    // 替换占位 id，不再 push。没有 project id 就还没真正选择，不创建占位历史；在请求
+    // 完成前重复点按则复用同一个请求，避免堆出没有对应详情的原生 history 条目。
+    if (!projectId) return Promise.resolve(null);
+    if (createConversationRequestRef.current) return createConversationRequestRef.current;
+    const pendingHistoryId = api.isNative && nativeHistoryReadyRef.current ? `pending-${Date.now()}` : '';
+    if (pendingHistoryId) pushConversationHistory(window.history, pendingHistoryId, window.location.href);
+    const request = api.createConversation(projectId).then((created) => {
+      const keptPendingHistory = replacePendingConversationHistory(
+        window.history,
+        pendingHistoryId,
+        created.conversation_id,
+        window.location.href,
+      );
+      // If the user already backed out of the pending entry, keep the completed task in the
+      // directory instead of reopening it without a native back destination.
+      if (!pendingHistoryId || keptPendingHistory) {
+        showConversation(created.conversation_id, { pushHistory: !pendingHistoryId });
+      }
+      // The detail screen can render immediately; refresh the directory in the background.
+      loadTasks();
+      return created;
+    }).catch((error) => {
+      if (pendingHistoryId && conversationIdFromHistory(window.history.state) === pendingHistoryId) window.history.back();
+      throw error;
+    });
+    createConversationRequestRef.current = request;
+    const clearRequest = () => {
+      if (createConversationRequestRef.current === request) createConversationRequestRef.current = null;
+    };
+    request.then(clearRequest, clearRequest);
+    return request;
+  }, [loadTasks, showConversation]);
 
   const openConversation = useCallback((conversation) => {
-    restoredConversationRef.current = true;
-    saveStoredConversationId(conversation.conversation_id);
-    markSeen(conversation.conversation_id);
-    setSelectedId(conversation.conversation_id);
-  }, [markSeen]);
+    showConversation(conversation.conversation_id);
+  }, [showConversation]);
 
   // 「N actions waiting」那条横幅点进去：开正在等的那个会话（第一条带 conversation_id 的
   // 请求说了算，见 haish-bridge.js 的 waitingRequestConversation）。列表里还没刷新到它也能
@@ -2191,13 +2001,19 @@ export default function App() {
   const showSettings = useCallback(() => setTab('settings'), []);
 
   function closeConversation() {
+    // iOS 的按钮返回和边缘返回必须走同一条 native history：前者主动 history.back()，后者
+    // 已经由 WKWebView 完成回退并通过 popstate 到这里，不再重复退一层。
+    if (api.isNative && popConversationHistory(window.history, selectedId)) return;
     // 离开也算看过：在会话里看着它跑完的那一轮，回到列表不再亮灯。
     markSeen(selectedId);
+    saveStoredConversationId('');
+    selectedIdRef.current = null;
+    detailOpenRef.current = false;
     setSelectedId(null);
     // The directory poll is paused behind the detail, so the list is refreshed here as it
     // comes back into view instead of every 5s while nobody can see it. The payload is
     // megabytes and its parse lands on the main thread, so it waits for an idle moment
-    // rather than stacking onto the swipe's last frames.
+    // rather than stacking onto the navigation transition's last frames.
     const refreshDirectory = () => {
       if (!detailOpenRef.current) loadTasks();
     };
@@ -2210,6 +2026,9 @@ export default function App() {
 
   async function logout() {
     try { await api.logout(); } catch { /* Clear the local UI even if already revoked. */ }
+    if (api.isNative) replaceConversationHistory(window.history, '', window.location.href);
+    selectedIdRef.current = null;
+    detailOpenRef.current = false;
     setSelectedId(null);
     saveStoredConversationId('');
     setConversations([]);
@@ -2237,6 +2056,7 @@ export default function App() {
     initialConversation={selectedConversation}
     onBack={closeConversation}
     connection={connection}
+    nativeSwipeBack={api.isNative}
   /> : null;
 
   const approvalCount = (approvals?.pending?.length || 0) + (approvals?.pending_workflow_approvals?.length || 0) + (approvals?.pending_user_inputs?.length || 0);

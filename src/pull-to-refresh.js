@@ -1,7 +1,7 @@
-// Pull-to-refresh, built the way this app builds gestures (see swipe-back.js):
+// Pull-to-refresh, kept as the one app-drawn gesture because it has no navigation/history semantics:
 //
 // - the pull is claimed only after 6px of movement that points down inside a 40° cone
-//   around the vertical axis (the same cone the back swipe uses, rotated 90°), and only
+//   around the vertical axis, and only
 //   while the surface is already at its top — a drag that starts anywhere else still
 //   belongs to the scroller;
 // - the surface travels with the finger through a resistance factor and a cap, which is

@@ -309,18 +309,13 @@ WKWebView 对 `<input type="file" accept="image/*">` 只会弹出系统的 `Phot
 
 ### 会话详情的右滑返回
 
-原生容器的返回手势只有 `WKWebView.allowsBackForwardNavigationGestures` 一条路，它靠 history 快照兜底：iOS 16 起 WebKit 对“没有用户手势创建的 `pushState` 条目”会在返回时直接跳过、不派发 `popstate`（WebKit bug 248303 是刻意加固，不是 bug），而且划动过程中看到的是进入详情时的旧列表。所以右滑返回按主流混合 App（Ionic `ion-router-outlet` 的 swipe-to-go-back）的标准做法完全在 WebView 里做，逻辑集中在 `src/swipe-back.js`：
+iOS App 直接用 `WKWebView.allowsBackForwardNavigationGestures`，不再由 JS 监听 `touchmove` 仿系统手势：
 
-- 左侧 50px 内按下才开始判定；判定用平移识别器：位移过 8px 且方向落在水平轴 40° 锥角内才认领手势，垂直或向左一律让给消息列表滚动；
-- 进度 = 位移 / 屏宽，写成一条 0→100% 线性 Web Animations 动画的 `currentTime`（`surface.animate()` 后 `pause()`，等价于 Ionic 的 `progressStep`）。之前是把偏移写进 CSS 变量 `--swipe-back-offset` 再让 `transform` 去读，每次 touchmove 都要让整棵消息列表重算样式；改动画时间只更新合成器，不碰样式；
-- touchmove 按帧合并（一个 rAF 一帧最多写一次），认领手势的那一帧就已经跟着手指走；
-- 松手按速度决定去向：> 0.2 px/ms 就完成返回，否则看松手时过了半屏没有；只有明确往回（向左）甩（≤ −0.2 px/ms）才取消——手指离屏前回那一点点不算（以前要求速度不得为负，抬手指时的抖动就会把过了半屏的一划弹回去）；时长取“剩余距离 / 速度”（速度下限 0.5 px/ms，90–340ms），和手指最后的速度连续；收敛从“最后一帧真正画出来的进度”接上（不是手指的最新采样），快甩也不会在松手那一下跳一格；
-- 手势进行中会话轮询（5s）、任务快照（2s）、列表轮询（5s）和秒表 tick 全部暂停；已经发出的请求如果在手势期间返回，会话刷新直接丢弃并在收敛后重取（`isSwipeBackInFlight()`）——交互式转场期间不做后台重建，这是原生 App 的常规做法；
-- 详情页开着的时候目录轮询整个停掉：`/api/projects` 一份 ~3.5 MB，本机 `JSON.parse` + 签名 `JSON.stringify` 约 13ms，到手机上就是几十毫秒的主线程停顿，而且内容一旦有变化还会重绘被盖在下面的整份列表——这些在详情页都看不见，所以只在列表真正可见时轮询，返回列表时补一次刷新，且等一个空闲时机（`requestIdleCallback`）再拉，不压在滑动的最后几帧上。
-- 按下就加 `swipe-armed` 提升图层（`will-change: transform`），收敛动画播完才摘掉（中途摘会让图层在动的时候重建，快甩的起飞段就会顿一下），`prefers-reduced-motion` 下直接切页不做动画；手指还按着时目录的定时动画全部冻着（`.app-shell.detail-open > :not(.detail-screen) *` 那条规则对拖动不开绿灯）：那是拖动期最重的一笔——手上正指挥着一个满屏图层时，把三只状态转圈和两条逐帧重绘的渐变放回来，既要重算整份被盖住的列表的样式，又要每帧再画一遍它们。松手那一下（`.detail-screen.swipe-dismissing`）就放回来：从那一刻起被揭开的是目录本身，正在走的是自己往外飞的详情层，原生滑退里被揭开的那一层从来不是冻着的；等到收尾之后才恢复，看到的就是目录先冻几十毫秒、再连着恢复的代价一起跳一下（用户报的「能返回，但收尾卡/跳」）。详情页自己那两条渐变也一起暂停（`.detail-screen.swipe-armed .agent-phase-gradient`），理由同上；
-- 目录顶栏那层 `backdrop-filter`（`--topbar-backdrop`）在详情页开着时置 `none`（`.app-shell.detail-open .remote-topbar`）：没键盘、没列表滚动时它是免费的，但 iOS 会在它上面每一帧重算一次背景模糊——手指还在拖的时候正好有一个满屏图层从它上面走过，模糊得跟着重算，拖动就会一卡一卡；详情开着时它本来就被盖住，关了不丢任何东西。松手那一下（同样按 `swipe-dismissing` 那两条 `:has` 规则）就放回来：整屏背景模糊的第一次渲染如果攒到收尾动画之后，那一帧正好是目录刚刚露全、眼睛盯着的地方。
-- 收尾那一帧不许再塞重活。滑退动画走到头时同时来了三笔：React 卸掉整棵详情树（连同它一串 effect 清理）、目录几十个定时动画重新交给合成器、顶栏第一次渲染 `backdrop-filter`（一整屏背景模糊）。后两笔现在挪到了松手那一刻（见上面两条 `:has` 规则），`src/dismiss-handoff.js` 只管把卸层排到「动画最后那一帧已经画出去」之后（两个 `raf`）；滑退那条路不挂 `html.detail-closing`（`dismiss({ hold: false })`，目录在松手时已经活了、再冻两帧只会看到跳一下），按钮返回那条路没动画，仍然靠它把恢复推到卸层之后。目录本身套了 `React.memo`，`openConversation / createConversation / showSettings` 都过 `useCallback`——开、关会话都要重渲染整页，而目录此时正压在详情层下面，那十几毫秒（每行都要重算预览、分组、排序）就落在收尾那几帧上；
-- `tests/swipe-back.test.mjs` 覆盖阈值、锥角、进度、速度平滑和松手判定这些纯数学部分，`tests/dismiss-handoff.test.mjs` 覆盖上面这套帧交接的次序、`hold: false`（滑退那条路）与两条 `:has` 规则是否还在 `styles.css` 里（`raf` 注入）。
+- storyboard 的根控制器改为 `HaishBridgeViewController`（仍继承 Capacitor 的 `CAPBridgeViewController`，不重建或包第二个 WebView），在 `capacitorDidLoad()` 打开 WebKit 原生 back/forward 手势；速度判定、取消回弹、图层快照和收尾动画都由 UIKit/WebKit 完成；
+- `src/conversation-navigation.js` 只维护列表/详情这一层 history。点开已有会话时直接 `pushState`；新建会话在点按栈里先 push 一个占位 id，服务端返回后 `replaceState` 成真实 id（失败就退掉占位条目）。原生滑退完成后 `popstate` 只把当前 `ConversationDetail` 摘掉；iOS 冷启动不靠脚本自动恢复详情，因为 WebKit 会跳过“无用户激活创建”的 history 条目（WebKit bug 248303 说明这是刻意行为）；
+- 会话列表始终挂在详情下面，连接、轮询、目录状态和滚动位置都还是同一棵 React 树。取消一小段滑动时不会派发 `popstate`，因此不会退出、重连或再从列表进入详情；完成返回也只改变 `selectedId`，不会调用初始化/配对流程；
+- 详情头部返回键在 iOS 也调用同一个 `history.back()`，与边缘手势不会形成两套导航状态；返回列表时同步清掉“上次会话”记录，iOS 冷启动固定落在列表根（自动恢复时创建的脚本 history 会被 WebKit 跳过，正是旧版“退到旧文档 → 重连 → 又进详情”循环的来源），浏览器在仍有记录时可恢复上次会话；注销会清理持久化的会话 id 与当前 history 标记；
+- 浏览器/PWA 没有原生交互式转场，返回键仍走 `src/dismiss-handoff.js` 的两帧卸层交接。`tests/conversation-navigation.test.mjs` 覆盖 history 状态保留、重复打开不重复 push、只在当前详情拥有 history 时 back，以及启动时清理陈旧条目。
 
 ### 加载失败与下拉刷新
 
@@ -360,8 +355,8 @@ WKWebView 里的输入框获得焦点时，iOS 会在键盘上方压一条系统
 会话最大的一份是 1.7MB（396 条消息、约 1.4 万个 DOM 节点）。在这样一页上，笔笔后台活都得从主线程过，所以三处的做法都是“先问一下真的变了吗”，而且手势与键盘动画期间一律让路：
 
 - **打字**：`fitComposerTextarea` 原来每个按键都走「写 `height: auto`（把整页布局打脏）→ 读 `scrollHeight`（当场把它算回来）→ 写回高度」，一页几千个节点时一次就是几十毫秒——真机上的「打字不跟手」就是它。现在分三条路：草稿没变就直接返回上次的结果（连 `scrollHeight` 都不读）；草稿变长不写 `auto`，只读一次 `scrollHeight`，没变高连 CSS 都不写（写样式同样让布局失效）；只有草稿变短、或调用方标了 `force`（进入展开态、旋转屏幕、右侧配置图标出现/收起）才走完整的那一趟。上下限是样式表里的 px 常量，每个元素只读一次（`getComputedStyle` 也不便宜）；
-- **轮询**：目录与详情以前都是 5 秒重拉一次，现在的节奏是状态与审批 5 秒、目录 15 秒、详情 15 秒；而且拿回来的东西先过一道“画出来的字段有没有变”的签名（`src/poll-signature.js`，字段是照着 `src/App.jsx` 里真读的那些列的；`device.last_seen_at` 这种服务端每次鉴权都刷新的故意不比），一样就不写 state——写下去就是整棵详情树重渲染一次，而这轮多半什么都没带回来。手势（右滑、下拉）与键盘动画期间整圈跳过，检查点有两个（`fetch` 之前与拿回来之后），结束后由原来的补拉逻辑补一次；
-- **流式**：回答是一串很密的 token 事件，一条一条 `setState` 就是每几个字把整页重渲染一次。现在事件先折进 `liveRunRef`，每帧最多往 React 递一次（`scheduleLiveRun`）；任务落地（成功/失败/取消）用 `flushLiveRun` 立刻写下去，最后一帧不会留在动画里。键盘正在动这件事由一个模块级标志报出来（`isKeyboardMoving`，由键盘控制器在动画起飞/落地时维护），它与右滑、下拉两个标志并排成 `threadBusy`，秒表 tick、任务快照、状态轮询都走同一个判断。
+- **轮询**：目录与详情以前都是 5 秒重拉一次，现在的节奏是状态与审批 5 秒、目录 15 秒、详情 15 秒；而且拿回来的东西先过一道“画出来的字段有没有变”的签名（`src/poll-signature.js`，字段是照着 `src/App.jsx` 里真读的那些列的；`device.last_seen_at` 这种服务端每次鉴权都刷新的故意不比），一样就不写 state——写下去就是整棵详情树重渲染一次，而这轮多半什么都没带回来。下拉手势与键盘动画期间整圈跳过，检查点有两个（`fetch` 之前与拿回来之后）；原生右滑由 WebKit 管，不再让 JS 手势标志参与轮询；
+- **流式**：回答是一串很密的 token 事件，一条一条 `setState` 就是每几个字把整页重渲染一次。现在事件先折进 `liveRunRef`，每帧最多往 React 递一次（`scheduleLiveRun`）；任务落地（成功/失败/取消）用 `flushLiveRun` 立刻写下去，最后一帧不会留在动画里。键盘正在动这件事由一个模块级标志报出来（`isKeyboardMoving`，由键盘控制器在动画起飞/落地时维护），它与下拉标志并排成 `threadBusy`，秒表 tick、任务快照、状态轮询都走同一个判断。
 
 三处都只动本仓库：`src/composer-height.js`、`src/poll-signature.js`、`src/App.jsx`（轮询节奏与守卫在调用点，不改桌面仓）。限速测量（Chromium + 4 倍 CPU）里这三笔分别对应每键约 85ms、空闲每 5 秒一次 97–110ms 的长任务、流式期间每 token 一次重渲染；真机手感仍由用户复验。
 

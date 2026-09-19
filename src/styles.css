@@ -28,7 +28,7 @@
   --safe-top: env(safe-area-inset-top, 0px);
   /* 键盘占掉的高度，由 src/ios-keyboard.js 在键盘落地时写入（键盘不缩 WebView，见该模块）。 */
   --keyboard-inset: 0px;
-  /* 目录顶栏那层背景模糊。详情页开着（或手指正拖着滑退）时置 none，见下面的说明。 */
+  /* 目录顶栏那层背景模糊。详情页盖住目录时置 none，见下面的说明。 */
   --topbar-backdrop: blur(22px) saturate(130%);
 }
 
@@ -58,7 +58,7 @@ code { padding: 2px 6px; border: 1px solid var(--border); border-radius: 6px; ba
    indicator is pinned just above its first pixel, so the pull slides it out from under the
    header the way a native refresh control does. `pull-active` keeps that surface promoted
    for the whole motion — dropped mid-flight, the layer would be rebuilt and the pull would
-   hitch the way the back swipe used to. */
+   hitch while the surface is settling. */
 .remote-body, .detail-body { position: relative; }
 .pull-active { will-change: transform; }
 .pull-refresh { position: absolute; z-index: 6; top: 0; left: 50%; display: grid; width: 34px; height: 34px; place-items: center; color: var(--accent); opacity: 0; pointer-events: none; transform: translate(-50%, -100%); }
@@ -270,7 +270,6 @@ input::placeholder, textarea::placeholder { color: var(--muted-2); }
      帧的缺口正好把下面这层会话列表露出来（收起键盘时闪的就是它）。浏览器里另算，见下。 */
   padding-bottom: var(--keyboard-inset);
   touch-action: pan-y;
-  overscroll-behavior-x: none;
 }
 /* 浏览器（含 PWA）里高度跟着可见视口走，免得输入框被地址栏挡住；App 里 WebView 的高度就是窗口
    （键位不缩 WebView，见 src/ios-keyboard.js），`inset: 0` 已经是全部。 */
@@ -287,42 +286,15 @@ html:not(.native-app) .detail-screen { height: 100dvh; }
    桌面那套 shimmer / 走马灯都算在里面）：逐帧重绘的合成层跟着平移就会一卡一卡。 */
 .message-region.keyboard-moving * { animation-play-state: paused; }
 .app-shell.detail-open > :not(.detail-screen) { pointer-events: none; }
-/* The directory keeps animating behind an open conversation even though it is
-   fully covered: 3 status spinners alone cost more main-thread time than the
-   whole thread. Pause them while a conversation is open — including while the
-   finger is still down on a back swipe. Releasing them mid-drag is what that
-   swipe felt like: a style recalc across every row plus per-frame work from the
-   spinners and phase gradients while a full-screen layer is moving under the
-   finger.
-   手指一松手（`swipe-dismissing`）就把它们放回来：从那一刻起被揭开的就是目录本身，正在走的是自己往外飞
-   的详情层——原生滑退里被揭开的那一层从来不是冻着的。搁到最后（动画结束、详情树卸掉、`detail-closing`
-   也摘掉）才恢复，看到的是目录先冻几十毫秒、再连着一笔恢复的代价一起跳一下，也就是用户报的「能返回，
-   但收尾卡/跳」。`detail-closing` 现在只管按钮返回那条路（那条路没有动画，恢复落在卸层的下一帧）。 */
+/* The directory stays mounted below an open conversation so WebKit's native interactive
+   back snapshot reveals the same list and scroll position. Its repeating animations are paused
+   while fully covered; the button/PWA handoff keeps that pause for two paint frames while React
+   removes the detail. Native edge-back owns its own snapshots and never runs this CSS transition. */
 .app-shell.detail-open > :not(.detail-screen) *,
 html.detail-closing .app-shell > :not(.detail-screen) * { animation-play-state: paused; }
-.app-shell.detail-open:has(.detail-screen.swipe-dismissing) > :not(.detail-screen) * { animation-play-state: running; }
-/* 详情页滑走时，目录顶栏那层 backdrop-filter 会让 iOS 每一帧重算一次背景模糊：正在移动的详情层压在
-   它上面，模糊就得跟着重算，拖动因此一卡一卡（手指还在，图层跟着手指走）——详情开着时先关掉。
-   松手那一下就放回来：整屏背景模糊的第一次渲染如果攒到收尾动画之后，那一帧正好是目录刚刚露全、眼睛盯着
-   的地方。 */
+/* The covered directory header does not need a live full-screen blur. */
 .app-shell.detail-open .remote-topbar { backdrop-filter: none; }
-.app-shell.detail-open:has(.detail-screen.swipe-dismissing) .remote-topbar { backdrop-filter: var(--topbar-backdrop); }
 .detail-top { touch-action: none; }
-/* The pull is a Web Animations transform owned by App.jsx; this class promotes the layer
-   before the finger moves (so the first tracked frame does not build it) and stays on
-   until the settle has landed: dropping it mid-flight rebuilds the layer and re-pauses
-   the directory while the page is still moving. */
-.detail-screen.swipe-armed { will-change: transform; }
-/* 滑退期间详情层自己的定时动画也停一停：逐帧重绘的渐变 / shimmer 会拖慢正在平移的那一层。
-   这几条是桌面 chat 执行 UI 里成逐帧重绘的那几个（聊天区的 shimmer、走马灯、
-   工具行的发光和 spinner）——手机自己那套渐变已经随旧 UI 删了。 */
-.detail-screen.swipe-armed .chat-timeline-activity-text,
-.detail-screen.swipe-armed .chat-timeline-activity-dots > span,
-.detail-screen.swipe-armed .chat-timeline-text-cursor,
-.detail-screen.swipe-armed .chat-incremental-text,
-.detail-screen.swipe-armed .aui-tool-label.is-running,
-.detail-screen.swipe-armed .aui-tool-status.status-running svg { animation-play-state: paused; }
-.detail-screen.swipe-dismissing { pointer-events: none; }
 .detail-top { position: relative; z-index: 30; background: var(--background); }
 .detail-header { display: grid; grid-template-columns: 48px minmax(0, 1fr) 48px; gap: 8px; min-height: calc(70px + var(--safe-top)); padding: calc(12px + var(--safe-top)) 10px 10px; align-items: center; border-bottom: 1px solid var(--border); }
 .detail-header .icon-button svg { transform: translateX(-7px); }
