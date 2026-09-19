@@ -340,6 +340,16 @@ html.detail-closing .app-shell > :not(.detail-screen) * { animation-play-state: 
    选择器比桌面那份多一层（`.chat-message-row`），所以不管两份样式表的先后，这条都说了算；
    行本身、`data-trace-pending`、执行记录的按需加载全都不动，只把可见性钉死。 */
 .chat-message-row .message-shell ~ .chat-message-actions { opacity: 1; pointer-events: auto; }
+/* CodeDiff 的桌面 utility 在构建里有，但只负责逐行配色；手机上还需要一个完整的工具面板层级，
+   否则图二那种长 diff 只剩一块发绿的正文。这里不改组件，只把同一个 data-slot 在窄屏上收成
+   文件头 + 可横滚代码区，并给 context / added / removed 三类行稳定的行号槽与分隔。 */
+.aui-tool-detail .haish-tool-elements [data-slot="code-diff"] { width: 100%; max-width: 100%; overflow: hidden; border: 1px solid rgba(132, 151, 190, 0.24); border-radius: 16px; background: rgba(13, 17, 28, 0.96); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025); }
+.aui-tool-detail .haish-tool-elements [data-slot="code-diff"] > div:first-child { min-height: 48px; padding: 11px 14px 9px; border-bottom: 1px solid rgba(132, 151, 190, 0.16); gap: 12px; background: rgba(24, 30, 48, 0.72); }
+.aui-tool-detail .haish-tool-elements [data-slot="code-diff"] > div:first-child > span:first-child { min-width: 0; overflow: hidden; font-family: var(--conversation-font); font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.aui-tool-detail .haish-tool-elements [data-slot="code-diff"] > div:first-child > span:last-child { flex: 0 0 auto; font-size: 12px; }
+.aui-tool-detail .haish-tool-elements [data-slot="code-diff"] > div:last-child { max-height: min(56dvh, 520px); overflow: auto; overscroll-behavior: contain; background: rgba(8, 11, 19, 0.72); }
+.aui-tool-detail .haish-tool-elements [data-slot="code-diff"] > div:last-child > div > div { min-height: 25px; padding: 3px 14px; border-bottom: 1px solid rgba(132, 151, 190, 0.055); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; line-height: 1.65; }
+.aui-tool-detail .haish-tool-elements [data-slot="code-diff"] > div:last-child > div > div > span:first-child { width: 20px; color: rgba(212, 220, 239, 0.46); }
 .scroll-to-bottom-button { position: absolute; z-index: 20; bottom: 14px; left: 50%; display: inline-flex; width: 44px; height: 44px; padding: 0; align-items: center; justify-content: center; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 50%; background: rgba(12, 17, 25, 0.94); color: rgba(241, 246, 255, 0.92); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32); opacity: 0; pointer-events: none; transform: translate(-50%, 8px); transition: opacity 140ms ease, transform 140ms ease, border-color 140ms ease; }
 .scroll-to-bottom-button.is-visible { opacity: 1; pointer-events: auto; transform: translate(-50%, 0); }
 .scroll-to-bottom-button:focus-visible { border-color: rgba(239, 191, 100, 0.5); outline: none; }
@@ -443,6 +453,7 @@ html.native-app .haish-annotation-editor { width: 100%; }
 .run-config-heading { margin: 0 2px 18px; text-align: center; }
 .run-config-heading h2 { margin: 0; font-size: 19px; }
 .run-config-heading p { margin: 6px 0 0; color: var(--muted-2); font-size: 12px; }
+.run-config-heading .run-config-sync-error { color: var(--danger); line-height: 1.4; }
 .run-config-fields { overflow: hidden; border: 1px solid var(--border); border-radius: 18px; background: var(--surface); }
 .run-config-field-group { border-bottom: 1px solid var(--border); }
 .run-config-field-group:last-child { border-bottom: 0; }

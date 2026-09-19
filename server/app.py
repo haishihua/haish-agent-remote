@@ -88,6 +88,9 @@ _ALLOWED_CORE_ROUTES: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("GET", r"projects"),
         ("GET", r"agents"),
         ("GET", r"settings/llm"),
+        # The remote picker persists the selected model through the runtime's
+        # canonical settings API so desktop and phone read the same provider entry.
+        ("PUT", r"settings/llm"),
         ("POST", r"llm/models"),
         ("POST", r"messages/images"),
         ("GET", r"conversations/[^/]+"),

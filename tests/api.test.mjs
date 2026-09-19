@@ -137,6 +137,24 @@ test('task reads stay on the runtime view and carry the incremental cursor', asy
   }
 });
 
+test('model selection persists through the client LLM settings endpoint', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (path, init = {}) => {
+    calls.push([path, init.method, JSON.parse(init.body)]);
+    return new Response(init.body, { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+
+  try {
+    const settings = { chat: {}, profiles: [{ id: 'openai', provider: 'openai', model: 'gpt-6-astra' }] };
+    const saved = await api.updateLlmSettings(settings);
+    assert.deepEqual(calls, [['/api/settings/llm', 'PUT', settings]]);
+    assert.deepEqual(saved, settings);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('the first message renames the conversation through the core PATCH route', async () => {
   const originalFetch = globalThis.fetch;
   const calls = [];

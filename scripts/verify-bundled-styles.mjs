@@ -40,6 +40,7 @@ const REQUIRED_OVERRIDES = [
   ['html.native-app.haish-annotation-floating{position:absolute!important', 'iOS 评论编辑器固定在 composer dock 上方，随键盘一起移动'],
   ['.chat-message-row.user.haish-sent-annotations.haish-quote-text{-webkit-line-clamp:3', '已发送的长引用在用户气泡里截为三行'],
   ['.chat-message-row.message-shell~.chat-message-actions{opacity:1;pointer-events:auto}', '消息行的时间与复制按钮常显（桌面是悬停那一行才亮）'],
+  ['.aui-tool-detail.haish-tool-elements[data-slot=code-diff]{width:100%;max-width:100%;overflow:hidden', '移动端 CodeDiff 有完整面板而不是只有逐行底色'],
 ];
 
 if (!fs.existsSync(assetsDir)) {

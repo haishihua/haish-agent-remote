@@ -269,6 +269,7 @@ class RemoteProxyTest(unittest.TestCase):
         self.assertTrue(_route_allowed("GET", "projects"))
         self.assertTrue(_route_allowed("GET", "agents"))
         self.assertTrue(_route_allowed("GET", "settings/llm"))
+        self.assertTrue(_route_allowed("PUT", "settings/llm"))
         self.assertTrue(_route_allowed("POST", "llm/models"))
         self.assertTrue(_route_allowed("POST", "messages/images"))
         self.assertTrue(_route_allowed("GET", "conversations/abc/messages/images/preview"))

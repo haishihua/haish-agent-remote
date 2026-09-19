@@ -3,8 +3,11 @@ import test from 'node:test';
 import {
   THINKING_OPTIONS,
   agentOptionsFromPayload,
+  mergeProviderModels,
+  modelOptionsFromTasks,
   providerOptionsFromSettings,
   resolveRunConfig,
+  settingsWithProviderModel,
   taskOptionsForRunConfig,
   withCurrentModel,
 } from '../src/run-config.js';
@@ -218,6 +221,42 @@ test('profiles that share a provider key are told apart by the model the task ra
     modelId: 'model-b',
     thinking: 'xhigh',
   });
+});
+
+test('the client model catalog keeps configured and previously used models when refresh falls back', () => {
+  const settings = {
+    chat: { provider: 'custom', name: 'opencode_go', model: 'deepseek-v4-flash' },
+    profiles: [{ id: 'llm-profile-openai-oauth', provider: 'openai', auth_mode: 'oauth', model: 'gpt-5.6-sol' }],
+  };
+  const provider = providerOptionsFromSettings(settings)[1];
+  const tasks = [
+    { provider_key: 'openai', provider: 'OpenAI', model: 'gpt-6-astra' },
+    { request_provider: 'llm-profile-openai-oauth', provider_key: 'openai', model: 'gpt-5.6-sol' },
+    { request_provider: 'another-profile', provider_key: 'openai', model: 'not-this-profile' },
+  ];
+  const taskModels = modelOptionsFromTasks(provider, tasks);
+  const merged = mergeProviderModels(provider, {
+    models: [{ id: 'gpt-5.5', label: 'gpt5.5' }, { id: 'gpt-5.4', label: 'gpt5.4' }],
+    models_source: 'static',
+  }, taskModels);
+
+  assert.deepEqual(merged.map((item) => item.id), ['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4', 'gpt-6-astra']);
+});
+
+test('selecting a remote model updates exactly the matching client provider entry', () => {
+  const settings = {
+    chat: { provider: 'custom', name: 'opencode_go', model: 'deepseek-v4-flash' },
+    profiles: [
+      { id: 'llm-profile-openai-oauth', provider: 'openai', auth_mode: 'oauth', model: 'gpt-5.6-sol' },
+      { id: 'llm-profile-router', provider: 'custom', name: 'router', model: 'deepseek-v4-flash' },
+    ],
+  };
+  const next = settingsWithProviderModel(settings, 'llm-profile-openai-oauth', 'gpt-6-astra');
+
+  assert.equal(next.profiles[0].model, 'gpt-6-astra');
+  assert.equal(next.profiles[1].model, 'deepseek-v4-flash');
+  assert.equal(settings.profiles[0].model, 'gpt-5.6-sol');
+  assert.equal(settingsWithProviderModel(settings, 'missing', 'gpt-6-astra'), null);
 });
 
 test('a model the runtime list does not know stays selectable', () => {

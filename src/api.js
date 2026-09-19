@@ -112,6 +112,10 @@ export const api = {
     }
   },
   llmSettings: () => request('/api/settings/llm'),
+  updateLlmSettings: (settings) => request('/api/settings/llm', {
+    method: 'PUT',
+    body: JSON.stringify(settings),
+  }),
   providerModels: (provider) => request('/api/llm/models', {
     method: 'POST',
     body: JSON.stringify({
