@@ -10,6 +10,8 @@ import { isNativeApp } from './native-connection.js';
 // 线程里：tooltip 的浮层就画在 Provider 那层，套在 `.message-scroll` 里会多出
 // 一个 flex 子元素。
 import { AppTooltipProvider } from '../../haish-agent/app-web/src/shared/ui/PortalTooltip.jsx';
+// 审批 / 提问 / 浏览器安装卡的数据源：桌面的单例 store（里面装的是四条卡片的待办清单）。
+import { approvalStore } from '../../haish-agent/app-web/src/features/approvals/model/approval-store.js';
 import './styles.css';
 
 // 原生 App 的标记：样式表靠它区分「WebView 的高度就是窗口」（键位不缩 WebView，见 ios-keyboard.js）
@@ -21,6 +23,11 @@ if (isNativeApp) document.documentElement.classList.add('native-app');
 // 桌面那套由 Electron 主进程转发 runtime 的 WebSocket，手机上换成 App 的 5s 快照轮询
 // 与适配器的三个 resolve 端点（见 src/haish-bridge.js）。
 installHaishBridge({ api });
+
+// 光有桥还不够：桌面的 store 是懒订阅的（`approval_store.js` 的 `ensureStream` 只在
+// `start()` 里跑，桌面在 AppShell 里开这一下）。手机上 App 就是壳，所以在这里接着开——
+// 晚于第一帧开也行（subscribe 时会给订阅者补一份当前快照），但开之前四张卡都是空的。
+approvalStore.start();
 
 createRoot(document.getElementById('root')).render(
   <React.StrictMode>

@@ -14,7 +14,7 @@
 //     .haish-approval-row` + `.haish-approval-slot`），样式在 approvals.css 里，手机已经
 //     把它整段接进来了（src/desktop-theme.css）。
 //
-// 认领机制照桌面：工具节点里那张内嵌卡（`embedded`）先挂就先认领，认领过的请求这里不再画，
+// 认领机制照桌面：工具节点里那张内嵌卡（`embedded` / 末尾插槽）先挂就先认领，认领过的请求这里不再画，
 // 于是「时间线里能看到就不重复、看不到才落到末尾」这条规矩在手机上一样成立。
 import React from 'react';
 import { approvalStore, isBrowserRuntimeRequest, isWorkflowApprovalRequest } from '../../haish-agent/app-web/src/features/approvals/model/approval-store.js';
@@ -46,8 +46,14 @@ export function ChatApprovalSlot({ conversationId = '', taskIds = [] }) {
   );
 
   const workflow = scoped.find(isWorkflowApprovalRequest) || null;
-  const active = scoped.find((request) => !isWorkflowApprovalRequest(request)) || null;
-  const rest = scoped.length - (workflow ? 1 : 0) - (active ? 1 : 0);
+  // 同 ApprovalInline：已经被工具节点里那张内嵌卡认领的请求不再在末尾重复画一次（认领是
+  // 独占的，后挂的那张自己也会 return null，但那样会把排在它后面的请求一起挡住——
+  // 这里先滤掉，队列里剩下的才是真没人管的）。
+  const visible = scoped.filter(
+    (request) => !isWorkflowApprovalRequest(request) && !approvalStore.isBrowserRuntimeClaimed(request.request_id),
+  );
+  const active = visible[0] || null;
+  const rest = visible.length - 1;
   if (!active && !workflow) return null;
 
   return (

@@ -83,7 +83,7 @@ haish-agent-remote/
 - 手机本地下过决定的请求先从后续快照里摘掉，直到后端也不再回报它（秒级轮询的延迟；不摘的话卡片会“决定完又回来几秒”）；
 - **browser_runtime 是唯一没有通道的种类**（适配器只认 tool / workflow / user_input 三个 `approval_kind`）：卡片上按按钮会明着报这句话，v1 不假装装上了。
 
-装的位置在 `src/main.jsx` 模块级（渲染之前）：桌面组件挂载时就会 `subscribe`（store 的 `ensureStream`），晚一步只会 warn 一句、之后再也不收事件。工具截图那个 `readToolScreenshot` 故意不提供——`BrowserToolDetail.jsx` 自己会降级成 “Screenshot unavailable”（与第 3 条同一个理由）。
+装的位置在 `src/main.jsx` 模块级（渲染之前）：桌面组件挂载时就会 `subscribe`（store 的 `ensureStream`），晚一步只会 warn 一句、之后再也不收事件。而 store 是**懒订阅**的（`ensureStream` 只在 `start()` 里跑，桌面在 `AppShell.jsx` 里开这一下），所以 `main.jsx` 在装完桥之后还要 `approvalStore.start()`——漏掉这一句，四张卡全是空的，而且不报任何错（第一次跑样机就是这么静的）。工具截图那个 `readToolScreenshot` 故意不提供——`BrowserToolDetail.jsx` 自己会降级成 “Screenshot unavailable”（与第 3 条同一个理由）。
 
 四张卡落在哪、以及手机上比桌面多做的那一步收窄，见下面第 5 条。
 

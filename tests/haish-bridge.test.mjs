@@ -8,6 +8,7 @@
 //   4) 一屏一个会话：别的会话的审批不能画进这一轮（scopedPendingRequests）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import {
   BROWSER_RUNTIME_UNSUPPORTED,
   createHaishBridge,
@@ -153,4 +154,29 @@ test('装到 window 上的那两个键就是桌面 preload 的形状', async () 
   assert.equal(haishBridge().getState().pending_user_inputs.length, 1);
   await target.haish.resolveApproval('user_input', 'ask-1', { answers: [] });
   assert.deepEqual(calls, [['user_input', 'ask-1', []]]);
+});
+
+// 光装桥还不够：桌面的 approval-store 是懒订阅的（`ensureStream` 只在 `start()` 里跑，桌面
+// 在 AppShell 里开这一下）。手机上 main.jsx 就是那个壳——漏掉这一句，四张卡全是空的，而
+// 「空」不报错、单测也不会红（第一次跑样机就是这么静的），所以把顺序钉在这里。
+test('main.jsx 在渲染前装桥，接着开 approval-store 的订阅', async () => {
+  const source = await readFile(new URL('../src/main.jsx', import.meta.url), 'utf8');
+  const installAt = source.indexOf('installHaishBridge({ api })');
+  const startAt = source.indexOf('approvalStore.start()');
+  assert.ok(installAt >= 0, '渲染前要装 window.haish（桌面组件挂载时就订阅）');
+  assert.ok(startAt > installAt, '桥装好之后还要 approvalStore.start()：store 不 start 就不订阅，四张卡都收不到东西');
+});
+
+// 四张卡的主体必须是桌面那几张卡。手机自己画过一版（App.jsx 里那个 ApprovalCard，用户看到
+// 的是跟客户端不一样的「ACTION REQUIRED」），这条盯住「不再自己画」。
+test('末尾插槽用的是桌面的卡，不是手机画的', async () => {
+  const slot = await readFile(new URL('../src/approval-slot.jsx', import.meta.url), 'utf8');
+  assert.match(
+    slot,
+    /from '\.\.\/\.\.\/haish-agent\/app-web\/src\/features\/approvals\/components\/ApprovalOverlay\.jsx'/,
+    '卡本体从桌面的 ApprovalOverlay 取',
+  );
+  for (const name of ['ToolApprovalCard', 'BrowserRuntimeCard', 'WorkflowApprovalInline']) {
+    assert.ok(slot.includes(name), `插槽里要用桌面的 ${name}`);
+  }
 });
