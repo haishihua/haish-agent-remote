@@ -176,19 +176,60 @@ function nameSourceFromSummary(summary) {
   };
 }
 
-function userRow({ id, conversationId, taskId = '', content, images, createdAt = 0, status = 'done' }) {
+function userRow({
+  id,
+  conversationId,
+  taskId = '',
+  messageId = null,
+  content,
+  images,
+  annotations = [],
+  createdAt = 0,
+  status = 'done',
+}) {
   return {
     id,
     taskId,
     conversationId,
+    // 桌面的行用 messageId 认「这一条已经落到服务端」：引用批注的草稿就是按这个把位置让给
+    // 服务端快照的（见 desktop 的 model/message-annotations.js）。**乐观行必须是 null**：那
+    // 时候这一条还没落库，草稿得留着当恢复副本（发失败时就是它回到输入框），只有服务端快照
+    // 才算认领。
+    messageId: messageId || null,
     role: 'user',
     text: chatMessageText(content),
-    annotations: [],
+    annotations: Array.isArray(annotations) ? annotations : [],
     status,
     createdAt,
     completedAt: null,
     images: Array.isArray(images) ? images : [],
   };
+}
+
+/**
+ * 一条任务上的引用批注只属于它的**第一条**用户消息。
+ *
+ * annotations 只随 `task.start` 提交（steering 的 inputs 不接受它），所以一条任务里
+ * 后面那几条 steering 消息不背注释；runtime 在任务记录上记的 `user_message_id` 说的
+ * 就是那一条（见 core 的 app/annotations.py 与 _validate_message_annotations）。
+ * 老快照没有那个字段时退回到「这条任务里最早的用户消息」。
+ */
+function rowAnnotations(summary, messageId, firstUserMessageId) {
+  const items = Array.isArray(summary?.annotations) ? summary.annotations : [];
+  if (!items.length) return [];
+  const owner = String(summary?.user_message_id || firstUserMessageId || '');
+  return owner && owner === String(messageId || '') ? items : [];
+}
+
+/** 任务号 → 该任务的第一条用户消息（`rowAnnotations` 的兜底用）。 */
+function firstUserMessageIds(messages) {
+  const owners = new Map();
+  for (const item of messages || []) {
+    const taskId = String(item?.task_id || '');
+    if (item?.role !== 'user' || !taskId || owners.has(taskId)) continue;
+    owners.set(taskId, item?.message_id || item?.id || '');
+  }
+  return owners;
 }
 
 // 缓存的执行记录可能落在会话摘要后面（任务刚落地时缓存里还是上一问的 running
@@ -338,6 +379,8 @@ export function buildChatRows({
     agentOptions,
   );
 
+  // 任务的第一条用户消息（`rowAnnotations` 的兜底，见那里的注释）。
+  const firstUserByTask = firstUserMessageIds(messages);
   messages.forEach((item, index) => {
     const taskId = String(item?.task_id || '');
     const key = item?.message_id || item?.id || `message-${index}`;
@@ -348,8 +391,10 @@ export function buildChatRows({
         id: key,
         conversationId,
         taskId,
+        messageId: item?.message_id || item?.id || null,
         content: item?.content,
         images: messageImageRefs(item, summary),
+        annotations: rowAnnotations(summary, item?.message_id || item?.id, firstUserByTask.get(taskId)),
         createdAt: timeMs(item?.created_at) || timeMs(summary?.created_at),
         status: normalizeTaskStatus(summary?.status || 'done'),
       }));
@@ -381,7 +426,12 @@ export function buildChatRows({
       agentName: agentNameFor(runtime, summary),
       text: chatMessageText(item?.content),
       messageId: item?.message_id || item?.id || null,
-      createdAt: timeMs(item?.created_at),
+      // 行上那条「用时」（桌面 ChatMessageRow 的 elapsed：折叠条上的 `3m 47s`，跑的时候
+      // 是名字旁边一直跳的那个）算的是**任务的窗口**：桌面 AppShell 的行取 `task.createdAt`
+      // → `task.completedAt`。助手消息自己的 `created_at` 是它**落库**的那一刻——离收工
+      // 不到一秒，拿它当起点，行上那条时长就永远是 `0s`（手机上一直是这么显示的，桌面
+      // 同一行是真实时长）。消息时间只在任务摘要缺失时兜底，别让行没有时间。
+      createdAt: timeMs(summary?.created_at) || timeMs(item?.created_at),
     }));
   });
 
@@ -390,8 +440,12 @@ export function buildChatRows({
       id: item?.id || `pending-${rows.length}`,
       conversationId,
       taskId: '',
+      // 乐观行还没拿到服务端 message_id：引用批注的草稿靠这个保持在输入框里，
+      // 直到服务端快照把同一批注释带回来（见 model/message-annotations.js）。
+      messageId: null,
       content: item?.text,
       images: item?.images,
+      annotations: item?.annotations || [],
       createdAt: timeMs(item?.created_at) || Date.now(),
       status: 'running',
     }));

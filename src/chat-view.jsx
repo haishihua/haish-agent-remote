@@ -90,8 +90,25 @@ function sameImages(left, right) {
     && image?.previewUrl === b[index]?.previewUrl);
 }
 
+// 引用批注（桌面的「添加注释」）每次轮询都是新解出来的对象，但内容一样时行不能换身份，
+// 否则整行（含 Markdown）跟着重画一次。
+function sameAnnotations(left, right) {
+  const a = Array.isArray(left) ? left : [];
+  const b = Array.isArray(right) ? right : [];
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  return a.every((item, index) => item?.id === b[index]?.id
+    && item?.text === b[index]?.text
+    && item?.comment === b[index]?.comment
+    && item?.start === b[index]?.start
+    && item?.end === b[index]?.end
+    && item?.source_message_id === b[index]?.source_message_id);
+}
+
 function sameRow(previous, next) {
   if (!previous) return false;
+  // `annotations` 不在 ROW_KEYS 里，按内容单独比（见 sameAnnotations）。
+  if (!sameAnnotations(previous.annotations, next.annotations)) return false;
   if (!ROW_KEYS.every((key) => previous[key] === next[key])) return false;
   if ((previous.progressLines || []).length !== (next.progressLines || []).length) return false;
   if (previous.traceTimeline !== next.traceTimeline) return false;
@@ -118,7 +135,7 @@ export function stabilizeRows(cache, rows) {
   return stable;
 }
 
-export function ChatThread({ conversationId = '', rows = [], loadTaskTrace, onPreviewImage }) {
+export function ChatThread({ conversationId = '', rows = [], loadTaskTrace, annotationNumbers = null, onPreviewImage, onAnnotationJump }) {
   const rowCacheRef = React.useRef(new Map());
   const viewCacheRef = React.useRef(new Map());
   const [imageVersion, bumpImageVersion] = React.useReducer((value) => value + 1, 0);
@@ -185,6 +202,8 @@ export function ChatThread({ conversationId = '', rows = [], loadTaskTrace, onPr
       <div className="chat-row" key={row.id}>
         <ChatMessageRow
           message={row}
+          annotationNumbers={annotationNumbers || undefined}
+          onAnnotationJump={onAnnotationJump}
           onPreviewImage={onPreviewImage}
           actionsDisabled={Boolean(row.streaming)}
         />

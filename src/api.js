@@ -146,13 +146,17 @@ export const api = {
     if (!response.ok) throw await responseError(response);
     return response.blob();
   },
-  startTask: async (conversation, message, imageAttachments, runOptions, onEvent, onOpen) => {
+  // 引用批注（桌面的「添加注释」）随消息一起走：runtime 把每条 quote 作为「被引用的原文 +
+  // 用户的评论」拼进这一轮的上下文（见 core 的 app/annotations.py），所以它属于 task 的
+  // 请求体，而不是事后追加的 inputs（steering 不接受 annotations）。
+  startTask: async (conversation, message, imageAttachments, runOptions, onEvent, onOpen, annotations = []) => {
     const response = await remoteFetch(`/remote/conversations/${encodeURIComponent(conversation.conversation_id)}/tasks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         message,
         image_attachments: imageAttachments,
+        annotations,
         options: {
           execution_mode: conversation.execution_mode || 'chat',
           ...runOptions,

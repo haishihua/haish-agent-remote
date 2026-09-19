@@ -36,6 +36,11 @@
 	<array>
 		<string>armv7</string>
 	</array>
+	<!-- App 整体钉在深色上（没有浅色主题）：系统的键盘、键盘上方的联想/建议栏、长按文字的
+	     放大镜与选择菜单、状态栏都跟着这一条走；Web 侧还有 color-scheme（src/styles.css
+	     与 index.html）这条同样的声明。 -->
+	<key>UIUserInterfaceStyle</key>
+	<string>Dark</string>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>

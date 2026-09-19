@@ -48,6 +48,18 @@ import { ScrollToBottomButton } from './ScrollToBottomButton.jsx';
 import { ChatThread, releaseConversationImageUrls } from './chat-view.jsx';
 // 线程末尾那个审批 / 提问插槽：卡片是桌面的，作用域是手机的（见 approval-slot.jsx）。
 import { ChatApprovalSlot } from './approval-slot.jsx';
+// 引用批注（桌面的「添加注释」，手机端叫「Add to chat」）：模型、草稿 hook、引用块与
+// 选区菜单都在 message-annotations.jsx 里，这里只接线。
+import { MessageAnnotations } from './message-annotations.jsx';
+import { QuoteBlock } from '../../haish-agent/app-web/src/shared/ui/agent-elements/Quote.jsx';
+import { useAnnotationDraft } from '../../haish-agent/app-web/src/features/chat/hooks/useAnnotationDraft.js';
+import {
+  annotationError,
+  createAnnotationMessageSelector,
+  isSubmittedAnnotationMessage,
+  numberAnnotations,
+  visibleAnnotationDrafts,
+} from '../../haish-agent/app-web/src/features/chat/model/message-annotations.js';
 // `window.haish` 的接缝：审批快照 → 桌面那套 store，下决定 → 适配器的三个端点（见 haish-bridge.js）。
 import { publishApprovalState, waitingRequestConversation } from './haish-bridge.js';
 import {
@@ -1528,7 +1540,15 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
       mime: image.mime,
     }));
     const steering = running;
-    if ((!nextMessage && !imageAttachments.length) || !conversation || (steering && !activeTaskId) || composerImages.some((image) => image.uploading) || (!steering && !runConfig)) return;
+    // 只带引用不发文字也是合法的一轮（runtime 的 TaskStreamRequest.message 允许空串）：
+    // 那一段被选中的原文本身就是这轮要说的话。但 steering 带引用不行——annotations 只随
+    // task.start 提交，所以运行中先把引用留在草稿里（下面那条 notice 会解释）。
+    const hasAnnotations = annotationDrafts.length > 0;
+    if ((!nextMessage && !imageAttachments.length && !hasAnnotations) || !conversation || (steering && (!activeTaskId || hasAnnotations)) || composerImages.some((image) => image.uploading) || (!steering && !runConfig)) return;
+    // 引用与正文加起来最多 20,000 个字（桌面同款预算）。
+    const commentsError = annotationDrafts.length ? annotationError(annotationDrafts, nextMessage) : '';
+    setAnnotationNotice(commentsError);
+    if (commentsError) return;
     const optimisticId = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const existingOccurrence = optimisticUserMessagesRef.current
       .filter((item) => item.text === nextMessage)
@@ -1537,7 +1557,9 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
       userMessageOccurrenceCount(conversation.messages, nextMessage),
       existingOccurrence,
     ) + 1;
-    const optimisticMessage = { id: optimisticId, text: nextMessage, images: imageAttachments, occurrence };
+    // 乐观行把这一轮的引用一起背上：输入框里的草稿立刻让位给这行（服务端快照回来时
+    // 再按 messageId 认领，见 model/message-annotations.js 的 visibleAnnotationDrafts）。
+    const optimisticMessage = { id: optimisticId, text: nextMessage, images: imageAttachments, annotations: annotationDrafts, occurrence };
     const submittedComposerImages = composerImagesRef.current;
     let accepted = false;
     let releasedImages = false;
@@ -1599,6 +1621,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
           releaseSubmittedImages();
           setBusy(false);
         },
+        annotationDrafts,
       );
       localStreamRef.current = false;
       const nextConversation = await refresh();
@@ -1710,6 +1733,41 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
     orphanReplyByAnchor,
   }), [agents, conversation, id, liveReplyPending, liveRun, orphanReplyByAnchor, running, taskRuntimes, tasksById, visibleMessages, visibleOptimisticMessages]);
 
+  // 引用批注（桌面的「添加注释」）：语义全在桌面那几份里（模型 / 草稿 hook / 引用块 / 快捷键），
+  // 这里把它们接到手机的行列表上——行的形状与桌面的 messages 同形（role、messageId、status、
+  // annotations），所以模型层一行也不用改。
+  const selectAnnotationMessages = useMemo(() => createAnnotationMessageSelector(), []);
+  const annotationMessages = useMemo(() => selectAnnotationMessages(rows, id), [id, rows, selectAnnotationMessages]);
+  const { items: annotationSnapshots, update: updateAnnotations, storageError: annotationStorageError } = useAnnotationDraft(id, annotationMessages);
+  const annotationDrafts = useMemo(() => visibleAnnotationDrafts(annotationSnapshots, annotationMessages), [annotationMessages, annotationSnapshots]);
+  // 编号是会话级的：引用块上的号码、输入框里的草稿、发出去的那条引用要显示同一个号。
+  const annotationNumbers = useMemo(() => numberAnnotations(annotationMessages, annotationDrafts), [annotationDrafts, annotationMessages]);
+  // 正文里要带底色的句子：发出去的那几条 + 手里还没发的草稿（桌面同一份算法）。
+  const highlightedAnnotations = useMemo(() => [
+    ...annotationMessages.filter(isSubmittedAnnotationMessage).flatMap((item) => (item.annotations || [])
+      .map((annotation) => ({ item: annotation, key: `${item.messageId || item.id}:${annotation.id}` }))),
+    ...annotationDrafts.map((item) => ({ item, key: `draft:${item.id}` })),
+  ], [annotationDrafts, annotationMessages]);
+  const [annotationNotice, setAnnotationNotice] = useState('');
+  const annotationUiRef = useRef(null);
+  const jumpToAnnotation = useCallback((item) => annotationUiRef.current?.jump(item), []);
+  const editAnnotation = useCallback((item) => annotationUiRef.current?.edit(item), []);
+  // 与桌面 ChatPanel 同一套判定：先拿整份草稿验一遍（上限、长度、id 唯一），过了才落盘。
+  const saveAnnotation = (item) => {
+    const exists = annotationSnapshots.some((draft) => draft.id === item.id);
+    const next = exists
+      ? annotationSnapshots.map((draft) => draft.id === item.id ? item : draft)
+      : [...annotationSnapshots, item];
+    const problem = annotationError(next);
+    setAnnotationNotice(problem);
+    if (problem) return false;
+    updateAnnotations((previous) => previous.some((draft) => draft.id === item.id)
+      ? previous.map((draft) => draft.id === item.id ? item : draft)
+      : [...previous, item]);
+    return true;
+  };
+  useEffect(() => { setAnnotationNotice(''); }, [id]);
+
   return (
     <main className="detail-screen" ref={detailScreenRef}>
       <div className="detail-top">
@@ -1731,6 +1789,8 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
               conversationId={id}
               rows={rows}
               loadTaskTrace={loadTaskTrace}
+              annotationNumbers={annotationNumbers}
+              onAnnotationJump={jumpToAnnotation}
               onPreviewImage={(image) => setPreviewImage({ src: image?.src, name: image?.title })}
             />
             {/* 插槽属于线程最新的一端，不属于历史之前：详情页一挂载就滚到最新消息并跟着它走，
@@ -1745,6 +1805,18 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
         </div>
         <ScrollToBottomButton scrollRef={messageScrollRef} resetKey={id} />
       </div>
+      {/* 选区菜单与评论编辑器（浮层，挂到 body）：listRef 就是线程本身，选中的那句从行上的
+          data-annotation-source 认领（只有已完成回答的那层 div 带这个属性，跟桌面一致）。 */}
+      <MessageAnnotations
+        ref={annotationUiRef}
+        listRef={messageScrollRef}
+        highlightItems={highlightedAnnotations}
+        drafts={annotationDrafts}
+        onAdd={saveAnnotation}
+        onSave={saveAnnotation}
+        onSaved={() => messageInputRef.current?.focus()}
+        onError={setAnnotationNotice}
+      />
       <div className="composer-dock" ref={composerDockRef}>
         {runConfig && runConfigExpanded ? <div className={`run-config-quick-controls thinking-${runConfig.thinking}`} ref={runConfigQuickRef}>
           <button type="button" className="run-config-summary" onClick={() => setShowRunConfig(true)} disabled={running} aria-label="Open advanced run configuration">
@@ -1775,6 +1847,15 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
           event.preventDefault();
           attachImages(images);
         }}>
+          {/* 引用草稿：块本体是桌面的 QuoteBlock（点正文跳回原文、铅笔改评论、叉删掉），
+              编号与会话里的引用一致。 */}
+          {annotationDrafts.length ? <div className="haish-annotation-drafts" aria-label="Comment drafts">
+            {annotationDrafts.map((item) => <QuoteBlock key={item.id} item={item} index={annotationNumbers.get(item.id)} preview
+              onJump={jumpToAnnotation} onEdit={editAnnotation}
+              onRemove={() => updateAnnotations((previous) => previous.filter((draft) => draft.id !== item.id))} />)}
+          </div> : null}
+          {(annotationNotice || annotationStorageError) ? <p className="haish-annotation-notice" role="status">{annotationNotice || annotationStorageError}</p> : null}
+          {running && annotationDrafts.length ? <p className="haish-annotation-notice">Comments are saved as a draft. Send after the task finishes or stops.</p> : null}
           {composerImages.length ? <div className="composer-images" aria-label="Selected images">{composerImages.map((image) => (
             <div className={`composer-image ${image.uploading ? 'uploading' : ''} ${image.error ? 'error' : ''}`} key={image.id} title={image.error || image.file.name}>
               {image.previewUrl ? <button type="button" onClick={() => setPreviewImage({ src: image.previewUrl, name: image.file.name })} aria-label={`Preview ${image.file.name}`}><img src={image.previewUrl} alt="" /></button> : <span aria-hidden="true">!</span>}
@@ -1827,7 +1908,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
               {busy ? <span className="send-spinner" aria-hidden="true" /> : <Square className="send-icon stop-square" fill="currentColor" strokeWidth={0} aria-hidden="true" />}
             </button>
           ) : (
-            <button className="send-button" disabled={busy || composerImages.some((image) => image.uploading) || (!message.trim() && !composerImages.some((image) => image.imageId && !image.error)) || (!running && !runConfig)} aria-label={running ? 'Add instruction' : 'Send'}>
+            <button className="send-button" disabled={busy || composerImages.some((image) => image.uploading) || (!message.trim() && !annotationDrafts.length && !composerImages.some((image) => image.imageId && !image.error)) || (running && annotationDrafts.length) || (!running && !runConfig)} aria-label={running ? 'Add instruction' : 'Send'}>
               {busy ? <span className="send-spinner" aria-hidden="true" /> : <ArrowUp className="send-icon" strokeWidth={2.3} aria-hidden="true" />}
             </button>
           )}

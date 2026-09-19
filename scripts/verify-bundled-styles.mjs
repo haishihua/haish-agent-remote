@@ -36,6 +36,8 @@ const REQUIRED_SELECTORS = ['[data-streamdown=table-wrapper]', '.haish-markdown'
  *  CSS 里，只有产物上能看。比对前先把空白抹掉（压缩后是 `.a{display:none}`）。 */
 const REQUIRED_OVERRIDES = [
   ['.chat-trace-pending{display:none}', '不画桌面那句「Steps load when you scroll up.」'],
+  ['.haish-annotation-drafts>.haish-quote-block{width:100%;max-width:100%;margin:0}', '引用批注的草稿在手机上占满一行（桌面是最宽 480px 的并排块）'],
+  ['.chat-message-row.message-shell~.chat-message-actions{opacity:1;pointer-events:auto}', '消息行的时间与复制按钮常显（桌面是悬停那一行才亮）'],
 ];
 
 if (!fs.existsSync(assetsDir)) {

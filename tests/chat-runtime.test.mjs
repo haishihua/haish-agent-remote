@@ -14,6 +14,8 @@ import {
   runtimeTaskWithEvent,
 } from '../src/chat-runtime.js';
 import { orphanReplyAnchors, orphanTaskReplies } from '../src/task-replies.js';
+// 行上的时间与用时是桌面那两份格式化函数画的（ChatMessageRow），断言就直接用原件。
+import { formatElapsedDuration } from '../../haish-agent/app-web/src/shared/lib/message-format.js';
 
 const AGENT_OPTIONS = [{ id: 'preset.general', label: 'General' }];
 
@@ -166,6 +168,46 @@ test('the thread is messages in order, with the desktop timeline on the agent ro
   );
   assert.deepEqual(rows[1].traceLatestTodos, [{ content: 'Ship it', status: 'in_progress', activeForm: '' }]);
   assert.equal(rows[1].firstTokenAt, Date.parse('2026-09-19T00:00:01Z'));
+});
+
+// 行上那条「用时」是**任务的窗口**（桌面 AppShell 的行取 task.createdAt → task.completedAt），
+// 不是助手消息落库的那一刻：后者离收工不到一秒，行上的时长就永远是 `0s`（手机上一直这么显示，
+// 桌面同一行是真实时长）。
+test('an agent row times its turn from the task window, the way the desktop row does', () => {
+  const runtime = runtimeTaskFromDetail(detail(answerDeltas('done')));
+  const rows = buildChatRows({
+    conversationId: 'convo-1',
+    messages: [
+      { message_id: 'm1', role: 'user', content: 'go', task_id: 'task-1', created_at: '2026-09-19T00:00:00.100Z' },
+      { message_id: 'm2', role: 'assistant', content: 'done', task_id: 'task-1', created_at: '2026-09-19T00:03:47.900Z' },
+    ],
+    tasksById: new Map([['task-1', {
+      task_id: 'task-1',
+      status: 'done',
+      created_at: '2026-09-19T00:00:00Z',
+      completed_at: '2026-09-19T00:03:47Z',
+    }]]),
+    runtimeTasks: { 'task-1': runtime },
+    agentOptions: AGENT_OPTIONS,
+  });
+
+  const agent = rows[1];
+  assert.equal(agent.createdAt, Date.parse('2026-09-19T00:00:00Z'));
+  assert.equal(agent.completedAt, Date.parse('2026-09-19T00:03:47Z'));
+  // 桌面行就是拿这两个值算那条用时；照着消息的 created_at（00:03:47.900）算只有 0s。
+  assert.equal(formatElapsedDuration(agent.createdAt, agent.completedAt), '3m 47s');
+});
+
+// 任务摘要缺失时，行上也不能没有时间：退回消息自己的 created_at。
+test('a row with no task summary still times itself from its own message', () => {
+  const rows = buildChatRows({
+    conversationId: 'convo-1',
+    messages: [{ message_id: 'm2', role: 'assistant', content: 'done', task_id: 'task-1', created_at: '2026-09-19T00:00:09Z' }],
+    agentOptions: AGENT_OPTIONS,
+  });
+
+  assert.equal(rows[0].createdAt, Date.parse('2026-09-19T00:00:09Z'));
+  assert.equal(rows[0].completedAt, 0);
 });
 
 test('the phone timeline drops the thinking chip the user called old UI', () => {
@@ -385,6 +427,72 @@ test('optimistic user messages render as their own running rows', () => {
   assert.equal(rows[0].status, 'running');
   assert.deepEqual(rows[0].images, [{ path: '/tmp/a.png' }]);
   assert.equal(rows[0].taskId, '');
+});
+
+// 引用批注（桌面的「添加注释」）：runtime 把它记在任务上（annotations + user_message_id），
+// 行的这一侧要把它还给**那一条**用户消息。一条任务里后面的 steering 消息不背注释——
+// annotations 只随 task.start 提交（见 desktop 的 model/message-annotations.js）。
+test('a task hands its quoted comments to the user message that carried them', () => {
+  const annotations = [{
+    id: 'a1', source_message_id: 'm2', text: 'Hello', comment: 'why?',
+    start: 0, end: 5, prefix: '', suffix: '',
+  }];
+  const rows = buildChatRows({
+    conversationId: 'convo-1',
+    conversation: { agent_id: 'preset.general' },
+    messages: [
+      { message_id: 'm1', role: 'user', content: 'look at this', task_id: 'task-1' },
+      { message_id: 'm2', role: 'assistant', content: 'Hello', task_id: 'task-1' },
+      { message_id: 'm3', role: 'user', content: 'more', task_id: 'task-1' },
+    ],
+    tasksById: new Map([['task-1', {
+      task_id: 'task-1', status: 'done', annotations, user_message_id: 'm1',
+    }]]),
+    agentOptions: AGENT_OPTIONS,
+  });
+
+  assert.deepEqual(rows[0].annotations, annotations);
+  assert.equal(rows[0].messageId, 'm1');
+  // 回答那一行的 messageId 就是引用里的 source_message_id：`data-annotation-source`
+  // 用它指回原文（只有 done 行带这个属性，见桌面 ChatMessageRow）。
+  assert.equal(rows[1].messageId, 'm2');
+  assert.deepEqual(rows[1].annotations, []);
+  assert.deepEqual(rows[2].annotations, []);
+});
+
+// 老快照没有 user_message_id（那个字段是后加的）：退回到「这条任务里最早的那条用户消息」，
+// 而不是把注释丢了。
+test('a summary without user_message_id falls back to the first user message', () => {
+  const annotations = [{ id: 'a1', source_message_id: 'm2', text: 'Hello', comment: '', start: 0, end: 5, prefix: '', suffix: '' }];
+  const rows = buildChatRows({
+    conversationId: 'convo-1',
+    messages: [
+      { message_id: 'm1', role: 'user', content: 'look', task_id: 'task-1' },
+      { message_id: 'm3', role: 'user', content: 'more', task_id: 'task-1' },
+    ],
+    tasksById: new Map([['task-1', { task_id: 'task-1', status: 'done', annotations }]]),
+    agentOptions: AGENT_OPTIONS,
+  });
+
+  assert.deepEqual(rows[0].annotations, annotations);
+  assert.deepEqual(rows[1].annotations, []);
+});
+
+// 乐观行背着这一轮的引用（发出去之后、服务端快照回来之前）：输入框里的草稿靠它让位，
+// 认领是下一步的事（见 visibleAnnotationDrafts）。
+test('an optimistic turn carries the quotes it was sent with', () => {
+  const annotations = [{ id: 'a1', source_message_id: 'm2', text: 'Hello', comment: '', start: 0, end: 5, prefix: '', suffix: '' }];
+  const rows = buildChatRows({
+    conversationId: 'convo-1',
+    messages: [],
+    optimisticMessages: [{ id: 'pending-1', text: '', images: [], annotations }],
+    agentOptions: AGENT_OPTIONS,
+  });
+
+  assert.deepEqual(rows[0].annotations, annotations);
+  // 乐观行还没有服务端的 message_id（null）：草稿不会被当成已确认，只有服务端快照才算认领
+  // （见 desktop 的 withoutAcknowledgedAnnotations）。
+  assert.equal(rows[0].messageId, null);
 });
 
 test('user rows carry the image refs of their message and task', () => {

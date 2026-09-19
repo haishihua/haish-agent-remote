@@ -25,7 +25,7 @@ import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 import uvicorn
 import websockets
 
@@ -287,10 +287,22 @@ def _remote_device_name(request: Request) -> str:
 
 
 class TaskStartRequest(BaseModel):
-    message: str = Field(min_length=1, max_length=20_000)
+    # message 允许为空：只带引用（或者只带图）也是一轮——runtime 的 TaskStreamRequest.message
+    # 就是默认空串，被选中的那段原文本身就是这轮要说的话。两样都没有才是客户端出了错。
+    message: str = Field(default='', max_length=20_000)
     attachments: list[dict[str, Any]] = Field(default_factory=list)
     image_attachments: list[dict[str, Any]] = Field(default_factory=list)
+    # 引用批注（桌面的「添加注释」）：手机只负责把用户选中的那段话原样带过来，
+    # 字段语义与上限（20 条、来源必须是本会话已完成的回答）由 runtime 校验，
+    # 适配器不复制那套规则——复制一份就会和 runtime 漂移。
+    annotations: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
     options: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode='after')
+    def _require_a_payload(self) -> 'TaskStartRequest':
+        if not self.message.strip() and not self.annotations and not self.image_attachments:
+            raise ValueError('A message, an image or at least one quoted comment is required.')
+        return self
 
 
 def _candidate_pid_files() -> list[Path]:

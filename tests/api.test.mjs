@@ -78,13 +78,19 @@ test('image uploads and task starts use the desktop image attachment protocol', 
     const file = new Blob(['image'], { type: 'image/png' });
     await api.uploadImage('conversation-1', file);
     const attachments = [{ image_id: 'image-1', path: '/tmp/shot.png', mime: 'image/png' }];
-    await api.startTask({ conversation_id: 'conversation-1' }, 'Look at this', attachments, {}, () => {});
+    const annotations = [{ id: 'annotation-1', source_message_id: 'message-9', text: 'quote', comment: '', start: 0, end: 5 }];
+    await api.startTask({ conversation_id: 'conversation-1' }, 'Look at this', attachments, {}, () => {}, undefined, annotations);
 
     assert.equal(calls[0].path, '/api/messages/images');
     assert.equal(calls[0].init.body.get('conversation_id'), 'conversation-1');
     assert.equal(calls[0].init.body.get('file').type, 'image/png');
     assert.equal(calls[0].init.body.get('file').size, file.size);
     assert.deepEqual(JSON.parse(calls[1].init.body).image_attachments, attachments);
+    // 引用批注与图片同属这一轮的请求体（桌面的 buildDeployRequest 与 core 的
+    // TaskStreamRequest 都是这么收的）；没带注释时给空数组，而不是把字段省掉。
+    assert.deepEqual(JSON.parse(calls[1].init.body).annotations, annotations);
+    await api.startTask({ conversation_id: 'conversation-1' }, 'Plain turn', [], {}, () => {});
+    assert.deepEqual(JSON.parse(calls[2].init.body).annotations, []);
   } finally {
     globalThis.fetch = originalFetch;
   }

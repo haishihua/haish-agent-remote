@@ -102,9 +102,9 @@ haish-agent-remote/
 
 **不搬**：桌面 `ChatPanel`（拖 Lexical 输入框、ModelPickers、标注、搜索）、`createTaskStreamHandlers.js`（1003 行，接的是桌面的 socket 与 store）——手机只搬行、时间线、卡片和纯函数模型，composer / 目录 / 滚动仍是手机自己的。只有发送/停止两个键的**图标**照桌面聊天区来（`ArrowUp` 与实心圆角 `Square`，即 `chat.css` 的 `.chat-send-icon` / `.chat-stop-icon`；桌面按钮 40px 配 22px/12px，手机按钮 48px 因此放成 26px/14px，进场动画沿用桌面的 `chat-send-icon-in`），不再用 `deploy.png` / `stop.png` 两个遮罩字形。
 
-### 手机上故意画得跟桌面不一样的七处
+### 手机上故意画得跟桌面不一样的八处
 
-只有这七处，都是用户拍过的，其余一律照桌面：
+只有这八处，都是用户拍过的，其余一律照桌面：
 
 1. **thinking 折叠 chip 不画**（桌面 `ChatTimelineNodes.jsx` 的 `.chat-timeline-thinking-*`：灯泡 + `N chars`）。用户说那是老 UI 的观感。事件日志照桌面折，只在 `chat-runtime.js` 交给行之前把 `kind === 'thinking'` 的节点滤掉——活动 orb 的文案仍走桌面那份（流式时它本来就在，只是少了一个可点的折叠块）。
 2. **取消 / 失败任务的本地回复去重**（`withoutTimelineDuplicates`）。被 `cancel` 打断的那次回答没定稿，过程文本（commentary）已经是时间线上的一个节点，`answer_text` 又是同一段，正文整段去重就少一遍。只对这一种行生效：持久化消息的正文就是答案本身，done 行的时间线默认折着，去掉它就等于把答案藏起来。
@@ -113,6 +113,8 @@ haish-agent-remote/
 5. **审批插槽按会话收窄**。四张卡在桌面上的落位是：工具审批 / 浏览器运行时装嵌在对应的工具节点里（`ChatTimelineToolNode` 里的 `ToolApprovalCard` / `BrowserRuntimeCard`，认领机制管着“时间线里画了就不重复”），ask_user 的问答表单嵌在 ask_user 那个工具行里（`AskUserInlineForm`），剩下够不着节点的排在与消息同级的一个插槽里（`ApprovalInline`，一次一张 + “N pending requests queued”）。手机把这四种落位原样搬了过来（内嵌的三种是桌面组件自己画的），只把**插槽**重写成 `src/approval-slot.jsx`：桌面只有一个窗口、一份 store，那个插槽不分会话；手机一屏只有一个会话，而 store 是整个 runtime 的，照搬会把**别的会话**的审批画进这一轮。收窄按请求自带的 `conversation_id`（没有就看 `task_id` 是不是本会话的任务）——卡面、类名、队列文案与桌面一字不差。
 6. **「跑完还没看过」的灯靠客户端时刻表**。桌面侧栏那个终态点（done 绿 / failed 红 / cancelled 金，即 `panels.css` 的 `.conversation-terminal-notice`）是 `task-completion-notices.js` 在进程里记的一张 notices 表，打开该会话就清掉（`AppShell.jsx` 的 `addTaskCompletionNotice` / `clearConversationCompletionNotices`）。桌面常开，这张表放在内存里就够；手机不是常开的——进程随时会被杀，内存里记不住“哪一轮看过没看过”，而 runtime 也没有“已读”这个概念。于是手机把同一件事记在客户端：`haish.conversation-seen-at.v1`（`src/conversation-status.js`），**第一次在手机上见到的会话以那一刻为基线**（装上手机之前跑完的任务不补灯），进会话 / 离开会话 / 新建会话都推到当下，所以灯一直亮到打开该会话为止——观感与桌面一致。判据本身不复制：坑位读桌面 `conversation-run-state.js` 的 `resolveConversationStatusMark`，终态串读桌面 `task-completion-notices.js` 的 `terminalTaskNoticeStatus`（同一时刻一行只亮一个：在等人 > 在跑 > 终态点）。
 7. **「Steps load when you scroll up.」不画**（`ChatMessageRow.jsx` 的 `.chat-trace-pending`：助手行在执行记录还没拉到时，正文上方写一句英文）。这句话写的是桌面那种“要自己往上滚，那一轮的执行记录才会去读”的读法；手机这边执行记录是滚到眼前**自动**拉的（`src/chat-view.jsx` 的 `IntersectionObserver`，240px 预取），一句没有容器的英文浮在正文上方就是一条没头没尾的字（用户：「怎么还有这个啊，给我去掉」）。`src/styles.css` 里 `.chat-trace-pending { display: none; }`；行本身不动——`traceHydrated` 与行上的 `data-trace-pending` 都还在，拉取时机与拉完之后的观感（时间线自己出现）一字未改。
+
+8. **消息行的时间与复制键常显**（桌面那份是悬停才亮：`.message-shell ~ .chat-message-actions { opacity: 0 }`，只在 `@media (hover: none)` 里兜底成常显）。这台设备的 WebView 没吃到那条兜底：手指点过的行会留下 sticky hover，于是用户读到的是「最新那条有时间、历史消息都没有」（用户原话）。`src/styles.css` 里 `.chat-message-row .message-shell ~ .chat-message-actions { opacity: 1; pointer-events: auto; }`——选择器比桌面多一层（`.chat-message-row`），两份样式表谁后加载都说了算；行本身、`data-trace-pending`、执行记录的按需加载全不动，只把可见性钉死。
 
 另外 `src/main.jsx` 必须包一层桌面 `AppTooltipProvider`：行 / 时间线 / 工具卡里的 tooltip 会抛 `useContext must be used within GlobalTooltipProvider`，整条线程白屏。
 

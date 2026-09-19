@@ -358,6 +358,100 @@ class RemoteTaskStartTest(unittest.TestCase):
             self.assertEqual(command["payload"]["message"], "Ship it")
             self.assertTrue(command["request_id"])
 
+    def test_task_start_carries_quoted_comments_to_the_runtime(self):
+        # 手机端的「添加到聊天」把选中的那段话作为 annotations 带过来；适配器只转发，
+        # 不解释字段（来源必须是本会话已完成的回答这件事由 runtime 判）。
+        annotation = {
+            "id": "annotation-1",
+            "source_message_id": "message-9",
+            "text": "国内模型里，Qwen3.8 Flash 也已经原生支持图片和视频",
+            "comment": "这句要展开",
+            "start": 0,
+            "end": 24,
+            "prefix": "",
+            "suffix": "；",
+        }
+        with TemporaryDirectory() as directory, FakeRuntimeSocket(
+            lambda request_id: [
+                command_result(request_id),
+                *task_events(request_id, {"type": "run_started", "task_id": "task-1"}),
+                task_end(request_id),
+            ],
+        ) as runtime, patch("server.app.discover_upstream", return_value=runtime.upstream()):
+            client, headers = self._client(Path(directory))
+            response = client.post(
+                self.TASK_PATH,
+                json={**self.TASK_BODY, "annotations": [annotation]},
+                headers=headers,
+            )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(runtime.commands[0]["payload"]["annotations"], [annotation])
+
+    def test_task_start_rejects_more_than_twenty_quoted_comments(self):
+        # 上限与 runtime 的 MessageAnnotation 一致（max_length=20）：多带一条在适配器
+        # 就退回 422，而不是让 runtime 用 400 说同一件事。
+        annotation = {
+            "id": "annotation-1",
+            "source_message_id": "message-9",
+            "text": "quote",
+            "start": 0,
+            "end": 5,
+        }
+        with TemporaryDirectory() as directory, patch("server.app.discover_upstream", return_value="http://127.0.0.1:1"):
+            client, headers = self._client(Path(directory))
+            response = client.post(
+                self.TASK_PATH,
+                json={**self.TASK_BODY, "annotations": [annotation] * 21},
+                headers=headers,
+            )
+
+            self.assertEqual(response.status_code, 422)
+
+    def test_task_start_accepts_a_quote_only_turn(self):
+        # 桌面上「只带一条引用、不写正文」也是一轮（被选中的那段原文就是这轮要说的话）：
+        # runtime 的 TaskStreamRequest.message 允许空串，适配器这边不能比它严。
+        annotation = {
+            "id": "annotation-1",
+            "source_message_id": "message-9",
+            "text": "quote",
+            "comment": "",
+            "start": 0,
+            "end": 5,
+            "prefix": "",
+            "suffix": "",
+        }
+        with TemporaryDirectory() as directory, FakeRuntimeSocket(
+            lambda request_id: [
+                command_result(request_id),
+                *task_events(request_id, {"type": "run_started", "task_id": "task-1"}),
+                task_end(request_id),
+            ],
+        ) as runtime, patch("server.app.discover_upstream", return_value=runtime.upstream()):
+            client, headers = self._client(Path(directory))
+            response = client.post(
+                self.TASK_PATH,
+                json={**self.TASK_BODY, "message": "", "annotations": [annotation]},
+                headers=headers,
+            )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(runtime.commands[0]["payload"]["message"], "")
+            self.assertEqual(runtime.commands[0]["payload"]["annotations"], [annotation])
+
+    def test_task_start_rejects_an_empty_turn(self):
+        # 什么都没带（没正文、没图、没引用）仍然是客户端出错：这条路以前由 message 的
+        # `min_length=1` 挡，现在改由 model 自己守。
+        with TemporaryDirectory() as directory, patch("server.app.discover_upstream", return_value="http://127.0.0.1:1"):
+            client, headers = self._client(Path(directory))
+            response = client.post(
+                self.TASK_PATH,
+                json={**self.TASK_BODY, "message": "   "},
+                headers=headers,
+            )
+
+            self.assertEqual(response.status_code, 422)
+
     def test_task_start_reports_runtime_rejections_with_their_status(self):
         with TemporaryDirectory() as directory, FakeRuntimeSocket(
             lambda request_id: [
@@ -546,7 +640,11 @@ class RemoteApprovalResolveTest(unittest.TestCase):
         self.assertEqual(runtime.commands[0]["payload"], {"decision": "reject", "feedback": "Too risky"})
 
     def test_user_input_resolve_keeps_the_answers(self):
-        answers = [{"question_id": "question-1", "kind": "freeform", "text": "Ship it"}]
+        # 选项 + 备注（note）原样转发：adapter 不许改写答案形状。
+        answers = [
+            {"question_id": "question-1", "kind": "selection", "values": ["个人身份"], "note": "钟梦熠"},
+            {"question_id": "question-2", "kind": "freeform", "text": "Ship it"},
+        ]
         response, runtime = self._resolve(
             "/api/user-inputs/input-1/resolve",
             {"answers": answers},
