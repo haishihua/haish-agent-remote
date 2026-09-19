@@ -26,10 +26,27 @@ export function chatMessageText(content) {
   return stripChatImageAugmentation(raw).text;
 }
 
-export function userMessageOccurrenceCount(messages, text) {
+/**
+ * 一条用户消息「显示上」说的是什么。
+ *
+ * 带引用的那一轮（桌面「添加注释」/ 手机「Add to chat」）在 runtime 落库的正文是
+ * 「用户打的字 + 拼给模型看的引用块」（core 的 `app/annotations.py`：一段
+ * `Quoted feedback (…)` 加 JSON；只带引用不带正文时整条正文就只剩那一段）。那是给模型
+ * 看的；用户打的那几个字 runtime 记在任务的 `display_text` 上（普通轮次是 null），桌面
+ * 画气泡用的就是它（AppShell.jsx：`task.displayText ?? task.title`）。手机的行来自消息
+ * 本体，所以这里做同一件事：任务摘要上有 `display_text` 就用它，没有才退回消息正文。
+ */
+export function userMessageText(message, task = null) {
+  const display = task?.display_text;
+  return chatMessageText(display == null ? message?.content : display);
+}
+
+// `textOf` 决定「这一条说的是什么」：传 message 自己那份任务摘要时才认 display_text
+// （见 userMessageText；去重与显示必须是同一个刻度，否则注解轮会一直重影）。
+export function userMessageOccurrenceCount(messages, text, textOf = userMessageText) {
   const target = String(text || '').trim();
   return (Array.isArray(messages) ? messages : []).filter((message) => (
-    message?.role === 'user' && chatMessageText(message.content).trim() === target
+    message?.role === 'user' && String(textOf(message) || '').trim() === target
   )).length;
 }
 

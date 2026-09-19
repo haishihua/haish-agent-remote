@@ -33,6 +33,7 @@ import {
   chatMessageText,
   chatImageValidationError,
   userMessageOccurrenceCount,
+  userMessageText,
 } from './chat-images.js';
 import {
   hasNativePhotoPicker,
@@ -1342,6 +1343,14 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
     (conversation?.tasks || []).map((task) => [task.task_id, task]),
   ), [conversation]);
 
+  // 「这一条用户消息显示上说的是什么」。注解轮的正文里带着拼给模型看的引用块，所以显示
+  // 与去重都得走任务上的 display_text（见 chat-images.js 的 userMessageText）：两边用同一
+  // 个刻度，发出去的那一条才能认领掉乐观行。
+  const userMessageTextOf = useCallback(
+    (message) => userMessageText(message, tasksById.get(String(message?.task_id || ''))),
+    [tasksById],
+  );
+
   const loadTaskTrace = useCallback(async (taskId) => {
     if (!taskId || loadedTraceIdsRef.current.has(taskId)) return;
     loadedTraceIdsRef.current.add(taskId);
@@ -1554,7 +1563,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
       .filter((item) => item.text === nextMessage)
       .reduce((highest, item) => Math.max(highest, item.occurrence), 0);
     const occurrence = Math.max(
-      userMessageOccurrenceCount(conversation.messages, nextMessage),
+      userMessageOccurrenceCount(conversation.messages, nextMessage, userMessageTextOf),
       existingOccurrence,
     ) + 1;
     // 乐观行把这一轮的引用一起背上：输入框里的草稿立刻让位给这行（服务端快照回来时
@@ -1706,8 +1715,8 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
     hidingLiveTask && item.role !== 'user' && item.task_id === activeTaskId
   )), [activeTaskId, conversation, hidingLiveTask]);
   const visibleOptimisticMessages = useMemo(() => optimisticUserMessages.filter((item) => (
-    userMessageOccurrenceCount(visibleMessages, item.text) < item.occurrence
-  )), [optimisticUserMessages, visibleMessages]);
+    userMessageOccurrenceCount(visibleMessages, item.text, userMessageTextOf) < item.occurrence
+  )), [optimisticUserMessages, userMessageTextOf, visibleMessages]);
   const orphanReplies = useMemo(() => orphanTaskReplies(conversation), [conversation]);
   const orphanReplyByAnchor = useMemo(() => orphanReplyAnchors(visibleMessages, orphanReplies), [orphanReplies, visibleMessages]);
   // Keep the live trace on screen between "stop" and the refreshed conversation

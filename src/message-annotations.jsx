@@ -43,30 +43,19 @@ import '../../haish-agent/app-web/src/features/chat/components/message-annotatio
 
 // WKWebView 里 `crypto.randomUUID` 要安全上下文（且 iOS 15.4 起才有），而桌面的
 // captureAnnotationSelection 直接调它。缺了就在这一处补上：批注的 id 只要在会话内唯一，
-// 用不到密码学强度（runtime 只拿它去重与编号）。
-if (typeof globalThis.crypto?.randomUUID !== 'function') {
-  const randomId = () => {
-    // 有 getRandomValues 就发一个真的 v4（它不要求安全上下文，WKWebView 里有）；
-    // 没有就退回「时间戳 + 随机串」——批注的 id 会话内唯一就够。
-    const bytes = globalThis.crypto?.getRandomValues?.(new Uint8Array(16));
-    if (bytes) {
-      bytes[6] = (bytes[6] & 0x0f) | 0x40;
-      bytes[8] = (bytes[8] & 0x3f) | 0x80;
-      const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
-      return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-    }
-    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+// 用不到密码学强度（runtime 只拿它去重与编号）；有 getRandomValues 就照样发一个真的 v4。
+if (typeof globalThis.crypto?.randomUUID !== 'function' && globalThis.crypto) {
+  const randomUuid = () => {
+    const bytes = globalThis.crypto.getRandomValues?.(new Uint8Array(16));
+    if (!bytes) return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
   };
-  const cryptoObject = globalThis.crypto || (globalThis.crypto = {});
-  try {
-    Object.defineProperty(cryptoObject, 'randomUUID', { value: randomId, configurable: true });
-  } catch {
-    // 有的 WebView 把 crypto 定义成只读对象：那时候只能显式装在最外层，这行也就保不住。
-    globalThis.randomUUID = randomId;
-  }
+  // crypto 是只读/不可扩展对象时只能作罢：那种环境下 capture 自己会报错，一个假 id 也救不了。
+  try { Object.defineProperty(globalThis.crypto, 'randomUUID', { value: randomUuid, configurable: true }); } catch { /* 见上 */ }
 }
-
-const annotationId = () => globalThis.crypto?.randomUUID?.() || globalThis.randomUUID?.();
 
 /**
  * 选区到菜单之间那口气：iOS 上点系统菜单外面那一下会顺手把选区收掉，如果我们在
@@ -117,7 +106,8 @@ export const MessageAnnotations = React.forwardRef(function MessageAnnotations(
     if (error) { onError(error); close(); return; }
     onError('');
     // 一步落进输入框：草稿与编号由 App 那边的 useAnnotationDraft 管（与桌面同一份语义）。
-    onAdd({ ...item, id: item.id || annotationId() });
+    // id 是 captureAnnotationSelection 发的（见上面那段 randomUUID 的补丁）。
+    onAdd(item);
     window.getSelection()?.removeAllRanges();
     close();
     onSaved?.();

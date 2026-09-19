@@ -24,7 +24,7 @@ import {
   taskFirstStreamTimestamp,
   taskSummaryToRuntimeTask,
 } from '../../haish-agent/app-web/src/features/tasks/model/task-runtime.js';
-import { chatMessageText, messageImageRefs } from './chat-images.js';
+import { chatMessageText, messageImageRefs, userMessageText } from './chat-images.js';
 
 function timeMs(value) {
   if (!value) return 0;
@@ -181,7 +181,7 @@ function userRow({
   conversationId,
   taskId = '',
   messageId = null,
-  content,
+  text = '',
   images,
   annotations = [],
   createdAt = 0,
@@ -197,7 +197,7 @@ function userRow({
     // 才算认领。
     messageId: messageId || null,
     role: 'user',
-    text: chatMessageText(content),
+    text,
     annotations: Array.isArray(annotations) ? annotations : [],
     status,
     createdAt,
@@ -392,7 +392,9 @@ export function buildChatRows({
         conversationId,
         taskId,
         messageId: item?.message_id || item?.id || null,
-        content: item?.content,
+        // 正文不等于「这一条说的是什么」：注解轮的正文里带着拼给模型看的引用块
+        // （见 chat-images.js 的 userMessageText）。
+        text: userMessageText(item, summary),
         images: messageImageRefs(item, summary),
         annotations: rowAnnotations(summary, item?.message_id || item?.id, firstUserByTask.get(taskId)),
         createdAt: timeMs(item?.created_at) || timeMs(summary?.created_at),
@@ -443,7 +445,7 @@ export function buildChatRows({
       // 乐观行还没拿到服务端 message_id：引用批注的草稿靠这个保持在输入框里，
       // 直到服务端快照把同一批注释带回来（见 model/message-annotations.js）。
       messageId: null,
-      content: item?.text,
+      text: chatMessageText(item?.text),
       images: item?.images,
       annotations: item?.annotations || [],
       createdAt: timeMs(item?.created_at) || Date.now(),

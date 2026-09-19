@@ -102,9 +102,9 @@ haish-agent-remote/
 
 **不搬**：桌面 `ChatPanel`（拖 Lexical 输入框、ModelPickers、标注、搜索）、`createTaskStreamHandlers.js`（1003 行，接的是桌面的 socket 与 store）——手机只搬行、时间线、卡片和纯函数模型，composer / 目录 / 滚动仍是手机自己的。只有发送/停止两个键的**图标**照桌面聊天区来（`ArrowUp` 与实心圆角 `Square`，即 `chat.css` 的 `.chat-send-icon` / `.chat-stop-icon`；桌面按钮 40px 配 22px/12px，手机按钮 48px 因此放成 26px/14px，进场动画沿用桌面的 `chat-send-icon-in`），不再用 `deploy.png` / `stop.png` 两个遮罩字形。
 
-### 手机上故意画得跟桌面不一样的八处
+### 手机上故意画得跟桌面不一样的九处
 
-只有这八处，都是用户拍过的，其余一律照桌面：
+只有这九处，都是用户拍过的，其余一律照桌面：
 
 1. **thinking 折叠 chip 不画**（桌面 `ChatTimelineNodes.jsx` 的 `.chat-timeline-thinking-*`：灯泡 + `N chars`）。用户说那是老 UI 的观感。事件日志照桌面折，只在 `chat-runtime.js` 交给行之前把 `kind === 'thinking'` 的节点滤掉——活动 orb 的文案仍走桌面那份（流式时它本来就在，只是少了一个可点的折叠块）。
 2. **取消 / 失败任务的本地回复去重**（`withoutTimelineDuplicates`）。被 `cancel` 打断的那次回答没定稿，过程文本（commentary）已经是时间线上的一个节点，`answer_text` 又是同一段，正文整段去重就少一遍。只对这一种行生效：持久化消息的正文就是答案本身，done 行的时间线默认折着，去掉它就等于把答案藏起来。
@@ -115,6 +115,7 @@ haish-agent-remote/
 7. **「Steps load when you scroll up.」不画**（`ChatMessageRow.jsx` 的 `.chat-trace-pending`：助手行在执行记录还没拉到时，正文上方写一句英文）。这句话写的是桌面那种“要自己往上滚，那一轮的执行记录才会去读”的读法；手机这边执行记录是滚到眼前**自动**拉的（`src/chat-view.jsx` 的 `IntersectionObserver`，240px 预取），一句没有容器的英文浮在正文上方就是一条没头没尾的字（用户：「怎么还有这个啊，给我去掉」）。`src/styles.css` 里 `.chat-trace-pending { display: none; }`；行本身不动——`traceHydrated` 与行上的 `data-trace-pending` 都还在，拉取时机与拉完之后的观感（时间线自己出现）一字未改。
 
 8. **消息行的时间与复制键常显**（桌面那份是悬停才亮：`.message-shell ~ .chat-message-actions { opacity: 0 }`，只在 `@media (hover: none)` 里兜底成常显）。这台设备的 WebView 没吃到那条兜底：手指点过的行会留下 sticky hover，于是用户读到的是「最新那条有时间、历史消息都没有」（用户原话）。`src/styles.css` 里 `.chat-message-row .message-shell ~ .chat-message-actions { opacity: 1; pointer-events: auto; }`——选择器比桌面多一层（`.chat-message-row`），两份样式表谁后加载都说了算；行本身、`data-trace-pending`、执行记录的按需加载全不动，只把可见性钉死。
+9. **引用批注（「Add to chat」）在手机上只有三处不一样**。语义全走桌面的那几份（`features/chat/model/message-annotations.js`、`hooks/useAnnotationDraft.js`、`shared/ui/agent-elements/Quote.jsx` 与其 `quote.css`、`components/message-annotations.css`），手机自己只做三件事：① **入口一步到位**——桌面是「选中 → 工具栏 Add comment → 编辑器里写评论 → Add to chat」，手机选中后菜单上一项「Add to chat」直接落进输入框，评论就在输入框里跟这句话一起写（系统选择菜单没法从 Web 侧加项，菜单只能 App 自绘：`src/message-annotations.jsx` 配 `src/styles.css` 的 `.annotation-menu*`；原生选区与放大镜保留，不碰 `WKContentView`）；② **编号药丸不画**——桌面画在答案右侧的空白里（`.haish-annotation-marker`），那是给 680px 气泡留的位，手机气泡满宽，药丸会压在正文上，号码改由输入框里的草稿块与发出去的那条引用块承担；③ **草稿块占满一行**（`.haish-annotation-drafts`，桌面上是一行并排、每块最宽 480px）。另外注解轮的正文（runtime 落库的「用户打的字 + 拼给模型看的引用块」）不能直接当气泡文案：显示与去重都认任务上的 `display_text`（`src/chat-images.js` 的 `userMessageText`，桌面 `AppShell.jsx` 也是取它画行）。
 
 另外 `src/main.jsx` 必须包一层桌面 `AppTooltipProvider`：行 / 时间线 / 工具卡里的 tooltip 会抛 `useContext must be used within GlobalTooltipProvider`，整条线程白屏。
 
@@ -216,6 +217,7 @@ POST /remote/conversations/{conversation_id}/tasks
 Body: {
   "message": "...",
   "image_attachments": [],
+  "annotations": [],
   "options": {
     "execution_mode": "chat",
     "use_history": true,
@@ -224,11 +226,13 @@ Body: {
 }
 ```
 
+`message` 可以为空：只带引用（或者只带图）也是一轮——带引用的那一轮 runtime 落库的正文是「用户打的字 + 拼给模型看的引用块」，用户打的那几个字另记在任务的 `display_text` 上，客户端画气泡与判重都认它（`src/chat-images.js` 的 `userMessageText`）。`annotations` 就是桌面「添加注释」的那个字段，适配器只按 20 条的上限原样转发，字段语义（来源必须是本会话已完成的回答）由 runtime 判。
+
 adapter 校验设备后，用 runtime 的实时 WebSocket 启动任务（runtime 已删除旧的 NDJSON 任务流 HTTP 接口，任务流只存在于 `/api/events/ws`）：
 
 ```text
 GET ws://127.0.0.1:<discovered-runtime-port>/api/events/ws   (Origin: haish://app)
-→ {"type":"task.start","request_id":"...","operation":"start","conversation_id":"...","payload":{ message, image_attachments, options, ... }}
+→ {"type":"task.start","request_id":"...","operation":"start","conversation_id":"...","payload":{ message, image_attachments, annotations, options, ... }}
 ← {"type":"command.result","request_id":"...","ok":true}
 ← {"type":"task.event","request_id":"...","event":{...}}
 ← {"type":"task.end","request_id":"..."}
