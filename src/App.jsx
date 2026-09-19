@@ -41,7 +41,8 @@ import {
   pickImagesFromLibrary,
   remainingImageSlots,
 } from './photo-picker.js';
-import { fitComposerTextarea } from './composer-height.js';
+import { createComposerTextareaFitScheduler } from './composer-height.js';
+import { composerInputQuietDelay, isComposerInputActive, markComposerInputActivity } from './composer-input-activity.js';
 import { hideKeyboardAccessoryBar, isKeyboardMoving, mountKeyboardInset, registerKeyboardSurface } from './ios-keyboard.js';
 import penguinLogo from './assets/penguin_logo_user.png';
 import { ScrollToBottomButton } from './ScrollToBottomButton.jsx';
@@ -163,11 +164,11 @@ function saveStoredConversationId(id) {
 }
 
 /**
- * 手上正有下拉手势或键盘动画时，后台那几件重活（会话轮询、任务快照、目录、秒表 tick）
- * 全部让路：一份会话的解析与整棵重渲染落进动画里就是一帧几十毫秒的卡顿。
+ * 手上正有下拉手势、键盘动画或连续输入时，后台那几件重活（会话轮询、任务快照、目录、秒表 tick）
+ * 全部让路：一份会话的解析与整棵重渲染落进输入帧里就是一帧几十毫秒的卡顿。
  */
 function threadBusy() {
-  return isPullRefreshInFlight() || isKeyboardMoving();
+  return isPullRefreshInFlight() || isKeyboardMoving() || isComposerInputActive();
 }
 
 function formatDate(value) {
@@ -830,7 +831,9 @@ function taskIdsOf(conversation) {
 function ConversationDetail({ id, projectName, initialConversation, onBack, connection, nativeSwipeBack = false }) {
   const [conversation, setConversation] = useState(initialConversation || null);
   const [conversationHydrated, setConversationHydrated] = useState(false);
-  const [message, setMessage] = useState('');
+  // 正文留在 textarea 自己的 DOM value 里：每个按键不再 setState、也就不会重渲染整张详情。
+  // React 只跟踪“是否有可发送文字”，这个布尔值只在空/非空边界变化。
+  const [hasMessage, setHasMessage] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [liveRun, setLiveRun] = useState(null);
@@ -868,48 +871,74 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
   const localStreamRef = useRef(false);
   const liveRunRef = useRef(null);
   const liveRunFrameRef = useRef(0);
+  const liveRunQuietTimerRef = useRef(0);
   const runConfigRef = useRef(null);
   const loadedTraceIdsRef = useRef(new Set());
+  const hasMessageRef = useRef(false);
+  const textareaFitSchedulerRef = useRef(null);
+  if (!textareaFitSchedulerRef.current) textareaFitSchedulerRef.current = createComposerTextareaFitScheduler();
 
   // 流式回答是一串很密的事件（每几个字一条）：一条一条 setState 就是每几个字把整页重渲染一次，
   // 真机上跑任务时整页都在抖。改成先折进 ref，每帧最多往 React 递一次；这一趟收尾由调用方
   // （`flushLiveRun`）落地，别把最后一帧留在动画里。
   const scheduleLiveRun = useCallback((nextRun) => {
     liveRunRef.current = nextRun;
-    if (liveRunFrameRef.current) return;
-    liveRunFrameRef.current = window.requestAnimationFrame(() => {
+    if (liveRunFrameRef.current || liveRunQuietTimerRef.current) return;
+    const commitWhenInputIsQuiet = () => {
       liveRunFrameRef.current = 0;
+      const delay = composerInputQuietDelay();
+      if (delay > 0) {
+        if (!liveRunQuietTimerRef.current) {
+          liveRunQuietTimerRef.current = window.setTimeout(() => {
+            liveRunQuietTimerRef.current = 0;
+            scheduleLiveRun(liveRunRef.current);
+          }, delay);
+        }
+        return;
+      }
       setLiveRun(liveRunRef.current);
-    });
+    };
+    liveRunFrameRef.current = window.requestAnimationFrame(commitWhenInputIsQuiet);
   }, []);
 
   const flushLiveRun = useCallback(() => {
     if (liveRunFrameRef.current) window.cancelAnimationFrame(liveRunFrameRef.current);
+    if (liveRunQuietTimerRef.current) window.clearTimeout(liveRunQuietTimerRef.current);
     liveRunFrameRef.current = 0;
+    liveRunQuietTimerRef.current = 0;
     setLiveRun(liveRunRef.current);
   }, []);
 
   // 这个 ref 是流式的缓冲：动画帧还挂着的时候别用 state 把它盖回去（那一帧接着读的就是它）。
-  useEffect(() => { if (!liveRunFrameRef.current) liveRunRef.current = liveRun; }, [liveRun]);
+  useEffect(() => {
+    if (!liveRunFrameRef.current && !liveRunQuietTimerRef.current) liveRunRef.current = liveRun;
+  }, [liveRun]);
   useEffect(() => { runConfigRef.current = runConfig; }, [runConfig]);
   useEffect(() => { composerImagesRef.current = composerImages; }, [composerImages]);
   useEffect(() => { optimisticUserMessagesRef.current = optimisticUserMessages; }, [optimisticUserMessages]);
   useEffect(() => { onBackRef.current = onBack; }, [onBack]);
+  useEffect(() => {
+    if (messageInputRef.current) messageInputRef.current.value = '';
+    hasMessageRef.current = false;
+    setHasMessage(false);
+  }, [id]);
 
-  // 输入框高度跟着草稿走（见 composer-height.js）：展开态不再预留一行空白。打字这条走便宜路
-  // （不写 `auto`、没变高就不写 CSS），只有草稿变短时才重量一次——每个按键都量一次就是每键一次
-  // 强制布局，手机上的「打字不跟手」。
+  // 输入事件只把高度测量合并到下一帧；正文不进 React state。宽度变化（展开、旋转屏幕、
+  // 右侧配置图标出现/收起）会改变折行，这些时候必须重量一次。
   useEffect(() => {
-    fitComposerTextarea(messageInputRef.current);
-  }, [message]);
-  // 宽度变化（展开、旋转屏幕、右侧配置图标出现/收起）会改变折行，这些时候必须重量一次。
-  useEffect(() => {
-    fitComposerTextarea(messageInputRef.current, { force: true });
+    textareaFitSchedulerRef.current.schedule(messageInputRef.current, { force: true });
   }, [id, composerExpanded, runConfig, runConfigExpanded]);
   useEffect(() => {
-    const fit = () => fitComposerTextarea(messageInputRef.current, { force: true });
+    const fit = () => textareaFitSchedulerRef.current.schedule(messageInputRef.current, { force: true });
     window.addEventListener('resize', fit);
     return () => window.removeEventListener('resize', fit);
+  }, []);
+  useEffect(() => () => {
+    textareaFitSchedulerRef.current.cancel();
+    if (liveRunFrameRef.current) window.cancelAnimationFrame(liveRunFrameRef.current);
+    if (liveRunQuietTimerRef.current) window.clearTimeout(liveRunQuietTimerRef.current);
+    liveRunFrameRef.current = 0;
+    liveRunQuietTimerRef.current = 0;
   }, []);
 
   // 浏览器/PWA 没有原生交互式返回动画，返回键仍走原来的两帧交接；iOS 则只调用
@@ -1134,10 +1163,10 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
     if (cached) setLiveRun(cached);
 
     async function hydrateActiveTask() {
-      if (localStreamRef.current) return;
+      if (localStreamRef.current || threadBusy()) return;
       try {
         const state = await taskRuntime.refresh(taskId);
-        if (!cancelled && state) setLiveRun(state);
+        if (!cancelled && state && !threadBusy()) setLiveRun(state);
       } catch (nextError) {
         if (!cancelled) setError(nextError.message);
       }
@@ -1264,7 +1293,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
 
   async function submit(event) {
     event.preventDefault();
-    const nextMessage = message.trim();
+    const nextMessage = String(messageInputRef.current?.value || '').trim();
     const imageAttachments = composerImages.filter((image) => image.imageId && !image.error).map((image) => ({
       image_id: image.imageId,
       path: image.path,
@@ -1305,7 +1334,10 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
     setOptimisticUserMessages(optimisticUserMessagesRef.current);
     composerImagesRef.current = [];
     setComposerImages([]);
-    setMessage('');
+    if (messageInputRef.current) messageInputRef.current.value = '';
+    hasMessageRef.current = false;
+    setHasMessage(false);
+    textareaFitSchedulerRef.current.schedule(messageInputRef.current, { force: true });
     setComposerExpanded(false);
     messageInputRef.current?.blur();
     setBusy(true);
@@ -1383,7 +1415,10 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
         setOptimisticUserMessages(optimisticUserMessagesRef.current);
         composerImagesRef.current = submittedComposerImages;
         setComposerImages(submittedComposerImages);
-        setMessage(nextMessage);
+        if (messageInputRef.current) messageInputRef.current.value = nextMessage;
+        hasMessageRef.current = Boolean(nextMessage);
+        setHasMessage(hasMessageRef.current);
+        textareaFitSchedulerRef.current.schedule(messageInputRef.current, { force: true });
         setError(nextError.message);
         return;
       }
@@ -1479,12 +1514,17 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
       .map((annotation) => ({ item: annotation, key: `${item.messageId || item.id}:${annotation.id}` }))),
     ...annotationDrafts.map((item) => ({ item, key: `draft:${item.id}` })),
   ], [annotationDrafts, annotationMessages]);
+  const approvalTaskIds = useMemo(() => taskIdsOf(conversation), [conversation]);
   const [annotationNotice, setAnnotationNotice] = useState('');
   const annotationUiRef = useRef(null);
   const jumpToAnnotation = useCallback((item) => annotationUiRef.current?.jump(item), []);
   const editAnnotation = useCallback((item) => annotationUiRef.current?.edit(item), []);
+  const previewThreadImage = useCallback((image) => {
+    setPreviewImage({ src: image?.src, name: image?.title });
+  }, []);
+  const focusComposer = useCallback(() => messageInputRef.current?.focus(), []);
   // 与桌面 ChatPanel 同一套判定：先拿整份草稿验一遍（上限、长度、id 唯一），过了才落盘。
-  const saveAnnotation = (item) => {
+  const saveAnnotation = useCallback((item) => {
     const exists = annotationSnapshots.some((draft) => draft.id === item.id);
     const next = exists
       ? annotationSnapshots.map((draft) => draft.id === item.id ? item : draft)
@@ -1496,7 +1536,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
       ? previous.map((draft) => draft.id === item.id ? item : draft)
       : [...previous, item]);
     return true;
-  };
+  }, [annotationSnapshots, updateAnnotations]);
   useEffect(() => { setAnnotationNotice(''); }, [id]);
 
   return (
@@ -1522,12 +1562,12 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
               loadTaskTrace={loadTaskTrace}
               annotationNumbers={annotationNumbers}
               onAnnotationJump={jumpToAnnotation}
-              onPreviewImage={(image) => setPreviewImage({ src: image?.src, name: image?.title })}
+              onPreviewImage={previewThreadImage}
             />
             {/* 插槽属于线程最新的一端，不属于历史之前：详情页一挂载就滚到最新消息并跟着它走，
                 把卡片摆在整段历史之前等于一进来就被滚出视野（看起来只闪了一下就没了）。
                 桌面端同样把审批行排在所有消息之后，卡片本体也是桌面那几个组件。 */}
-            <ChatApprovalSlot conversationId={id} taskIds={taskIdsOf(conversation)} />
+            <ChatApprovalSlot conversationId={id} taskIds={approvalTaskIds} />
             {detailLoadFailed ? (
               <div className="load-failed"><CircleAlert size={28} aria-hidden="true" /><h2>Couldn’t load this conversation</h2><p>Pull down to try again.</p></div>
             ) : null}
@@ -1545,7 +1585,7 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
         drafts={annotationDrafts}
         onAdd={saveAnnotation}
         onSave={saveAnnotation}
-        onSaved={() => messageInputRef.current?.focus()}
+        onSaved={focusComposer}
         onError={setAnnotationNotice}
       />
       <div className="composer-dock" ref={composerDockRef}>
@@ -1596,7 +1636,15 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
           ))}</div> : null}
           {composerImages.some((image) => image.error) ? <p className="composer-image-error" role="alert">{composerImages.find((image) => image.error)?.error}</p> : null}
           <label htmlFor="task-message" className="sr-only">Send instructions</label>
-          <textarea ref={messageInputRef} id="task-message" rows={1} value={message} disabled={busy} onFocus={() => setComposerExpanded(true)} onChange={(event) => setMessage(event.target.value)} onPaste={(event) => {
+          <textarea ref={messageInputRef} id="task-message" rows={1} disabled={busy} onFocus={() => setComposerExpanded(true)} onChange={(event) => {
+            markComposerInputActivity();
+            const nextHasMessage = Boolean(event.currentTarget.value.trim());
+            if (nextHasMessage !== hasMessageRef.current) {
+              hasMessageRef.current = nextHasMessage;
+              setHasMessage(nextHasMessage);
+            }
+            textareaFitSchedulerRef.current.schedule(event.currentTarget);
+          }} onPaste={(event) => {
             const images = Array.from(event.clipboardData?.items || []).filter((item) => item.kind === 'file' && item.type.startsWith('image/')).map((item) => item.getAsFile()).filter(Boolean);
             if (!images.length) return;
             event.preventDefault();
@@ -1632,14 +1680,14 @@ function ConversationDetail({ id, projectName, initialConversation, onBack, conn
             event.target.value = '';
           }} />
           {runConfig && !runConfigExpanded ? <button type="button" className="run-config-icon-button" onClick={() => setRunConfigExpanded(true)} disabled={running} aria-label={`Show run configuration, thinking ${selectedThinking?.label || 'unknown'}`} aria-expanded="false"><svg className="run-config-gauge" style={{ '--gauge-rotation': reasoningGaugeRotation }} viewBox="0 0 24 24" aria-hidden="true"><path className="run-config-gauge-arc" d="M3.34 19a10 10 0 1 1 17.32 0" /><g className="run-config-gauge-needle"><path className="run-config-gauge-pointer" d="M10.9 13.4 12.6 15.1 18.65 7.35Z" /><circle cx="12" cy="14" r="1.8" /></g></svg></button> : null}
-          {running && !message.trim() && !composerImages.some((image) => image.imageId && !image.error) ? (
+          {running && !hasMessage && !composerImages.some((image) => image.imageId && !image.error) ? (
             <button type="button" className="send-button stop" onClick={stop} disabled={busy} aria-label="Stop task">
               {/* 图标照桌面 chat 的发送/停止键：ArrowUp 是发，实心圆角方块是停
                   （40px 的桌面按钮里 22px 箭头 / 12px 方块，这里按钮是 48px，等比放大）。 */}
               {busy ? <span className="send-spinner" aria-hidden="true" /> : <Square className="send-icon stop-square" fill="currentColor" strokeWidth={0} aria-hidden="true" />}
             </button>
           ) : (
-            <button className="send-button" disabled={busy || composerImages.some((image) => image.uploading) || (!message.trim() && !annotationDrafts.length && !composerImages.some((image) => image.imageId && !image.error)) || (running && annotationDrafts.length) || (!running && !runConfig)} aria-label={running ? 'Add instruction' : 'Send'}>
+            <button className="send-button" disabled={busy || composerImages.some((image) => image.uploading) || (!hasMessage && !annotationDrafts.length && !composerImages.some((image) => image.imageId && !image.error)) || (running && annotationDrafts.length) || (!running && !runConfig)} aria-label={running ? 'Add instruction' : 'Send'}>
               {busy ? <span className="send-spinner" aria-hidden="true" /> : <ArrowUp className="send-icon" strokeWidth={2.3} aria-hidden="true" />}
             </button>
           )}

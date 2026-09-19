@@ -5,6 +5,7 @@ import {
   COMPOSER_TEXTAREA_MAX_HEIGHT,
   COMPOSER_TEXTAREA_MIN_HEIGHT,
   composerTextareaHeight,
+  createComposerTextareaFitScheduler,
   fitComposerTextarea,
 } from '../src/composer-height.js';
 
@@ -112,4 +113,42 @@ test('a forced fit re-measures even when the draft did not change', () => {
   assert.equal(fitComposerTextarea(textarea, { getStyles: () => COMPOSER_STYLES, force: true }), 69);
   assert.deepEqual(textarea.written, ['auto', '69px']);
   assert.equal(textarea.reads, 1);
+});
+
+test('rapid textarea fits coalesce into one animation-frame measurement', () => {
+  const frames = [];
+  const calls = [];
+  const scheduler = createComposerTextareaFitScheduler({
+    fit: (textarea, options) => calls.push({ textarea, options }),
+    requestFrame: (callback) => { frames.push(callback); return frames.length; },
+    cancelFrame: () => {},
+  });
+  const first = { value: 'a' };
+  const latest = { value: 'abc' };
+
+  scheduler.schedule(first);
+  scheduler.schedule(latest);
+  scheduler.schedule(latest, { force: true });
+
+  assert.equal(frames.length, 1);
+  assert.deepEqual(calls, []);
+  frames[0]();
+  assert.deepEqual(calls, [{ textarea: latest, options: { force: true } }]);
+});
+
+test('cancelling a scheduled textarea fit drops its pending layout read', () => {
+  const frames = [];
+  const cancelled = [];
+  const calls = [];
+  const scheduler = createComposerTextareaFitScheduler({
+    fit: (...args) => calls.push(args),
+    requestFrame: (callback) => { frames.push(callback); return 41; },
+    cancelFrame: (frame) => cancelled.push(frame),
+  });
+
+  scheduler.schedule({ value: 'draft' });
+  scheduler.cancel();
+
+  assert.deepEqual(cancelled, [41]);
+  assert.deepEqual(calls, []);
 });

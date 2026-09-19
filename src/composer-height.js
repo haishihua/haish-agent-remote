@@ -71,3 +71,42 @@ export function fitComposerTextarea(textarea, { getStyles = (node) => getCompute
   fitted.set(textarea, { size, value, height });
   return height;
 }
+
+/**
+ * Coalesce rapid input events into one layout read per animation frame. The input value itself is
+ * still updated synchronously by React; only the optional auto-height measurement is deferred.
+ */
+export function createComposerTextareaFitScheduler({
+  fit = fitComposerTextarea,
+  requestFrame = (callback) => requestAnimationFrame(callback),
+  cancelFrame = (frame) => cancelAnimationFrame(frame),
+} = {}) {
+  let frame = 0;
+  let textarea = null;
+  let force = false;
+
+  function flush() {
+    frame = 0;
+    const target = textarea;
+    const shouldForce = force;
+    textarea = null;
+    force = false;
+    return fit(target, { force: shouldForce });
+  }
+
+  function schedule(nextTextarea, options = {}) {
+    textarea = nextTextarea;
+    force = force || Boolean(options.force);
+    if (!frame) frame = requestFrame(flush);
+    return frame;
+  }
+
+  function cancel() {
+    if (frame) cancelFrame(frame);
+    frame = 0;
+    textarea = null;
+    force = false;
+  }
+
+  return { schedule, flush, cancel };
+}

@@ -135,7 +135,7 @@ export function stabilizeRows(cache, rows) {
   return stable;
 }
 
-export function ChatThread({ conversationId = '', rows = [], loadTaskTrace, annotationNumbers = null, onPreviewImage, onAnnotationJump }) {
+function ChatThreadComponent({ conversationId = '', rows = [], loadTaskTrace, annotationNumbers = null, onPreviewImage, onAnnotationJump }) {
   const rowCacheRef = React.useRef(new Map());
   const viewCacheRef = React.useRef(new Map());
   const [imageVersion, bumpImageVersion] = React.useReducer((value) => value + 1, 0);
@@ -212,3 +212,7 @@ export function ChatThread({ conversationId = '', rows = [], loadTaskTrace, anno
     );
   });
 }
+
+// Composer keystrokes update ConversationDetail, but they do not change this subtree. Keeping the
+// boundary here prevents a long Markdown/tool timeline from being traversed for every character.
+export const ChatThread = React.memo(ChatThreadComponent);

@@ -35,7 +35,7 @@ function scopeKey(conversationId, taskIds) {
   return `${conversationId}\u0000${(taskIds || []).join('\u0000')}`;
 }
 
-export function ChatApprovalSlot({ conversationId = '', taskIds = [] }) {
+function ChatApprovalSlotComponent({ conversationId = '', taskIds = [] }) {
   const pending = usePendingApprovals();
   const scope = scopeKey(conversationId, taskIds);
   const scoped = React.useMemo(
@@ -83,3 +83,7 @@ export function ChatApprovalSlot({ conversationId = '', taskIds = [] }) {
     </>
   );
 }
+
+// ConversationDetail may update for composer and stream state; approval cards subscribe to their
+// own store and only need parent renders when this conversation scope changes.
+export const ChatApprovalSlot = React.memo(ChatApprovalSlotComponent);
