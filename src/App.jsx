@@ -6,7 +6,6 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  Gauge,
   CircleAlert,
   Folder,
   ImagePlus,
@@ -1536,6 +1535,8 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   const selectedThinkingIndex = Math.max(0, THINKING_OPTIONS.findIndex((item) => item.id === runConfig?.thinking));
   const selectedThinkingRatio = selectedThinkingIndex / (THINKING_OPTIONS.length - 1);
   const reasoningGaugeRotation = `${selectedThinkingIndex * 80 - 165}deg`;
+  const reasoningProgressOffset = 20 - 40 * selectedThinkingRatio;
+  const reasoningProgress = `calc(${selectedThinkingRatio * 100}% ${reasoningProgressOffset < 0 ? '-' : '+'} ${Math.abs(reasoningProgressOffset)}px)`;
   const selectedModel = models.find((item) => item.id === runConfig?.modelId);
   const compactModel = String(selectedModel?.label || runConfig?.modelId || '')
     .replace(/^gpt[-_]/i, '')
@@ -1759,39 +1760,30 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
         </form>
       </div>
       {showReasoningPicker && runConfig ? <div className="sheet-scrim reasoning-sheet-scrim" role="presentation" onClick={() => setShowReasoningPicker(false)}>
-        <section className={`reasoning-sheet thinking-${runConfig.thinking}`} role="dialog" aria-modal="true" aria-labelledby="reasoning-sheet-title" onClick={(event) => event.stopPropagation()}>
-          <div className="sheet-handle" />
-          <div className="reasoning-sheet-heading"><Gauge size={20} aria-hidden="true" /><div><h2 id="reasoning-sheet-title">Thinking level</h2><p>{compactModel || 'Current model'}</p></div><button type="button" className="icon-button ghost" onClick={() => setShowReasoningPicker(false)} aria-label="Close thinking level"><X size={20} /></button></div>
-          <div className={`reasoning-level-control thinking-${runConfig.thinking}`}>
-            <div className="reasoning-level-slider">
-              <input
-                type="range"
-                min="0"
-                max={THINKING_OPTIONS.length - 1}
-                step="1"
-                value={selectedThinkingIndex}
-                aria-label="Thinking level"
-                aria-valuetext={selectedThinking?.label || 'Thinking'}
-                onChange={(event) => {
-                  const index = Number(event.target.value);
-                  if (index === selectedThinkingIndex) return;
-                  setRunConfig((current) => ({ ...current, thinking: THINKING_OPTIONS[index].id }));
-                  impactReasoningStep(index).catch(() => {});
-                }}
-              />
-              <span className="reasoning-level-marks" aria-hidden="true">
-                {THINKING_OPTIONS.map((item, index) => <i className={index === selectedThinkingIndex ? 'current' : (index < selectedThinkingIndex ? 'filled' : '')} key={item.id} />)}
-              </span>
-            </div>
-            <div className="reasoning-level-labels" role="radiogroup" aria-label="Thinking presets">
-              {THINKING_OPTIONS.map((item, index) => <button type="button" role="radio" aria-checked={index === selectedThinkingIndex} className={index === selectedThinkingIndex ? 'selected' : ''} key={item.id} onClick={() => {
+        <section className={`reasoning-sheet thinking-${runConfig.thinking}`} role="dialog" aria-modal="true" aria-label="Thinking level" onClick={(event) => event.stopPropagation()}>
+          <button type="button" className="run-config-summary" onClick={() => { setShowReasoningPicker(false); setShowRunConfig(true); }} aria-label="Open advanced run configuration">
+            <span>{compactModel || 'Model'}</span><strong>{selectedThinking?.label || 'Thinking'}</strong><ChevronRight size={19} aria-hidden="true" />
+          </button>
+          <div className={`reasoning-slider thinking-${runConfig.thinking}`} style={{ '--reasoning-progress': reasoningProgress }}>
+            <input
+              type="range"
+              min="0"
+              max={THINKING_OPTIONS.length - 1}
+              step="1"
+              value={selectedThinkingIndex}
+              aria-label="Thinking level"
+              aria-valuetext={selectedThinking?.label || 'Thinking'}
+              onChange={(event) => {
+                const index = Number(event.target.value);
                 if (index === selectedThinkingIndex) return;
-                setRunConfig((current) => ({ ...current, thinking: item.id }));
+                setRunConfig((current) => ({ ...current, thinking: THINKING_OPTIONS[index].id }));
                 impactReasoningStep(index).catch(() => {});
-              }}>{item.label}</button>)}
-            </div>
+              }}
+            />
+            <span className="reasoning-marks" aria-hidden="true">
+              {THINKING_OPTIONS.map((item, index) => <i className={index === selectedThinkingIndex ? 'active' : ''} key={item.id} />)}
+            </span>
           </div>
-          <button type="button" className="reasoning-advanced-button" onClick={() => { setShowReasoningPicker(false); setShowRunConfig(true); }}><span>Run configuration</span><ChevronRight size={18} aria-hidden="true" /></button>
         </section>
       </div> : null}
       {showRunConfig && runConfig ? <RunConfigSheet config={runConfig} agentLabel={conversation?.profile_display_name} agentLocked={agentLocked} agents={agents} providers={providers} models={models} modelLoading={modelLoading} syncing={modelSyncing} syncError={modelSyncError} onChange={setRunConfig} onProviderChange={changeRunProvider} onModelChange={changeRunModel} onClose={() => setShowRunConfig(false)} /> : null}

@@ -47,8 +47,8 @@ const REQUIRED_OVERRIDES = [
   ['.aui-tool-detail.haish-tool-elements[data-slot=code-diff]{width:100%;max-width:100%;overflow:hidden', '移动端 CodeDiff 有完整面板而不是只有逐行底色'],
   ['code:not([data-streamdown=code-block-body]code){padding:2px 6px', '代码块正文不继承全局行内 code 的方框样式'],
   ['.reasoning-sheet-scrim{z-index:130;align-items:center', '思考强度使用居中弹层而不是 composer 内联滑杆'],
-  ['.reasoning-level-sliderinput', '思考强度弹层提供原生滑杆'],
-  ['.reasoning-level-labels{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))', '思考强度弹层提供四档标签选择'],
+  ['.reasoning-sheet.run-config-summary{display:flex', '思考强度弹层保留原来的模型、档位和配置入口'],
+  ['.reasoning-sliderinput::-webkit-slider-runnable-track{height:40px', '思考强度弹层复用原来的四档滑杆样式'],
 ];
 
 if (!fs.existsSync(assetsDir)) {

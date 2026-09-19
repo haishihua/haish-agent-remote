@@ -18,9 +18,13 @@ test('the composer opens a four-step reasoning dialog and advanced config omits 
   const runConfig = app.slice(runConfigStart, runConfigEnd);
 
   assert.match(app, /className="sheet-scrim reasoning-sheet-scrim"/);
+  assert.match(app, /className="run-config-summary"/);
+  assert.match(app, /className=\{`reasoning-slider thinking-\$\{runConfig\.thinking\}`\}/);
+  assert.match(app, /setShowReasoningPicker\(false\); setShowRunConfig\(true\)/);
   assert.match(app, /aria-label="Thinking level"/);
   assert.match(app, /impactReasoningStep\(index\)/);
   assert.match(app, /type="range"/);
+  assert.doesNotMatch(app, /reasoning-level-labels/);
   assert.doesNotMatch(runConfig, /id: 'thinking'/);
 });
 
