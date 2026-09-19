@@ -137,6 +137,62 @@ test('task reads stay on the runtime view and carry the incremental cursor', asy
   }
 });
 
+test('provider models fall back to the runtime built-in catalog when live refresh fails', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (path, init = {}) => {
+    const body = JSON.parse(init.body);
+    calls.push([path, body]);
+    if (body.refresh) {
+      return new Response(JSON.stringify({ detail: 'Model catalog request failed: 401 Unauthorized' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify({
+      provider: 'openai',
+      default_model: 'gpt-5.5',
+      models: [{ id: 'gpt-5.5' }, { id: 'gpt-5.4' }],
+      models_source: 'static',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+
+  try {
+    const catalog = await api.providerModels({
+      provider: 'openai',
+      authMode: 'oauth',
+      customProvider: '',
+      baseUrl: '',
+      defaultModelId: 'gpt-5.6-sol',
+    });
+    assert.deepEqual(calls.map(([, body]) => body.refresh), [true, false]);
+    assert.equal(calls[0][0], '/api/llm/models');
+    assert.equal(calls[1][1].model, 'gpt-5.6-sol');
+    assert.deepEqual(catalog.models.map((item) => item.id), ['gpt-5.5', 'gpt-5.4']);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('provider model fallback does not mask unrelated errors', async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ detail: 'runtime unavailable' }), {
+      status: 503,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+
+  try {
+    await assert.rejects(api.providerModels({ provider: 'openai' }), { status: 503 });
+    assert.equal(calls, 2); // the error helper also checks /remote/status
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('model selection persists through the client LLM settings endpoint', async () => {
   const originalFetch = globalThis.fetch;
   const calls = [];

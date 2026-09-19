@@ -108,6 +108,16 @@ _ALLOWED_CORE_ROUTES: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
 )
 
 _ACTIVE_TASK_STATUSES = {"queued", "running"}
+_MODEL_CATALOG_TASK_FIELDS = (
+    "provider",
+    "provider_key",
+    "model",
+    "request_provider",
+    "requested_provider",
+    "provider_selector",
+    "request_model_id",
+    "request_options",
+)
 _PROJECT_LIST_TASK_FIELDS = (
     "task_id",
     "conversation_id",
@@ -116,6 +126,9 @@ _PROJECT_LIST_TASK_FIELDS = (
     "created_at",
     "updated_at",
     "completed_at",
+    # Preserve the provider/model tuple on current task summaries so an initially rendered
+    # conversation can restore its run config without waiting for the detail request.
+    *_MODEL_CATALOG_TASK_FIELDS,
 )
 
 
@@ -736,6 +749,8 @@ def _compact_project_listing(payload: Any) -> Any:
     """Keep directory polling lightweight; conversation detail is fetched on demand."""
     if not isinstance(payload, dict) or not isinstance(payload.get("projects"), list):
         return payload
+    model_catalog_tasks: list[dict[str, Any]] = []
+    seen_catalog_rows: set[str] = set()
     for project in payload["projects"]:
         if not isinstance(project, dict) or not isinstance(project.get("conversations"), list):
             continue
@@ -744,12 +759,35 @@ def _compact_project_listing(payload: Any) -> Any:
                 continue
             last_task_id = conversation.get("last_task_id")
             tasks = conversation.get("tasks") if isinstance(conversation.get("tasks"), list) else []
+            # Keep one tiny row for every provider/model combination seen in durable history. This
+            # lets the phone recover the real catalog when an OAuth refresh is temporarily 401,
+            # without retaining historical event logs or outputs in the directory response.
+            for task in tasks:
+                if not isinstance(task, dict):
+                    continue
+                row = {field: task[field] for field in _MODEL_CATALOG_TASK_FIELDS if field in task}
+                model = str(row.get("request_model_id") or row.get("model") or "").strip()
+                options = row.get("request_options")
+                if not model and isinstance(options, dict):
+                    model = str(options.get("model_id") or "").strip()
+                if not model:
+                    continue
+                key = json.dumps([
+                    row.get("provider"),
+                    row.get("provider_key"),
+                    _carried_selector(row),
+                    model,
+                ], default=str)
+                if key not in seen_catalog_rows:
+                    seen_catalog_rows.add(key)
+                    model_catalog_tasks.append(row)
             conversation["tasks"] = [
                 {field: task[field] for field in _PROJECT_LIST_TASK_FIELDS if field in task}
                 for task in tasks
                 if isinstance(task, dict)
                 and (task.get("task_id") == last_task_id or task.get("status") in _ACTIVE_TASK_STATUSES)
             ]
+    payload["model_catalog_tasks"] = model_catalog_tasks
     return payload
 
 

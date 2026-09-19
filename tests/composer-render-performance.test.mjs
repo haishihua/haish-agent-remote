@@ -23,6 +23,17 @@ test('the first composer tap expands and focuses in the same trusted pointer eve
   assert.match(app, /onPointerDown=\{activateComposer\} onFocus=\{activateComposer\}/);
 });
 
+test('the photo button keeps the textarea focused until its click opens the picker', async () => {
+  const app = await read('../src/App.jsx');
+
+  assert.match(app, /function beginPhotoLongPress\(event\)/);
+  assert.match(app, /beginPhotoLongPress\(event\)[\s\S]*?event\.preventDefault\(\)/);
+  assert.match(app, /onPointerDown=\{beginPhotoLongPress\}/);
+  assert.match(app, /function finishPhotoPress\(\)[\s\S]*?openPhotoPicker\(\)/);
+  assert.match(app, /onPointerUp=\{finishPhotoPress\}/);
+  assert.match(app, /onClick=\{\(\) => \{[\s\S]*?openPhotoPicker\(\)/);
+});
+
 test('the expensive detail subtrees have memo boundaries and stable props', async () => {
   const [app, thread, approvals] = await Promise.all([
     read('../src/App.jsx'),

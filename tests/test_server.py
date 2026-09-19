@@ -198,9 +198,18 @@ class DeviceStoreTest(unittest.TestCase):
                     "conversation_id": "conversation-1",
                     "last_task_id": "task-3",
                     "tasks": [
-                        {"task_id": "task-1", "status": "done", "error": "large historical output"},
+                        {"task_id": "task-1", "status": "done", "provider_key": "openai", "model": "gpt-5.4", "error": "large historical output"},
                         {"task_id": "task-2", "status": "running", "stage": "working", "error": "large live output"},
-                        {"task_id": "task-3", "status": "done", "completed_at": "2026-09-04T10:00:00Z", "model": "gpt"},
+                        {
+                            "task_id": "task-3",
+                            "status": "done",
+                            "completed_at": "2026-09-04T10:00:00Z",
+                            "provider_key": "openai",
+                            "model": "gpt-5.5",
+                            "request_provider": "llm-profile-openai-oauth",
+                            "request_model_id": "gpt-5.5",
+                            "request_options": {"provider": "llm-profile-openai-oauth", "model_id": "gpt-5.5"},
+                        },
                     ],
                 }],
             }],
@@ -210,8 +219,15 @@ class DeviceStoreTest(unittest.TestCase):
         tasks = compacted["projects"][0]["conversations"][0]["tasks"]
         self.assertEqual([task["task_id"] for task in tasks], ["task-2", "task-3"])
         self.assertEqual(tasks[0], {"task_id": "task-2", "status": "running", "stage": "working"})
-        self.assertNotIn("model", tasks[1])
+        self.assertEqual(tasks[1]["provider_key"], "openai")
+        self.assertEqual(tasks[1]["model"], "gpt-5.5")
+        self.assertEqual(tasks[1]["request_provider"], "llm-profile-openai-oauth")
+        self.assertEqual(tasks[1]["request_model_id"], "gpt-5.5")
+        self.assertEqual(tasks[1]["request_options"]["model_id"], "gpt-5.5")
         self.assertNotIn("error", tasks[1])
+        catalog = compacted["model_catalog_tasks"]
+        self.assertEqual([task["model"] for task in catalog], ["gpt-5.4", "gpt-5.5"])
+        self.assertTrue(all("task_id" not in task and "error" not in task for task in catalog))
 
     def test_project_listing_leaves_non_project_payload_unchanged(self):
         payload = {"detail": "upstream error"}

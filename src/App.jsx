@@ -1309,8 +1309,13 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     }));
   }
 
-  function beginPhotoLongPress() {
+  function beginPhotoLongPress(event) {
+    // Keep the focused textarea from blurring on pointerdown. Its blur handler compacts the form,
+    // which used to move/hide this button before WebKit could dispatch click. Do not focus the
+    // button either: the native picker opens from the same trusted pointer sequence below.
+    event.preventDefault();
     window.clearTimeout(photoLongPressTimerRef.current);
+    photoLongPressRef.current = false;
     photoLongPressTimerRef.current = window.setTimeout(() => {
       photoLongPressTimerRef.current = 0;
       photoLongPressRef.current = true;
@@ -1321,6 +1326,15 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   function cancelPhotoLongPress() {
     window.clearTimeout(photoLongPressTimerRef.current);
     photoLongPressTimerRef.current = 0;
+  }
+
+  function finishPhotoPress() {
+    cancelPhotoLongPress();
+    if (photoLongPressRef.current) return;
+    // Open from pointerup itself: it is still a trusted user event, and it happens before the
+    // synthetic click that WebKit can drop if presenting the picker blurs/compacts the composer.
+    photoLongPressRef.current = true;
+    openPhotoPicker();
   }
 
   async function openPhotoPicker() {
@@ -1724,7 +1738,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
               openPhotoPicker();
             }}
             onPointerDown={beginPhotoLongPress}
-            onPointerUp={cancelPhotoLongPress}
+            onPointerUp={finishPhotoPress}
             onPointerCancel={cancelPhotoLongPress}
             onPointerLeave={cancelPhotoLongPress}
             onContextMenu={(event) => event.preventDefault()}
@@ -1815,6 +1829,7 @@ export default function App() {
   const [conversations, setConversations] = useState([]);
   const [projects, setProjects] = useState([]);
   const [tasks, setTasks] = useState({});
+  const [modelCatalogTasks, setModelCatalogTasks] = useState([]);
   const [approvals, setApprovals] = useState(null);
   const [loading, setLoading] = useState(true);
   // 行尾那个终态点的「看过」时刻表（见 conversation-status.js）：只对这台手机有意义，即用即存。
@@ -1894,7 +1909,10 @@ export default function App() {
       directoryErrorRef.current = false;
       setFatalError('');
       const nextProjects = projectsResponse.projects || [];
-      const signature = JSON.stringify(nextProjects);
+      const nextModelCatalogTasks = Array.isArray(projectsResponse.model_catalog_tasks)
+        ? projectsResponse.model_catalog_tasks
+        : nextProjects.flatMap((project) => project.conversations || []).flatMap((item) => item.tasks || []);
+      const signature = JSON.stringify([nextProjects, nextModelCatalogTasks]);
       if (signature === directorySignatureRef.current) return;
       directorySignatureRef.current = signature;
       const nextConversations = nextProjects.flatMap((project) => project.conversations || []);
@@ -1909,6 +1927,7 @@ export default function App() {
       setProjects(nextProjects);
       const nextTasks = Object.fromEntries(nextConversations.flatMap((item) => item.tasks || []).map((task) => [task.task_id, task]));
       setTasks(nextTasks);
+      setModelCatalogTasks(nextModelCatalogTasks);
     } catch (error) {
       directoryErrorRef.current = true;
       setFatalError(error.message);
@@ -2138,6 +2157,7 @@ export default function App() {
     setSelectedId(null);
     saveStoredConversationId('');
     setConversations([]);
+    setModelCatalogTasks([]);
     directorySignatureRef.current = '';
     directoryErrorRef.current = false;
     approvalsSignatureRef.current = '';
@@ -2160,7 +2180,7 @@ export default function App() {
     id={selectedId}
     projectName={selectedProject?.name || 'Project'}
     initialConversation={selectedConversation}
-    modelCatalogTasks={tasks}
+    modelCatalogTasks={modelCatalogTasks}
     onBack={closeConversation}
     connection={connection}
     nativeSwipeBack={api.isNative}

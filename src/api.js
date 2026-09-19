@@ -116,17 +116,31 @@ export const api = {
     method: 'PUT',
     body: JSON.stringify(settings),
   }),
-  providerModels: (provider) => request('/api/llm/models', {
-    method: 'POST',
-    body: JSON.stringify({
+  providerModels: async (provider) => {
+    const body = {
       provider: provider.provider,
       auth_mode: provider.authMode,
       custom_provider: provider.customProvider,
       base_url: provider.baseUrl,
       model: provider.defaultModelId,
       refresh: true,
-    }),
-  }),
+    };
+    try {
+      return await request('/api/llm/models', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    } catch (error) {
+      // OAuth catalog refresh can fail when the upstream token has expired. The runtime still
+      // owns a durable built-in catalog; ask for it explicitly instead of collapsing the picker
+      // to whichever single model happens to be saved in settings.
+      if (error.status !== 400) throw error;
+      return request('/api/llm/models', {
+        method: 'POST',
+        body: JSON.stringify({ ...body, refresh: false }),
+      });
+    }
+  },
   approvals: () => request('/api/approvals/state'),
   // 占位名取桌面默认名里那句中性的（`conversation-title.js` 的 `NEW_CONVERSATION_TITLE`，两处
   // 必须一致）：两边都认它是占位名，谁先把第一条消息发出去，谁就把它换成一句话摘要。
