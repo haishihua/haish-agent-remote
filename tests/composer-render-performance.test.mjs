@@ -13,6 +13,16 @@ test('typing keeps the draft in the textarea instead of React state', async () =
   assert.match(app, /markComposerInputActivity\(\)/);
 });
 
+test('the first composer tap expands and focuses in the same trusted pointer event', async () => {
+  const app = await read('../src/App.jsx');
+
+  assert.match(app, /function activateComposer\(event\)/);
+  assert.doesNotMatch(app, /event\?\.type === 'pointerdown'.*event\.preventDefault\(\)/);
+  assert.match(app, /input\?\.form\?\.classList\.add\('expanded'\)/);
+  assert.match(app, /input\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(app, /onPointerDown=\{activateComposer\} onFocus=\{activateComposer\}/);
+});
+
 test('the expensive detail subtrees have memo boundaries and stable props', async () => {
   const [app, thread, approvals] = await Promise.all([
     read('../src/App.jsx'),

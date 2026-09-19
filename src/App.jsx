@@ -963,11 +963,15 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     dockRef: composerDockRef,
   }), []);
 
-  function expandComposer() {
-    // Pointer down runs before iOS starts the keyboard transition. Apply the class immediately so
-    // the input does not wait for a React commit while UIKit is already moving the keyboard.
-    messageInputRef.current?.form?.classList.add('expanded');
-    textareaFitSchedulerRef.current.schedule(messageInputRef.current, { force: true });
+  function activateComposer(event) {
+    const input = event?.currentTarget || messageInputRef.current;
+    // Expanding on pointerdown moves the textarea before WebKit performs its default focus action.
+    // On iOS that can invalidate the original hit target, so the first tap only expands and a
+    // second tap is needed for the keyboard. Focus explicitly in the same trusted event; leave the
+    // default pointer action intact so a tap in existing text can still place the caret precisely.
+    input?.form?.classList.add('expanded');
+    textareaFitSchedulerRef.current.schedule(input, { force: true });
+    if (input && document.activeElement !== input) input.focus({ preventScroll: true });
   }
 
   function collapseComposer() {
@@ -1686,7 +1690,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
           ))}</div> : null}
           {composerImages.some((image) => image.error) ? <p className="composer-image-error" role="alert">{composerImages.find((image) => image.error)?.error}</p> : null}
           <label htmlFor="task-message" className="sr-only">Send instructions</label>
-          <textarea ref={messageInputRef} id="task-message" rows={1} disabled={busy} onPointerDown={expandComposer} onFocus={expandComposer} onBlur={(event) => {
+          <textarea ref={messageInputRef} id="task-message" rows={1} disabled={busy} onPointerDown={activateComposer} onFocus={activateComposer} onBlur={(event) => {
             // Programmatic/native resignFirstResponder can arrive without a click on the thread.
             // Keep the DOM shell in sync even if iOS omits one of its keyboard callbacks.
             event.currentTarget.form?.classList.remove('expanded');

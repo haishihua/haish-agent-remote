@@ -784,7 +784,10 @@ def create_app(*, data_dir: Path | None = None, dist_dir: Path | None = None) ->
         CORSMiddleware,
         allow_origins=["capacitor://localhost", "https://localhost"],
         allow_credentials=False,
-        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+        # Provider/model changes use the runtime's canonical PUT /api/settings/llm endpoint.
+        # Starlette rejects the WebView preflight before the allowlisted proxy route runs unless
+        # PUT is declared here as well (the installed 0.2.0 adapter surfaced that as “Load failed”).
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Accept", "Authorization", "Content-Type"],
     )
     app.state.device_store = store

@@ -286,22 +286,27 @@ class RemoteProxyTest(unittest.TestCase):
         self.assertFalse(_route_allowed("GET", "settings/memory"))
         self.assertFalse(_route_allowed("DELETE", "conversations/abc"))
 
-    def test_capacitor_origin_can_preflight_the_first_message_rename(self):
-        # 手机发第一条消息要把占位名 PATCH 成一句话摘要：预检不允许 PATCH 的话，WebView 连
-        # 请求都不会发出去（装着的 adapter-v0.2.0 就是这么拒的：400 Disallowed CORS method）。
+    def test_capacitor_origin_can_preflight_mobile_writes(self):
+        # WebView 的跨源写请求会先走 CORS 预检；方法漏在 middleware 清单里时，业务路由根本
+        # 收不到请求，WKWebView 只会给 fetch 一个不带 HTTP 细节的 “Load failed”。
         with TemporaryDirectory() as directory:
             app = create_app(data_dir=Path(directory), dist_dir=Path(directory))
             client = TestClient(app)
-            response = client.options(
-                "/api/conversations/conversation-1",
-                headers={
-                    "Origin": "capacitor://localhost",
-                    "Access-Control-Request-Method": "PATCH",
-                    "Access-Control-Request-Headers": "authorization,content-type",
-                },
-            )
-            self.assertEqual(response.status_code, 200)
-            self.assertIn("PATCH", response.headers["access-control-allow-methods"])
+            for path, method in (
+                ("/api/conversations/conversation-1", "PATCH"),
+                ("/api/settings/llm", "PUT"),
+            ):
+                with self.subTest(method=method):
+                    response = client.options(
+                        path,
+                        headers={
+                            "Origin": "capacitor://localhost",
+                            "Access-Control-Request-Method": method,
+                            "Access-Control-Request-Headers": "authorization,content-type",
+                        },
+                    )
+                    self.assertEqual(response.status_code, 200)
+                    self.assertIn(method, response.headers["access-control-allow-methods"])
 
     def test_stopped_runtime_is_reported_as_unavailable(self):
         with TemporaryDirectory() as directory:

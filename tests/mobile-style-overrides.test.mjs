@@ -48,6 +48,7 @@ test('手机样式表约束批注草稿、编辑器和已发送引用', async ()
   assert.ok(!css.includes('.annotation-menu-item {'), '不应再维护一套手机专用批注按钮');
   assert.ok(css.includes('.composer.expanded > .haish-annotation-drafts,'), '展开输入框时引用标签仍应占满整行');
   assert.ok(css.includes('.composer.expanded textarea { min-width: 0; grid-column: 1 / -1;'), 'Continue this task 输入区应在引用标签下方另起整行');
+  assert.ok(css.includes('.haish-annotation-editor textarea:focus-visible { outline: 0; box-shadow: none; }'), 'Add comment 输入框聚焦后不应出现高亮描边');
 });
 
 test('check:styles 的清单里也有这一条', async () => {
@@ -61,6 +62,7 @@ test('check:styles 的清单里也有这一条', async () => {
   assert.ok(script.includes('.composer.expanded>.haish-annotation-drafts'), '清单里要核展开后的引用标签仍占满整行');
   assert.ok(script.includes('.composer.expandedtextarea{min-width:0;grid-column:1/-1'), '清单里要核展开后的正文输入区另起整行');
   assert.ok(script.includes('.annotation-menu.haish-selection-toolbarbutton{min-height:34px'), '清单里要核桌面 SelectionToolbar 的手机尺寸适配');
+  assert.ok(script.includes('.haish-annotation-editortextarea:focus-visible{outline:0;box-shadow:none}'), '清单里要核 Add comment 输入框没有聚焦高亮');
 });
 
 // 消息行的时间（与它同排的复制按钮）在手机上常显：桌面那份是「悬停那一行才亮」，触摸设备靠

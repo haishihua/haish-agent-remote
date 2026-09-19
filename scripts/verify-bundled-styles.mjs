@@ -42,6 +42,7 @@ const REQUIRED_OVERRIDES = [
   ['.composer.expanded>.haish-annotation-drafts', '输入框展开后引用草稿仍占满整行'],
   ['.composer.expandedtextarea{min-width:0;grid-column:1/-1', '输入框展开后 Continue this task 在引用草稿下方另起整行'],
   ['.annotation-menu.haish-selection-toolbarbutton{min-height:34px', '浏览器后备批注入口复用桌面 SelectionToolbar 并缩成手机尺寸'],
+  ['.haish-annotation-editortextarea:focus-visible{outline:0;box-shadow:none}', 'Add comment 输入框聚焦后不画高亮描边'],
   ['.chat-message-row.message-shell~.chat-message-actions{opacity:1;pointer-events:auto}', '消息行的时间与复制按钮常显（桌面是悬停那一行才亮）'],
   ['.aui-tool-detail.haish-tool-elements[data-slot=code-diff]{width:100%;max-width:100%;overflow:hidden', '移动端 CodeDiff 有完整面板而不是只有逐行底色'],
 ];

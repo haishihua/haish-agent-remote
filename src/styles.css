@@ -400,6 +400,7 @@ html.native-app .haish-annotation-floating { position: absolute !important; z-in
 html.native-app .haish-annotation-editor { width: 100%; }
 .haish-annotation-editor > .haish-quote-block.is-preview { max-height: 64px; padding: 8px 10px; overflow: hidden; }
 .haish-annotation-editor textarea { min-height: 52px; max-height: 104px; margin-top: 6px; padding: 9px 8px; resize: none; font-size: 14px; }
+.haish-annotation-editor textarea:focus-visible { outline: 0; box-shadow: none; }
 .haish-annotation-editor-actions { padding-top: 7px; }
 .haish-annotation-editor-actions button { min-height: 34px; padding: 5px 11px; }
 /* 输入框里的引用草稿：一块一行，但限制总高，避免多条引用把主输入框顶出屏幕。 */
