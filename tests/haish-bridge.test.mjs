@@ -9,6 +9,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+// 接缝挂在 `window` 上（桌面 approval-store 读的就是这个对象），node 里要先有这个壳。
+import './support/window-stub.mjs';
 import {
   BROWSER_RUNTIME_UNSUPPORTED,
   createHaishBridge,
@@ -154,6 +156,24 @@ test('装到 window 上的那两个键就是桌面 preload 的形状', async () 
   assert.equal(haishBridge().getState().pending_user_inputs.length, 1);
   await target.haish.resolveApproval('user_input', 'ask-1', { answers: [] });
   assert.deepEqual(calls, [['user_input', 'ask-1', []]]);
+});
+
+// 光把桥建出来还不够，接缝得真的挂到 `window` 上：桌面 approval-store 的 `ensureStream`
+// 只认 `window.haish`，查不到就 `console.warn` 一句、之后再也不订阅。1.53~1.58 的手机包
+// 就是这么静的——main.jsx 调的是 `installHaishBridge({ api })`，一个 target 都没传。
+test('不给 target 时，接缝挂在 window 上（桌面 store 读的就是它）', () => {
+  const installed = installHaishBridge({ api: fakeApi([]) });
+  assert.equal(window.haish, installed.haish);
+  assert.equal(typeof window.haish.onApprovalEvent, 'function');
+  assert.equal(typeof window.haish.resolveApproval, 'function');
+
+  // store 的 start()（ensureStream）比挂载晚：模拟它订阅时拿到的那第一帧。
+  publishApprovalState(snapshot());
+  const seen = [];
+  const stop = window.haish.onApprovalEvent((event) => seen.push(event));
+  assert.equal(seen.length, 1, '迟到的订阅者也要立刻拿到当前快照');
+  assert.deepEqual(seen[0].state.pending_user_inputs.map((item) => item.request_id), ['ask-1']);
+  stop();
 });
 
 // 光装桥还不够：桌面的 approval-store 是懒订阅的（`ensureStream` 只在 `start()` 里跑，桌面

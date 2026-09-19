@@ -176,9 +176,21 @@ export function createHaishBridge({ api, target = null } = {}) {
 
 let installed = null;
 
+/**
+ * 接缝挂在哪：浏览器 / Capacitor WebView 里就是 `window`——桌面 `approval-store.js` 的
+ * `ensureStream` 只认 `window.haish`；没有 `window` 的环境（worker、node 单测的壳）退回
+ * `globalThis`。
+ *
+ * 这里必须有个默认值：`createHaishBridge` 的 target 缺省是 null，谁忘了传，接缝就谁也没
+ * 挂上，而 store 那边只是 `console.warn` 一句就再也不订阅了——四张卡全空，且不报错。
+ */
+function seamTarget() {
+  return typeof globalThis.window !== 'undefined' ? globalThis.window : globalThis;
+}
+
 /** 渲染之前装好（src/main.jsx 模块级调用）：桌面组件挂载时会立刻订阅。 */
 export function installHaishBridge(options = {}) {
-  installed = createHaishBridge(options);
+  installed = createHaishBridge({ target: seamTarget(), ...options });
   return installed;
 }
 
