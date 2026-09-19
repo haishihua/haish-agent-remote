@@ -419,3 +419,90 @@ test('the draft shell is a running chat task with nothing in it yet', () => {
   assert.deepEqual(draft.toolCalls, []);
   assert.equal(draft.runtimeHydrated, true);
 });
+
+// —— 行身份：一次流事件只允许实时那一行换时间线身份 ——
+//
+// 行组件按 message 的**对象身份** memo（桌面 ChatMessageRow），而「这一行变了没」由
+// chat-view.jsx 的 sameRow / stabilizeRows 按**引用**判（`previous.traceTimeline !==
+// next.traceTimeline`）。生产者这一侧只要每次 filter 出一个新数组，整条线程的行就每
+// 帧全部重画一遍（1.50–1.56 手机端就是这个状态）；下面两条把契约钉死：内容没变 → 同
+// 引用；折进一条新事件 → 只有实时行换。
+
+// 夹具里的 runtime task 对象在会话级建一次：真实客户端里它们就是 `taskRuntimes` state
+// 里的同一批对象，帧与帧之间不变——身份就是从这儿来的。
+function identitySession() {
+  return {
+    messages: [
+      { message_id: 'm1', role: 'user', content: 'first', task_id: 'task-1' },
+      { message_id: 'm2', role: 'assistant', content: 'Hello', task_id: 'task-1' },
+      // 只有摘要、还没折过执行记录的那一轮（行上本该没有时间线）。
+      { message_id: 'm3', role: 'user', content: 'second', task_id: 'task-2' },
+      { message_id: 'm4', role: 'assistant', content: 'Later', task_id: 'task-2' },
+    ],
+    tasksById: new Map([
+      ['task-1', { task_id: 'task-1', status: 'done' }],
+      ['task-2', { task_id: 'task-2', status: 'done' }],
+    ]),
+    runtimeTasks: {
+      'task-1': runtimeTaskFromDetail(detail([
+        rawEvent('e1', 'run_started'),
+        ...answerDeltas('Hel', 'lo'),
+        rawEvent('e4', 'llm_thinking_delta', { delta: 'hmm' }),
+        rawEvent('e5', 'tool_call_started', { call_id: 'c9', tool_name: 'exec_command', tool_input: { command: 'ls' } }),
+        rawEvent('e6', 'tool_call_completed', { call_id: 'c9', tool_name: 'exec_command', output_summary: 'ok' }),
+      ], { status: 'done' })),
+    },
+  };
+}
+
+function identityRows(session, liveRun = null) {
+  return buildChatRows({
+    conversationId: 'convo-1',
+    conversation: { agent_id: 'preset.general' },
+    messages: session.messages,
+    tasksById: session.tasksById,
+    runtimeTasks: session.runtimeTasks,
+    liveRun,
+    running: Boolean(liveRun),
+    agentOptions: AGENT_OPTIONS,
+  });
+}
+
+test('an unchanged turn hands the row the very same timeline array', () => {
+  const session = identitySession();
+  const first = identityRows(session);
+  const second = identityRows(session);
+
+  // 折过执行记录的那一行：时间线同引用（它内里有 thinking 节点，走的是记忆那一支）。
+  assert.equal(first[1].traceTimeline, second[1].traceTimeline);
+  // 老约定不变：桌面的 thinking 折叠 chip 还是不给行（1.50 起）。
+  assert.equal(first[1].traceTimeline.some((item) => item.kind === 'thinking'), false);
+  // 只有摘要的那一行：共用同一份空时间线，而不是每次一个新 `[]`。
+  assert.equal(first[3].traceHydrated, false);
+  assert.equal(first[3].traceTimeline, second[3].traceTimeline);
+  assert.deepEqual(first[3].traceTimeline, []);
+});
+
+test('folding one stream event only respawns the live row', () => {
+  const session = identitySession();
+  const liveRun = runtimeTaskFromDetail({
+    task_id: 'task-live',
+    conversation_id: 'convo-1',
+    status: 'running',
+    created_at: '2026-09-19T00:00:00Z',
+    events: [rawEvent('l1', 'run_started'), ...answerDeltas('wor', 'king')],
+  });
+  const before = identityRows(session, liveRun);
+  const after = identityRows(session, runtimeTaskWithEvent(liveRun, rawEvent('l9', 'llm_answer_delta', { delta: '…and more' })));
+
+  assert.equal(after.length, before.length);
+  before.forEach((row, index) => {
+    if (row.role !== 'agent') return;
+    if (index === before.length - 1) {
+      // 实时行：新事件就得换一份——那一行本来就该重画。
+      assert.notEqual(after[index].traceTimeline, row.traceTimeline);
+      return;
+    }
+    assert.equal(after[index].traceTimeline, row.traceTimeline, `第 ${index} 行没变，时间线不该换身份`);
+  });
+});

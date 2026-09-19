@@ -224,15 +224,36 @@ function withoutTimelineDuplicates(text, timelineItems) {
     .join('\n\n');
 }
 
+// 没有时间线（只有任务摘要、还没折过执行记录）的行共用这一份：行对象要按**引用**比
+// （chat-view.jsx 的 sameRow / stabilizeRows），每次新建一个 `[]` 会让那一行每帧换
+// 身份、整行重画。冻结是提醒：这份数组只读。
+const NO_TIMELINE_ITEMS = Object.freeze([]);
+// 过滤过的时间线按桌面那份 `items` 数组记忆。桌面的 buildChatTimeline 对同一个 runtime
+// task 回的本来就是缓存里的同一个时间线（items 身份稳），所以这一层也稳得住。
+const PHONE_TIMELINE_ITEMS = new WeakMap();
+
 /**
  * 手机端不画一行：桌面的 thinking 折叠 chip（灯泡 + N chars）。
  *
  * 用户拍板：那个 chip 是老 UI 的观感，会话里不出现。折叠本身不动（事件日志、
  * 活动 orb 的文案都还是桌面那套），只是不把 thinking 节点交给行。
+ *
+ * 但**身份必须稳**：没有 thinking 时直接回桌面那份 items（一个都不复制），有的按
+ * items 记忆一份。fc797d7 起这里是每次 `filter` 出新数组，于是
+ * `previous.traceTimeline !== next.traceTimeline` 永远成立——一条流事件就把整条线程
+ * 的每一行（Markdown 正文、工具卡、todo）全部重画一遍。行这段 memo 和工具卡的展开态
+ * 都挂在这份身份上（回归用例见 tests/chat-runtime.test.mjs 的「行身份」两条）。
  */
 function timelineItemsForPhone(timeline) {
-  const items = Array.isArray(timeline?.items) ? timeline.items : [];
-  return items.filter((item) => item.kind !== 'thinking');
+  const items = Array.isArray(timeline?.items) ? timeline.items : null;
+  if (!items || items.length === 0) return NO_TIMELINE_ITEMS;
+  const memoized = PHONE_TIMELINE_ITEMS.get(items);
+  if (memoized) return memoized;
+  const filtered = items.some((item) => item?.kind === 'thinking')
+    ? items.filter((item) => item.kind !== 'thinking')
+    : items;
+  PHONE_TIMELINE_ITEMS.set(items, filtered);
+  return filtered;
 }
 
 function agentRow({
