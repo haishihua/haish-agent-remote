@@ -308,6 +308,18 @@ test('the live row streams on its own and stops rendering once the run lands', (
     running: false,
   });
   assert.equal(settled.length, 1);
+
+  const persistenceLate = buildChatRows({
+    ...base,
+    agentOptions: AGENT_OPTIONS,
+    liveRun: { ...liveRun, status: 'done', answerText: 'final summary', completedAt: 1234 },
+    running: false,
+    liveReplyPending: true,
+  });
+  assert.equal(persistenceLate.length, 2);
+  assert.equal(persistenceLate[1].streaming, false);
+  assert.equal(persistenceLate[1].text, 'final summary');
+  assert.equal(persistenceLate[1].completedAt, 1234);
 });
 
 test('an orphan reply row keeps the body when the trace says nothing about it', () => {

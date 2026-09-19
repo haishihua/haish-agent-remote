@@ -8,8 +8,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         // Capacitor loads bridged plugins by class name, which a release build's dead-code
-        // stripping cannot see, so keep the app-local photo picker plugin linked in.
+        // stripping cannot see, so keep the app-local plugins linked in.
         _ = PhotoPicker.self
+        _ = ReasoningHaptics.self
         // Keyboard-frame forwarding lives in HaishBridgeViewController, which can evaluate on its
         // WKWebView immediately in UIKit's will-change callback. Keeping it out of AppDelegate also
         // avoids an extra Capacitor bridge hop before the composer starts moving.

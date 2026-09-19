@@ -45,6 +45,10 @@ const REQUIRED_OVERRIDES = [
   ['.haish-annotation-editortextarea:focus-visible{outline:0;box-shadow:none}', 'Add comment 输入框聚焦后不画高亮描边'],
   ['.chat-message-row.message-shell~.chat-message-actions{opacity:1;pointer-events:auto}', '消息行的时间与复制按钮常显（桌面是悬停那一行才亮）'],
   ['.aui-tool-detail.haish-tool-elements[data-slot=code-diff]{width:100%;max-width:100%;overflow:hidden', '移动端 CodeDiff 有完整面板而不是只有逐行底色'],
+  ['code:not([data-streamdown=code-block-body]code){padding:2px 6px', '代码块正文不继承全局行内 code 的方框样式'],
+  ['.reasoning-sheet-scrim{z-index:130;align-items:center', '思考强度使用居中弹层而不是 composer 内联滑杆'],
+  ['.reasoning-level-sliderinput', '思考强度弹层提供原生滑杆'],
+  ['.reasoning-level-labels{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))', '思考强度弹层提供四档标签选择'],
 ];
 
 if (!fs.existsSync(assetsDir)) {
@@ -69,9 +73,14 @@ for (const [name, where] of REQUIRED_CLASSES) {
   }
 }
 const compact = bundle.replace(/\s+/g, '');
+const comparable = compact
+  .replace(/:where\(([^()]*)\)/g, '$1')
+  .replace(/:is\(([^()]*)\)/g, '$1')
+  // Minifiers preserve the significant descendant space inside :not() arguments.
+  .replace(/\]\s+code\)/g, ']code)');
 const missingOverrides = [];
 for (const [rule, where] of REQUIRED_OVERRIDES) {
-  if (!compact.includes(rule)) missingOverrides.push(`${rule}（${where}）`);
+  if (!comparable.includes(rule.replace(/\s+/g, ''))) missingOverrides.push(`${rule}（${where}）`);
 }
 
 for (const selector of REQUIRED_SELECTORS) {

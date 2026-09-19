@@ -39,6 +39,8 @@ const desktopPackages = [
 
 // 生成物在 src/ 下（prebuild/predev 重生成，见 .gitignore）。
 const desktopMarkdownCss = fileURLToPath(new URL('./src/desktop-markdown.generated.css', import.meta.url));
+const desktopMarkdownComponent = path.join('haish-agent', 'app-web', 'src', 'shared', 'ui', 'Markdown.jsx');
+const mobileMarkdownComponent = fileURLToPath(new URL('./src/mobile-markdown.jsx', import.meta.url));
 
 /**
  * 桌面 markdown.css 的接缝：桌面那份里的 @source 指的是**桌面仓库**的 node_modules
@@ -56,6 +58,9 @@ function desktopMarkdownSeam() {
     resolveId(source, importer) {
       if (!importer || (!source.startsWith('.') && !path.isAbsolute(source))) return null;
       const resolved = source.startsWith('.') ? path.resolve(path.dirname(importer), source) : source;
+      if (resolved.endsWith(path.sep + desktopMarkdownComponent)) return mobileMarkdownComponent;
+      // The mobile wrapper imports the desktop stylesheet directly; keep that route on the same
+      // generated CSS seam too, otherwise CI would again scan the desktop repo's missing modules.
       return resolved.endsWith(path.sep + desktopSuffix) ? desktopMarkdownCss : null;
     },
   };

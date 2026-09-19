@@ -61,7 +61,14 @@ test('vite resolves the desktop markdown stylesheet to the generated copy', asyn
   const seam = (config.plugins || []).find((plugin) => plugin.name === 'haish:desktop-markdown-seam');
   assert.ok(seam, 'vite.config.js 里没有那条接缝');
   const generatedPath = path.join(repoRoot, 'src', 'desktop-markdown.generated.css');
+  const mobileMarkdownPath = path.join(repoRoot, 'src', 'mobile-markdown.jsx');
   const desktopImporter = path.resolve(repoRoot, '..', 'haish-agent', 'app-web', 'src', 'shared', 'ui', 'Markdown.jsx');
+  const chatMessageRow = path.resolve(repoRoot, '..', 'haish-agent', 'app-web', 'src', 'features', 'chat', 'components', 'ChatMessageRow.jsx');
+  assert.equal(
+    await seam.resolveId('../../../shared/ui/Markdown.jsx', chatMessageRow),
+    mobileMarkdownPath,
+    '桌面组件的 Markdown import 要落到手机包装层（禁用 WebView 坏掉的代码行号）',
+  );
   assert.equal(
     await seam.resolveId('../../../styles/markdown.css', desktopImporter),
     generatedPath,

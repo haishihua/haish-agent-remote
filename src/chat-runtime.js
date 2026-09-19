@@ -462,7 +462,9 @@ export function buildChatRows({
       runtime: liveRun,
       summary: summaryFor(liveTaskId),
       agentName: agentNameFor(liveRun, summaryFor(liveTaskId)),
+      text: running ? '' : replyText(summaryFor(liveTaskId), liveRun),
       streaming: Boolean(running),
+      completedAt: running ? 0 : liveRun.completedAt,
     }));
   }
   return rows;

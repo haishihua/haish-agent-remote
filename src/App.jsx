@@ -6,6 +6,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Gauge,
   CircleAlert,
   Folder,
   ImagePlus,
@@ -101,6 +102,8 @@ import {
 } from './run-config.js';
 import { isCurrentTaskRunning, isFailureStatus } from './task-stream.js';
 import { createTaskRuntimeSync } from './task-sync.js';
+import { waitForPersistedAssistant } from './task-settlement.js';
+import { impactReasoningStep } from './reasoning-haptics.js';
 import { conversationSignature, statusSignature } from './poll-signature.js';
 // 会话名：桌面那套占位名 + 第一条消息的一句话摘要（判据与 API 都在 conversation-title.js）。
 import { conversationTitleForMessage, isPlaceholderConversationTitle } from './conversation-title.js';
@@ -456,7 +459,6 @@ function RunConfigSheet({ config, agentLabel, agentLocked, agents, providers, mo
     { id: 'agent', label: 'Agent', value: config.agentId, displayValue: agentLabel, options: agents, locked: agentLocked, change: (value) => onChange((current) => ({ ...current, agentId: value })) },
     { id: 'provider', label: 'Provider', value: config.providerId, options: providers, change: onProviderChange, disabled: syncing },
     { id: 'model', label: 'Model', value: config.modelId, options: models, change: onModelChange, disabled: syncing || modelLoading || !models.length },
-    { id: 'thinking', label: 'Thinking', value: config.thinking, options: THINKING_OPTIONS, change: (value) => onChange((current) => ({ ...current, thinking: value })) },
   ];
 
   return (
@@ -841,7 +843,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   const [modelLoading, setModelLoading] = useState(false);
   const [modelSyncing, setModelSyncing] = useState(false);
   const [modelSyncError, setModelSyncError] = useState('');
-  const [runConfigExpanded, setRunConfigExpanded] = useState(false);
+  const [showReasoningPicker, setShowReasoningPicker] = useState(false);
   const [showRunConfig, setShowRunConfig] = useState(false);
   const messageScrollRef = useRef(null);
   const messageRegionRef = useRef(null);
@@ -859,7 +861,6 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   const onBackRef = useRef(onBack);
   const composerImagesRef = useRef([]);
   const optimisticUserMessagesRef = useRef([]);
-  const runConfigQuickRef = useRef(null);
   const localStreamRef = useRef(false);
   const liveRunRef = useRef(null);
   const liveRunFrameRef = useRef(0);
@@ -923,7 +924,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   // 右侧配置图标出现/收起）会改变折行，这些时候必须重量一次。
   useEffect(() => {
     textareaFitSchedulerRef.current.schedule(messageInputRef.current, { force: true });
-  }, [id, runConfig, runConfigExpanded]);
+  }, [id, runConfig, showReasoningPicker]);
   useEffect(() => {
     const fit = () => textareaFitSchedulerRef.current.schedule(messageInputRef.current, { force: true });
     window.addEventListener('resize', fit);
@@ -1047,7 +1048,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     setModelSyncing(false);
     setModelSyncError('');
     modelSyncRequestRef.current += 1;
-    setRunConfigExpanded(false);
+    setShowReasoningPicker(false);
     setShowRunConfig(false);
     Promise.all([api.agents(), api.llmSettings()])
       .then(([agentPayload, llmPayload]) => {
@@ -1209,8 +1210,8 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   useEffect(() => {
     const taskId = activeTask?.task_id;
     if (!taskId) {
-      // A finished failure keeps its bubble: it holds the only copy of the reply.
-      if (!localStreamRef.current && !isFailureStatus(liveRunRef.current?.status)) setLiveRun(null);
+      // Keep a completed stream visible until the conversation snapshot contains its durable
+      // assistant message. Failures also stay local because the runtime does not persist them.
       return undefined;
     }
 
@@ -1250,6 +1251,18 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   }, [activeTask?.task_id]);
 
   useEffect(() => {
+    if (running) return;
+    const finished = liveRunRef.current;
+    if (!finished?.taskId || isFailureStatus(finished.status)) return;
+    const persisted = (conversation?.messages || []).some((message) => (
+      message?.role !== 'user' && message?.task_id === finished.taskId
+    ));
+    if (!persisted) return;
+    liveRunRef.current = null;
+    setLiveRun(null);
+  }, [conversation?.messages, running]);
+
+  useEffect(() => {
     if (!running) return undefined;
     const cancelOnEscape = (event) => {
       if (event.key !== 'Escape' || event.repeat || busy) return;
@@ -1259,21 +1272,6 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     document.addEventListener('keydown', cancelOnEscape);
     return () => document.removeEventListener('keydown', cancelOnEscape);
   }, [busy, running, stop]);
-
-  useEffect(() => {
-    if (!runConfigExpanded || showRunConfig) return undefined;
-    const collapse = (event) => {
-      if (event.type === 'keydown' ? event.key === 'Escape' : !runConfigQuickRef.current?.contains(event.target)) {
-        setRunConfigExpanded(false);
-      }
-    };
-    document.addEventListener('pointerdown', collapse);
-    document.addEventListener('keydown', collapse);
-    return () => {
-      document.removeEventListener('pointerdown', collapse);
-      document.removeEventListener('keydown', collapse);
-    };
-  }, [runConfigExpanded, showRunConfig]);
 
   async function attachImages(files) {
     const available = Math.max(0, CHAT_IMAGE_MAX_COUNT - composerImagesRef.current.length);
@@ -1458,9 +1456,13 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
         annotationDrafts,
       );
       localStreamRef.current = false;
-      const nextConversation = await refresh();
       const streamedRun = liveRunRef.current || {};
-      const streamedTask = nextConversation?.tasks?.find((task) => task.task_id === streamedRun.taskId);
+      const streamedTaskId = streamedRun.taskId;
+      const nextConversation = await waitForPersistedAssistant({
+        taskId: streamedTaskId,
+        refresh,
+      });
+      const streamedTask = nextConversation?.tasks?.find((task) => task.task_id === streamedTaskId);
       const outcome = String(isFailureStatus(streamedRun.status)
         ? streamedRun.status : streamedTask?.status || streamedRun.status || 'done').toLowerCase();
       if (isFailureStatus(outcome)) {
@@ -1475,7 +1477,22 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
         liveRunRef.current = failedRun;
         flushLiveRun();
       } else {
-        liveRunRef.current = null;
+        // Only remove the realtime row after the conversation endpoint carries the durable
+        // assistant message. If persistence is still late, keep the completed live row visible;
+        // the normal detail poll will replace it without a blank gap.
+        const persisted = nextConversation?.messages?.some((message) => (
+          message?.role !== 'user' && message?.task_id === streamedTaskId
+        ));
+        if (persisted) {
+          liveRunRef.current = null;
+        } else {
+          liveRunRef.current = {
+            ...streamedRun,
+            status: 'done',
+            answerText: textContent(streamedTask?.answer_text || streamedRun.answerText || ''),
+            completedAt: streamedRun.completedAt || Date.now(),
+          };
+        }
         flushLiveRun();
       }
     } catch (nextError) {
@@ -1519,8 +1536,6 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   const selectedThinkingIndex = Math.max(0, THINKING_OPTIONS.findIndex((item) => item.id === runConfig?.thinking));
   const selectedThinkingRatio = selectedThinkingIndex / (THINKING_OPTIONS.length - 1);
   const reasoningGaugeRotation = `${selectedThinkingIndex * 80 - 165}deg`;
-  const reasoningProgressOffset = 20 - 40 * selectedThinkingRatio;
-  const reasoningProgress = `calc(${selectedThinkingRatio * 100}% ${reasoningProgressOffset < 0 ? '-' : '+'} ${Math.abs(reasoningProgressOffset)}px)`;
   const selectedModel = models.find((item) => item.id === runConfig?.modelId);
   const compactModel = String(selectedModel?.label || runConfig?.modelId || '')
     .replace(/^gpt[-_]/i, '')
@@ -1550,9 +1565,8 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   // Keep the live trace on screen between "stop" and the refreshed conversation
   // snapshot that carries the local reply for the cancelled task.
   const liveReplyPending = Boolean(liveRun && !running
-    && isFailureStatus(liveRun.status)
-    && !orphanReplies.has(liveRun.taskId)
-    && !visibleMessages.some((item) => item.role !== 'user' && item.task_id === liveRun.taskId));
+    && !visibleMessages.some((item) => item.role !== 'user' && item.task_id === liveRun.taskId)
+    && (!isFailureStatus(liveRun.status) || !orphanReplies.has(liveRun.taskId)));
   // 行列表：持久化消息 + 没有落库回复的任务（取消/失败）+ 乐观用户消息 + 实时行。
   // 行对象在同内容时保持身份（chat-view.jsx 的 stabilizeRows），流式时只有最后
   // 那条实时行重画。
@@ -1657,28 +1671,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
           onSave={saveAnnotation}
           onError={setAnnotationNotice}
         />
-        {runConfig && runConfigExpanded ? <div className={`run-config-quick-controls thinking-${runConfig.thinking}`} ref={runConfigQuickRef}>
-          <button type="button" className="run-config-summary" onClick={() => setShowRunConfig(true)} disabled={running} aria-label="Open advanced run configuration">
-            <span>{compactModel || 'Model'}</span><strong>{selectedThinking?.label || 'Thinking'}</strong><ChevronRight size={19} aria-hidden="true" />
-          </button>
-          <div className={`reasoning-slider thinking-${runConfig.thinking}`} style={{ '--reasoning-progress': reasoningProgress }}>
-            <input
-              type="range"
-              min="0"
-              max={THINKING_OPTIONS.length - 1}
-              step="1"
-              value={selectedThinkingIndex}
-              disabled={running}
-              aria-label="Thinking level"
-              aria-valuetext={selectedThinking?.label || 'Thinking'}
-              onChange={(event) => setRunConfig((current) => ({ ...current, thinking: THINKING_OPTIONS[Number(event.target.value)].id }))}
-            />
-            <span className="reasoning-marks" aria-hidden="true">
-              {THINKING_OPTIONS.map((item, index) => <i className={index === selectedThinkingIndex ? 'active' : ''} key={item.id} />)}
-            </span>
-          </div>
-        </div> : null}
-        <form className={`composer ${runConfig && !runConfigExpanded ? 'has-config-icon' : ''}`} onSubmit={submit} onDragOver={(event) => {
+        <form className={`composer ${runConfig ? 'has-config-icon' : ''}`} onSubmit={submit} onDragOver={(event) => {
           if (Array.from(event.dataTransfer?.items || []).some((item) => item.kind === 'file')) event.preventDefault();
         }} onDrop={(event) => {
           const images = Array.from(event.dataTransfer?.files || []).filter((file) => file.type.startsWith('image/'));
@@ -1751,7 +1744,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
             attachImages(event.target.files);
             event.target.value = '';
           }} />
-          {runConfig && !runConfigExpanded ? <button type="button" className="run-config-icon-button" onClick={() => setRunConfigExpanded(true)} disabled={running} aria-label={`Show run configuration, thinking ${selectedThinking?.label || 'unknown'}`} aria-expanded="false"><svg className="run-config-gauge" style={{ '--gauge-rotation': reasoningGaugeRotation }} viewBox="0 0 24 24" aria-hidden="true"><path className="run-config-gauge-arc" d="M3.34 19a10 10 0 1 1 17.32 0" /><g className="run-config-gauge-needle"><path className="run-config-gauge-pointer" d="M10.9 13.4 12.6 15.1 18.65 7.35Z" /><circle cx="12" cy="14" r="1.8" /></g></svg></button> : null}
+          {runConfig ? <button type="button" className="run-config-icon-button" onClick={() => setShowReasoningPicker(true)} disabled={running} aria-label={`Choose thinking level, currently ${selectedThinking?.label || 'unknown'}`} aria-haspopup="dialog"><svg className="run-config-gauge" style={{ '--gauge-rotation': reasoningGaugeRotation }} viewBox="0 0 24 24" aria-hidden="true"><path className="run-config-gauge-arc" d="M3.34 19a10 10 0 1 1 17.32 0" /><g className="run-config-gauge-needle"><path className="run-config-gauge-pointer" d="M10.9 13.4 12.6 15.1 18.65 7.35Z" /><circle cx="12" cy="14" r="1.8" /></g></svg></button> : null}
           {running && !hasMessage && !composerImages.some((image) => image.imageId && !image.error) ? (
             <button type="button" className="send-button stop" onClick={stop} disabled={busy} aria-label="Stop task">
               {/* 图标照桌面 chat 的发送/停止键：ArrowUp 是发，实心圆角方块是停
@@ -1765,6 +1758,42 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
           )}
         </form>
       </div>
+      {showReasoningPicker && runConfig ? <div className="sheet-scrim reasoning-sheet-scrim" role="presentation" onClick={() => setShowReasoningPicker(false)}>
+        <section className={`reasoning-sheet thinking-${runConfig.thinking}`} role="dialog" aria-modal="true" aria-labelledby="reasoning-sheet-title" onClick={(event) => event.stopPropagation()}>
+          <div className="sheet-handle" />
+          <div className="reasoning-sheet-heading"><Gauge size={20} aria-hidden="true" /><div><h2 id="reasoning-sheet-title">Thinking level</h2><p>{compactModel || 'Current model'}</p></div><button type="button" className="icon-button ghost" onClick={() => setShowReasoningPicker(false)} aria-label="Close thinking level"><X size={20} /></button></div>
+          <div className={`reasoning-level-control thinking-${runConfig.thinking}`}>
+            <div className="reasoning-level-slider">
+              <input
+                type="range"
+                min="0"
+                max={THINKING_OPTIONS.length - 1}
+                step="1"
+                value={selectedThinkingIndex}
+                aria-label="Thinking level"
+                aria-valuetext={selectedThinking?.label || 'Thinking'}
+                onChange={(event) => {
+                  const index = Number(event.target.value);
+                  if (index === selectedThinkingIndex) return;
+                  setRunConfig((current) => ({ ...current, thinking: THINKING_OPTIONS[index].id }));
+                  impactReasoningStep(index).catch(() => {});
+                }}
+              />
+              <span className="reasoning-level-marks" aria-hidden="true">
+                {THINKING_OPTIONS.map((item, index) => <i className={index === selectedThinkingIndex ? 'current' : (index < selectedThinkingIndex ? 'filled' : '')} key={item.id} />)}
+              </span>
+            </div>
+            <div className="reasoning-level-labels" role="radiogroup" aria-label="Thinking presets">
+              {THINKING_OPTIONS.map((item, index) => <button type="button" role="radio" aria-checked={index === selectedThinkingIndex} className={index === selectedThinkingIndex ? 'selected' : ''} key={item.id} onClick={() => {
+                if (index === selectedThinkingIndex) return;
+                setRunConfig((current) => ({ ...current, thinking: item.id }));
+                impactReasoningStep(index).catch(() => {});
+              }}>{item.label}</button>)}
+            </div>
+          </div>
+          <button type="button" className="reasoning-advanced-button" onClick={() => { setShowReasoningPicker(false); setShowRunConfig(true); }}><span>Run configuration</span><ChevronRight size={18} aria-hidden="true" /></button>
+        </section>
+      </div> : null}
       {showRunConfig && runConfig ? <RunConfigSheet config={runConfig} agentLabel={conversation?.profile_display_name} agentLocked={agentLocked} agents={agents} providers={providers} models={models} modelLoading={modelLoading} syncing={modelSyncing} syncError={modelSyncError} onChange={setRunConfig} onProviderChange={changeRunProvider} onModelChange={changeRunModel} onClose={() => setShowRunConfig(false)} /> : null}
       <ImagePreview image={previewImage} onClose={() => setPreviewImage(null)} />
     </main>

@@ -12,6 +12,7 @@ import {
   withPackageClassList,
 } from '../scripts/sync-ios-app-plugins.mjs';
 import { NATIVE_PHOTO_PICKER } from '../src/photo-picker.js';
+import { NATIVE_REASONING_HAPTICS } from '../src/reasoning-haptics.js';
 
 const REPO_ROOT = new URL('..', import.meta.url).pathname;
 
@@ -27,7 +28,7 @@ function fixtureRoot({ swiftFiles = {}, config = { packageClassList: ['SecureSto
 
 test('only Swift files that bridge to JavaScript are registered', () => {
   const classes = findAppLocalPluginClasses(join(REPO_ROOT, APP_TARGET_DIR));
-  assert.deepEqual(classes, [NATIVE_PHOTO_PICKER]);
+  assert.deepEqual(classes, [NATIVE_PHOTO_PICKER, NATIVE_REASONING_HAPTICS]);
 });
 
 test('@objc names of files without CAPBridgedPlugin are ignored', () => {
@@ -56,8 +57,8 @@ test('a bridged class without an @objc name fails the build instead of silently 
 
 test('the generated packageClassList keeps the CLI entries and gains the app-local ones', () => {
   assert.deepEqual(
-    withPackageClassList({ packageClassList: ['SecureStorage', 'CapacitorBarcodeScannerPlugin'] }, ['PhotoPicker']).packageClassList,
-    ['SecureStorage', 'CapacitorBarcodeScannerPlugin', 'PhotoPicker'],
+    withPackageClassList({ packageClassList: ['SecureStorage', 'CapacitorBarcodeScannerPlugin'] }, ['PhotoPicker', 'ReasoningHaptics']).packageClassList,
+    ['SecureStorage', 'CapacitorBarcodeScannerPlugin', 'PhotoPicker', 'ReasoningHaptics'],
   );
   assert.deepEqual(withPackageClassList({}, ['PhotoPicker']).packageClassList, ['PhotoPicker']);
   assert.deepEqual(withPackageClassList({ appId: 'x', packageClassList: ['PhotoPicker'] }, ['PhotoPicker']).packageClassList, ['PhotoPicker']);
