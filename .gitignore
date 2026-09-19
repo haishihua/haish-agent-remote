@@ -14,3 +14,6 @@ __pycache__/
 .idea
 *.egg-info/
 build/
+# 本地 scratch（聊天/性能 harness、临时构建产物）：桌面仓库的 .gitignore 也是同一条
+# （../haish-agent/.gitignore 的 `tmp/`），全仓没有一处 tmp/ 被跟踪，也没有代码引用它。
+tmp/
