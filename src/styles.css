@@ -350,6 +350,13 @@ html.detail-closing .app-shell > :not(.detail-screen) * { animation-play-state: 
 .chat-message-row.user .chat-bubble,
 .chat-message-row.agent .chat-bubble { max-width: 100%; }
 .chat-message-row.agent .chat-message-images { max-width: 100%; }
+/* 桌面那句「Steps load when you scroll up.」（行上的 `.chat-trace-pending`）不画：它写的是
+   桌面那种「要自己往上滚，那一轮的执行记录才会去读」的读法，而中文界面里冒出一句英文、又没有
+   任何容器，看着就是一条没头没尾的字（用户：「怎么还有这个啊，给我去掉」）。手机这头执行记录
+   是滚到眼前自动拉的（`src/chat-view.jsx` 的 IntersectionObserver，240px 预取），没拉到的行
+   也照样画正文——只是不给这段等待起名字。行本身不动（`traceHydrated` 与行上的
+   `data-trace-pending` 都还在，拉取时机不变）。 */
+.chat-trace-pending { display: none; }
 .scroll-to-bottom-button { position: absolute; z-index: 20; bottom: 14px; left: 50%; display: inline-flex; width: 44px; height: 44px; padding: 0; align-items: center; justify-content: center; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 50%; background: rgba(12, 17, 25, 0.94); color: rgba(241, 246, 255, 0.92); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32); opacity: 0; pointer-events: none; transform: translate(-50%, 8px); transition: opacity 140ms ease, transform 140ms ease, border-color 140ms ease; }
 .scroll-to-bottom-button.is-visible { opacity: 1; pointer-events: auto; transform: translate(-50%, 0); }
 .scroll-to-bottom-button:focus-visible { border-color: rgba(239, 191, 100, 0.5); outline: none; }

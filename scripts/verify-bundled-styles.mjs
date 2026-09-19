@@ -31,6 +31,13 @@ const REQUIRED_CLASSES = [
  *  `[data-streamdown=table-wrapper]`），所以比对前先把引号抹掉。 */
 const REQUIRED_SELECTORS = ['[data-streamdown=table-wrapper]', '.haish-markdown'];
 
+/** 手机态覆盖（`src/styles.css` 压在桌面同名类上的那几条）。这些是“手机上故意跟桌面不一样”
+ *  的地方，也是靠构建产物才能确认的东西：样式表被谁后加载、那条规则有没有真的落在后面的那份
+ *  CSS 里，只有产物上能看。比对前先把空白抹掉（压缩后是 `.a{display:none}`）。 */
+const REQUIRED_OVERRIDES = [
+  ['.chat-trace-pending{display:none}', '不画桌面那句「Steps load when you scroll up.」'],
+];
+
 if (!fs.existsSync(assetsDir)) {
   console.error(`verify-bundled-styles: 没有 ${path.relative(projectRoot, assetsDir)}，先跑 npm run build。`);
   process.exit(1);
@@ -52,8 +59,19 @@ for (const [name, where] of REQUIRED_CLASSES) {
     missing.push(`.${name}（${where}）`);
   }
 }
+const compact = bundle.replace(/\s+/g, '');
+const missingOverrides = [];
+for (const [rule, where] of REQUIRED_OVERRIDES) {
+  if (!compact.includes(rule)) missingOverrides.push(`${rule}（${where}）`);
+}
+
 for (const selector of REQUIRED_SELECTORS) {
   if (!bundle.includes(selector)) missing.push(`${selector}（桌面 markdown 的结构规则）`);
+}
+if (missingOverrides.length) {
+  console.error('verify-bundled-styles: 构建产物里少了手机压桌面的那几条覆盖（看 src/styles.css）：');
+  for (const item of missingOverrides) console.error(`  ${item}`);
+  process.exit(1);
 }
 if (missing.length) {
   console.error('verify-bundled-styles: 构建产物里少了桌面 markdown 要用的样式：');
@@ -63,4 +81,4 @@ if (missing.length) {
   process.exit(1);
 }
 
-console.log(`verify-bundled-styles: ${cssFiles.length} 份 CSS 里都在（${REQUIRED_CLASSES.length} 个类 + ${REQUIRED_SELECTORS.length} 条结构规则）`);
+console.log(`verify-bundled-styles: ${cssFiles.length} 份 CSS 里都在（${REQUIRED_CLASSES.length} 个类 + ${REQUIRED_SELECTORS.length} 条结构规则 + ${REQUIRED_OVERRIDES.length} 条手机覆盖）`);
