@@ -32,7 +32,6 @@ import {
   CHAT_IMAGE_MAX_COUNT,
   chatMessageText,
   chatImageValidationError,
-  messageImageRefs,
   userMessageOccurrenceCount,
 } from './chat-images.js';
 import {
@@ -94,11 +93,20 @@ import { createTaskRuntimeSync } from './task-sync.js';
 import { conversationSignature, statusSignature } from './poll-signature.js';
 import {
   CONVERSATION_PREVIEW_LIMIT,
-  isTaskActuallyActive,
-  listTaskForConversation,
   orderConversations,
   orderProjects,
 } from './conversation-order.js';
+// 会话行右端那个状态坑位（在跑 / 在等人 / 跑完还没看过）与桌面侧栏同一份判据，图标也用桌面那一对
+// （glyph 的描边样式两边共用）。
+import {
+  conversationStatusSlot,
+  loadConversationSeenAt,
+  markConversationSeen,
+  saveConversationSeenAt,
+  seedConversationSeenAt,
+} from './conversation-status.js';
+import { ApprovalGlyph, WaitingInputGlyph } from '../../haish-agent/app-web/src/features/conversations/components/ConversationIcons.jsx';
+import { RUN_STATE_APPROVAL, RUN_STATE_WAITING_INPUT } from '../../haish-agent/app-web/src/features/conversations/model/conversation-run-state.js';
 import {
   DEFAULT_PREVIEW,
   nextExtraVisible,
@@ -112,6 +120,8 @@ import {
 import { createDismissHandoff, DIRECTORY_HOLD_CLASS } from './dismiss-handoff.js';
 
 const ACTIVE_STATUSES = new Set(['queued', 'running']);
+// "没有在等人的快照" / "没有看过记录" 共用空表，省得每次渲染都新建一份。
+const EMPTY_LIST = [];
 const LAST_CONVERSATION_STORAGE_KEY = 'haish.remote.lastConversation.v1';
 // Pressing and holding the image button keeps the old system sheet (camera, files) reachable.
 const PHOTO_LONG_PRESS_MS = 450;
@@ -306,12 +316,32 @@ function ConnectionScreen({ error, retrying, onRetry }) {
   );
 }
 
-function ConversationRow({ conversation, task, onOpen }) {
-  const running = isTaskActuallyActive(task);
+// 一行只有一个状态坑位（判据见 conversation-status.js）：在等人 / 在跑 / 跑完还没看过，同一时刻只亮一个。
+// 两种「等用户动手」的灯与桌面侧栏同一对 glyph；颜色由 .conversation-running-indicator.waiting-input /
+// .awaiting-approval 给（见 styles.css，桌面那份写在 panels.css 里）。
+const WAIT_INDICATORS = {
+  [RUN_STATE_WAITING_INPUT]: {
+    className: 'waiting-input',
+    label: 'Waiting for your answer',
+    Glyph: WaitingInputGlyph,
+  },
+  [RUN_STATE_APPROVAL]: {
+    className: 'awaiting-approval',
+    label: 'Awaiting approval',
+    Glyph: ApprovalGlyph,
+  },
+};
+
+function ConversationRow({ conversation, slot, onOpen }) {
+  const wait = slot ? WAIT_INDICATORS[slot.kind] : null;
+  const WaitGlyph = wait?.Glyph;
   return (
     <button className="conversation-row" onClick={() => onOpen(conversation)}>
       <span className="conversation-title">{conversation.title || conversation.label}</span>
-      {running ? <LoaderCircle className="spin conversation-running" size={17} aria-label="Running" /> : null}
+      {wait ? <span className={`conversation-running-indicator ${wait.className}`} role="status" aria-label={wait.label}><WaitGlyph /></span>
+        : slot?.kind === 'running' ? <LoaderCircle className="spin conversation-running" size={17} aria-label="Running" />
+          : slot?.kind === 'terminal' ? <span className={`conversation-terminal-notice chat-timeline-status status-${slot.status}`} aria-hidden="true" />
+            : null}
     </button>
   );
 }
@@ -331,11 +361,16 @@ function useConversationPreview(listVisible) {
 // default, "Show more" adds three at a time, and once the last row is visible the
 // button turns into "Show less". While a search is running every match stays
 // visible — the cap is a browsing default, not a filter.
-function ConversationPreviewList({ conversations, tasks, extraVisible, onExtraVisibleChange, onOpen, previewLimit = CONVERSATION_PREVIEW_LIMIT }) {
+function ConversationPreviewList({ conversations, tasks, statusInputs, extraVisible, onExtraVisibleChange, onOpen, previewLimit = CONVERSATION_PREVIEW_LIMIT }) {
   const ordered = orderConversations(conversations, tasks);
   const { visible, hiddenCount, showToggle } = previewRows(ordered, extraVisible, previewLimit);
   return <>
-    {visible.map((conversation) => <ConversationRow key={conversation.conversation_id} conversation={conversation} task={listTaskForConversation(conversation, tasks)} onOpen={onOpen} />)}
+    {visible.map((conversation) => <ConversationRow
+      key={conversation.conversation_id}
+      conversation={conversation}
+      slot={conversationStatusSlot({ conversation, tasksById: tasks, ...statusInputs })}
+      onOpen={onOpen}
+    />)}
     {showToggle ? <button
       type="button"
       className="conversation-show-more"
@@ -344,7 +379,7 @@ function ConversationPreviewList({ conversations, tasks, extraVisible, onExtraVi
   </>;
 }
 
-function ProjectGroup({ project, tasks, onOpen, onNew, previewLimit }) {
+function ProjectGroup({ project, tasks, statusInputs, onOpen, onNew, previewLimit }) {
   const [open, setOpen] = useState(true);
   const [extraVisible, setExtraVisible] = useConversationPreview(open);
   const conversations = project.conversations || [];
@@ -363,21 +398,21 @@ function ProjectGroup({ project, tasks, onOpen, onNew, previewLimit }) {
         <button className="row-action" onClick={() => onNew(project.project_id)} aria-label={`Create a task in ${project.name}`}><SquarePen size={20} /></button>
       </div>
       {open ? <div className="conversation-list">
-        <ConversationPreviewList conversations={conversations} tasks={tasks} extraVisible={extraVisible} onExtraVisibleChange={setExtraVisible} onOpen={onOpen} previewLimit={previewLimit} />
+        <ConversationPreviewList conversations={conversations} tasks={tasks} statusInputs={statusInputs} extraVisible={extraVisible} onExtraVisibleChange={setExtraVisible} onOpen={onOpen} previewLimit={previewLimit} />
         {!conversations.length ? <p className="project-empty">No conversations yet</p> : null}
       </div> : null}
     </section>
   );
 }
 
-function PinnedGroup({ conversations, tasks, onOpen, previewLimit }) {
+function PinnedGroup({ conversations, tasks, statusInputs, onOpen, previewLimit }) {
   const [open, setOpen] = useState(true);
   const [extraVisible, setExtraVisible] = useConversationPreview(open);
   return (
     <section className="pinned-group">
       <button className="section-toggle" onClick={() => setOpen((value) => !value)} aria-expanded={open}><Pin size={15} />Pinned<span>{conversations.length}</span><ChevronDown className="disclosure" size={16} /></button>
       {open ? <div className="pinned-list">
-        <ConversationPreviewList conversations={conversations} tasks={tasks} extraVisible={extraVisible} onExtraVisibleChange={setExtraVisible} onOpen={onOpen} previewLimit={previewLimit} />
+        <ConversationPreviewList conversations={conversations} tasks={tasks} statusInputs={statusInputs} extraVisible={extraVisible} onExtraVisibleChange={setExtraVisible} onOpen={onOpen} previewLimit={previewLimit} />
       </div> : null}
     </section>
   );
@@ -679,7 +714,7 @@ function usePullToRefresh({ listenRef, surfaceRef, indicatorRef, canStart, onRef
 
 // 目录整棵树跟着 App 重渲染一次不便宜（每一行都要重算预览、分组、排序），而会话详情开着时它在下面完全
 // 看不见。开、关会话都会重渲染整页，收尾那几帧正好撞上，所以给它套一层 memo。
-const ConversationList = React.memo(function ConversationList({ projects, conversations, tasks, status, loading, error, onRefresh, onOpen, onNew, onSettings }) {
+const ConversationList = React.memo(function ConversationList({ projects, conversations, tasks, status, approvals, loading, error, seenAt, onRefresh, onOpen, onNew, onSettings }) {
   const [query, setQuery] = useState('');
   const [showProjectPicker, setShowProjectPicker] = useState(false);
   const homeRef = useRef(null);
@@ -701,6 +736,17 @@ const ConversationList = React.memo(function ConversationList({ projects, conver
   // Projects follow the desktop rule too: pinned first, then the stored order.
   const orderedProjects = orderProjects(visibleProjects);
   const previewLimit = normalizedQuery ? Number.POSITIVE_INFINITY : CONVERSATION_PREVIEW_LIMIT;
+
+  // 项目（以及“Other conversations”）共用一份状态输入：行尾坑位读的就是这几个。
+  const statusInputs = React.useMemo(() => ({
+    seenAt,
+    pendingInputs: approvals?.pending_user_inputs || EMPTY_LIST,
+    pendingApprovals: approvals ? [
+      ...(approvals.pending || []),
+      ...(approvals.pending_workflow_approvals || []),
+      ...(approvals.pending_browser_runtime_installs || []),
+    ] : EMPTY_LIST,
+  }), [seenAt, approvals]);
 
   function startNew() {
     if (projects.length <= 1) onNew(projects[0]?.project_id);
@@ -738,9 +784,9 @@ const ConversationList = React.memo(function ConversationList({ projects, conver
           <div className="empty-state"><Folder size={30} /><h2>No conversations yet</h2><p>Create a task and it will appear on your computer.</p></div>
         ) : null}
         <div className="directory-list">
-          {pinned.length ? <PinnedGroup conversations={pinned} tasks={tasks} onOpen={onOpen} previewLimit={previewLimit} /> : null}
-          {orderedProjects.map((project) => <ProjectGroup key={project.project_id} project={project} tasks={tasks} onOpen={onOpen} onNew={onNew} previewLimit={previewLimit} />)}
-          {ungrouped.length ? <ProjectGroup project={{ project_id: '', name: 'Other conversations', conversations: ungrouped }} tasks={tasks} onOpen={onOpen} onNew={onNew} previewLimit={previewLimit} /> : null}
+          {pinned.length ? <PinnedGroup conversations={pinned} tasks={tasks} statusInputs={statusInputs} onOpen={onOpen} previewLimit={previewLimit} /> : null}
+          {orderedProjects.map((project) => <ProjectGroup key={project.project_id} project={project} tasks={tasks} statusInputs={statusInputs} onOpen={onOpen} onNew={onNew} previewLimit={previewLimit} />)}
+          {ungrouped.length ? <ProjectGroup project={{ project_id: '', name: 'Other conversations', conversations: ungrouped }} tasks={tasks} statusInputs={statusInputs} onOpen={onOpen} onNew={onNew} previewLimit={previewLimit} /> : null}
           {!loading && query && !pinned.length && !visibleProjects.length && !ungrouped.length ? <p className="no-results">No matching conversations</p> : null}
         </div>
       </div>
@@ -1837,6 +1883,8 @@ export default function App() {
   const [tasks, setTasks] = useState({});
   const [approvals, setApprovals] = useState(null);
   const [loading, setLoading] = useState(true);
+  // 行尾那个终态点的「看过」时刻表（见 conversation-status.js）：只对这台手机有意义，即用即存。
+  const [seenAt, setSeenAt] = useState(() => loadConversationSeenAt(window.localStorage));
   const [fatalError, setFatalError] = useState('');
   const [runtimeOfflineSince, setRuntimeOfflineSince] = useState(0);
   const [initialized, setInitialized] = useState(false);
@@ -1852,6 +1900,16 @@ export default function App() {
   // pull down on.
   const directoryErrorRef = useRef(false);
   const approvalsSignatureRef = useRef('');
+  const seenAtRef = useRef(seenAt);
+
+  // 进会话与离开会话都把「看过」推到当下：行尾的终态点跟着灭（桌面「看过就熄灯」那条规矩）。
+  const markSeen = useCallback((conversationId) => {
+    if (!conversationId) return;
+    const next = markConversationSeen(seenAtRef.current, conversationId, Date.now());
+    seenAtRef.current = next;
+    saveConversationSeenAt(window.localStorage, next);
+    setSeenAt(next);
+  }, []);
 
   const loadStatus = useCallback(async () => {
     const next = await api.status();
@@ -1896,6 +1954,13 @@ export default function App() {
       if (signature === directorySignatureRef.current) return;
       directorySignatureRef.current = signature;
       const nextConversations = nextProjects.flatMap((project) => project.conversations || []);
+      // 第一次在手机上见到的会话以现在为基线：装上手机之前跑完的任务不补灯。
+      const seeded = seedConversationSeenAt(seenAtRef.current, nextConversations.map((item) => item.conversation_id), Date.now());
+      if (seeded !== seenAtRef.current) {
+        seenAtRef.current = seeded;
+        saveConversationSeenAt(window.localStorage, seeded);
+        setSeenAt(seeded);
+      }
       setConversations(nextConversations);
       setProjects(nextProjects);
       const nextTasks = Object.fromEntries(nextConversations.flatMap((item) => item.tasks || []).map((task) => [task.task_id, task]));
@@ -1985,24 +2050,29 @@ export default function App() {
     if (!status?.paired || loading || restoredConversationRef.current || selectedId || !conversations.length) return;
     restoredConversationRef.current = true;
     const lastId = storedConversationId();
-    if (lastId && conversations.some((item) => item.conversation_id === lastId)) setSelectedId(lastId);
-  }, [conversations, loading, selectedId, status?.paired]);
+    if (lastId && conversations.some((item) => item.conversation_id === lastId)) {
+      markSeen(lastId);
+      setSelectedId(lastId);
+    }
+  }, [conversations, loading, selectedId, status?.paired, markSeen]);
 
   // 传给 `ConversationList` 的几个回调必须是稳定的：它套了 memo，回调每次新建就等于没套。
   const createConversation = useCallback(async (projectId) => {
     const created = await api.createConversation(projectId);
     restoredConversationRef.current = true;
     saveStoredConversationId(created.conversation_id);
+    markSeen(created.conversation_id);
     setSelectedId(created.conversation_id);
     // The detail screen can render immediately; refresh the directory in the background.
     loadTasks();
-  }, [loadTasks]);
+  }, [loadTasks, markSeen]);
 
   const openConversation = useCallback((conversation) => {
     restoredConversationRef.current = true;
     saveStoredConversationId(conversation.conversation_id);
+    markSeen(conversation.conversation_id);
     setSelectedId(conversation.conversation_id);
-  }, []);
+  }, [markSeen]);
 
   // 「N actions waiting」那条横幅点进去：开正在等的那个会话（第一条带 conversation_id 的
   // 请求说了算，见 haish-bridge.js 的 waitingRequestConversation）。列表里还没刷新到它也能
@@ -2015,6 +2085,8 @@ export default function App() {
   const showSettings = useCallback(() => setTab('settings'), []);
 
   function closeConversation() {
+    // 离开也算看过：在会话里看着它跑完的那一轮，回到列表不再亮灯。
+    markSeen(selectedId);
     setSelectedId(null);
     // The directory poll is paused behind the detail, so the list is refreshed here as it
     // comes back into view instead of every 5s while nobody can see it. The payload is
@@ -2039,6 +2111,10 @@ export default function App() {
     directoryErrorRef.current = false;
     approvalsSignatureRef.current = '';
     statusSignatureRef.current = '';
+    // 换一台电脑配对时，上一台的会话 id 与「看过」时刻表一起丢掉。
+    seenAtRef.current = {};
+    saveConversationSeenAt(window.localStorage, {});
+    setSeenAt({});
     setStatus({ paired: false, runtime_online: false });
   }
 
@@ -2070,7 +2146,7 @@ export default function App() {
       {tab === 'tasks' ? (
         <>
           {approvalCount ? <button type="button" className="pending-banner" onClick={openWaitingConversation} disabled={!waitingConversationId}><ShieldCheck size={18} /><span>{approvalCount} {approvalCount === 1 ? 'action' : 'actions'} waiting</span>{waitingConversationId ? <ChevronRight size={17} aria-hidden="true" /> : null}</button> : null}
-          <ConversationList projects={projects} conversations={conversations} tasks={tasks} status={status} loading={loading} error={fatalError} onRefresh={refreshDirectory} onOpen={openConversation} onNew={createConversation} onSettings={showSettings} />
+          <ConversationList projects={projects} conversations={conversations} tasks={tasks} status={status} approvals={approvals} loading={loading} error={fatalError} seenAt={seenAt} onRefresh={refreshDirectory} onOpen={openConversation} onNew={createConversation} onSettings={showSettings} />
         </>
       ) : <SettingsScreen status={status} onLogout={logout} onBack={() => setTab('tasks')} />}
       {detail}

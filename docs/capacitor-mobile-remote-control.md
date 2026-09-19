@@ -62,7 +62,7 @@ haish-agent-remote/
 桌面 0.0.20 = 97aaa54a359eabd4f2a225868df5e19aac8baf9e   # 当前 pin
 ```
 
-### 手机侧的四个接缝
+### 手机侧的五个接缝
 
 | 接缝 | 文件 | 干什么 |
 | --- | --- | --- |
@@ -70,6 +70,7 @@ haish-agent-remote/
 | 视图 | `src/chat-view.jsx` | 直接渲染桌面 `ChatMessageRow` / `ChatAgentTimeline`；图片走 `api.imagePreview` 取字节 |
 | 审批 | `src/haish-bridge.js` + `src/approval-slot.jsx` | 把 App 那支 5s 审批快照轮询接成桌面那层 `window.haish`（`approval_snapshot` + `resolveApproval`），于是工具审批 / ask_user 提问 / 浏览器运行时装四张卡全部是桌面组件，落在线程里 |
 | 样式 | `src/desktop-theme.css` + `scripts/gen-desktop-base-css.mjs` + `scripts/gen-desktop-markdown-css.mjs` | 引用桌面的 `styles/*.css`；生成的 `src/desktop-base.generated.css` 把桌面 `base.css` 的 `:root` token / `.ico-*` / portal tooltip 摘过来，`src/desktop-markdown.generated.css` 是桌面 `markdown.css` 的副本（只改 `@source` 的起点，见下）；两份都已 gitignore，prebuild/predev 重生成 |
+| 目录 | `src/conversation-status.js` + `src/App.jsx` | 会话行右端那**一个**状态坑位（在等人 / 在跑 / 跑完还没看过）：判据用桌面侧栏的 `resolveConversationStatusMark`（`conversation-run-state.js`），终态串用桌面 `task-completion-notices.js` 的 `terminalTaskNoticeStatus`，图标是桌面 `ConversationIcons.jsx` 那一对 glyph；「没看过」的时刻表存在手机本地（见下面第 6 条）。桌面那几条类名的规则写在 `panels.css`（整份都是侧栏布局，没进手机的包），用到的那几条原样抄在 `src/styles.css` |
 
 #### 审批 / 提问 / 浏览器安装卡：`window.haish` 的接缝
 
@@ -101,15 +102,16 @@ haish-agent-remote/
 
 **不搬**：桌面 `ChatPanel`（拖 Lexical 输入框、ModelPickers、标注、搜索）、`createTaskStreamHandlers.js`（1003 行，接的是桌面的 socket 与 store）——手机只搬行、时间线、卡片和纯函数模型，composer / 目录 / 滚动仍是手机自己的。只有发送/停止两个键的**图标**照桌面聊天区来（`ArrowUp` 与实心圆角 `Square`，即 `chat.css` 的 `.chat-send-icon` / `.chat-stop-icon`；桌面按钮 40px 配 22px/12px，手机按钮 48px 因此放成 26px/14px，进场动画沿用桌面的 `chat-send-icon-in`），不再用 `deploy.png` / `stop.png` 两个遮罩字形。
 
-### 手机上故意画得跟桌面不一样的五处
+### 手机上故意画得跟桌面不一样的六处
 
-只有这五处，都是用户拍过的，其余一律照桌面：
+只有这六处，都是用户拍过的，其余一律照桌面：
 
 1. **thinking 折叠 chip 不画**（桌面 `ChatTimelineNodes.jsx` 的 `.chat-timeline-thinking-*`：灯泡 + `N chars`）。用户说那是老 UI 的观感。事件日志照桌面折，只在 `chat-runtime.js` 交给行之前把 `kind === 'thinking'` 的节点滤掉——活动 orb 的文案仍走桌面那份（流式时它本来就在，只是少了一个可点的折叠块）。
 2. **取消 / 失败任务的本地回复去重**（`withoutTimelineDuplicates`）。被 `cancel` 打断的那次回答没定稿，过程文本（commentary）已经是时间线上的一个节点，`answer_text` 又是同一段，正文整段去重就少一遍。只对这一种行生效：持久化消息的正文就是答案本身，done 行的时间线默认折着，去掉它就等于把答案藏起来。
 3. **browser_use 的截图位降级成占位**。桌面靠 Electron IPC `readToolScreenshot` 读图，手机端 v1 不建 artifact 路由（core 只有会话图片预览，adapter 没有 artifact 通道）。卡片其余字段照搬。
 4. **气泡吃满行宽**。桌面两条上限（`.chat-bubble` 的 `min(680px, 72%)`、助手行的 82%）是给 1000px 往上的窗口留的余量，到 390px 的屏上只剩 258 / 293px，正文挤成一根条、表格和代码没地方放（用户：「优化一下现在是太挤了，根本看不了」）。手机在 `src/styles.css` 里覆盖成 `max-width: 100%`——气泡内部那 38px 是头像的让位（助手行在左、用户行在右），取满也不会顶到行外。其余尺寸（字号、内边距、头像槽）仍照桌面。
 5. **审批插槽按会话收窄**。四张卡在桌面上的落位是：工具审批 / 浏览器运行时装嵌在对应的工具节点里（`ChatTimelineToolNode` 里的 `ToolApprovalCard` / `BrowserRuntimeCard`，认领机制管着“时间线里画了就不重复”），ask_user 的问答表单嵌在 ask_user 那个工具行里（`AskUserInlineForm`），剩下够不着节点的排在与消息同级的一个插槽里（`ApprovalInline`，一次一张 + “N pending requests queued”）。手机把这四种落位原样搬了过来（内嵌的三种是桌面组件自己画的），只把**插槽**重写成 `src/approval-slot.jsx`：桌面只有一个窗口、一份 store，那个插槽不分会话；手机一屏只有一个会话，而 store 是整个 runtime 的，照搬会把**别的会话**的审批画进这一轮。收窄按请求自带的 `conversation_id`（没有就看 `task_id` 是不是本会话的任务）——卡面、类名、队列文案与桌面一字不差。
+6. **「跑完还没看过」的灯靠客户端时刻表**。桌面侧栏那个终态点（done 绿 / failed 红 / cancelled 金，即 `panels.css` 的 `.conversation-terminal-notice`）是 `task-completion-notices.js` 在进程里记的一张 notices 表，打开该会话就清掉（`AppShell.jsx` 的 `addTaskCompletionNotice` / `clearConversationCompletionNotices`）。桌面常开，这张表放在内存里就够；手机不是常开的——进程随时会被杀，内存里记不住“哪一轮看过没看过”，而 runtime 也没有“已读”这个概念。于是手机把同一件事记在客户端：`haish.conversation-seen-at.v1`（`src/conversation-status.js`），**第一次在手机上见到的会话以那一刻为基线**（装上手机之前跑完的任务不补灯），进会话 / 离开会话 / 新建会话都推到当下，所以灯一直亮到打开该会话为止——观感与桌面一致。判据本身不复制：坑位读桌面 `conversation-run-state.js` 的 `resolveConversationStatusMark`，终态串读桌面 `task-completion-notices.js` 的 `terminalTaskNoticeStatus`（同一时刻一行只亮一个：在等人 > 在跑 > 终态点）。
 
 另外 `src/main.jsx` 必须包一层桌面 `AppTooltipProvider`：行 / 时间线 / 工具卡里的 tooltip 会抛 `useContext must be used within GlobalTooltipProvider`，整条线程白屏。
 

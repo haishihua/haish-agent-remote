@@ -103,6 +103,16 @@ code { padding: 2px 6px; border: 1px solid var(--border); border-radius: 6px; ba
 .conversation-row:hover { background: rgba(239, 191, 100, 0.055); }
 .conversation-title { overflow: hidden; font-size: 14px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
 .conversation-running { color: #8fb3ff; }
+/* 行尾那一个状态坑位（在跑 / 在等人 / 跑完还没看过）里除圈与点之外的几笔。桌面把这几条写在
+   panels.css 的 .conversation-running-indicator / .conversation-status-glyph /
+   .conversation-terminal-notice 里，而 panels.css 没进手机的包（它整份都是桌面侧栏的布局），
+   所以这里按桌面那份原样抄下来；那个点的颜色来自桌面的 .chat-timeline-status（chat.css，已在包里）。 */
+.conversation-running-indicator { display: inline-flex; align-items: center; justify-content: center; justify-self: center; color: #8fb3ff; }
+.conversation-running-indicator.waiting-input, .conversation-running-indicator.awaiting-approval { color: #efbf64; }
+.conversation-status-glyph { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.conversation-terminal-notice { justify-self: center; }
+/* 取消掉的那一轮在桌面上是金色的点（panels.css 把 chat-timeline-status 的灰色改成了金色）。 */
+.conversation-terminal-notice.status-cancelled { background: var(--gold); box-shadow: 0 0 6px rgba(239, 191, 100, 0.28); }
 .project-empty, .no-results { margin: 0; padding: 16px; color: var(--muted-2); font-size: 13px; }
 /* The desktop panel folds every list to three rows and reveals three more per
    tap; this is the phone-sized version of that button. */
