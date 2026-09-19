@@ -145,7 +145,20 @@ function fakeTraveler() {
 
 function fakeDock({ bottom = 810 } = {}) {
   // 输入框那一叠也是会跟键盘移动的一块：除了位置，它和消息列表一样可以提供当前位移。
-  return { ...fakeTraveler(), bottom };
+  const composerClasses = new Set(['composer', 'expanded']);
+  return {
+    ...fakeTraveler(),
+    bottom,
+    composerClasses,
+    querySelector: (selector) => selector === '.composer' ? {
+      classList: {
+        toggle(name, force) {
+          if (force) composerClasses.add(name);
+          else composerClasses.delete(name);
+        },
+      },
+    } : null,
+  };
 }
 
 function fakeScroll({ contentHeight = 0, viewportHeight = 0, scrollTop = 0 } = {}) {
@@ -158,7 +171,7 @@ function fakeScroll({ contentHeight = 0, viewportHeight = 0, scrollTop = 0 } = {
   };
 }
 
-/** AppDelegate 转发键盘 frame 的那条通道：`haishKeyboardFrame` 事件。 */
+/** HaishBridgeViewController 直接转发键盘 frame 的通道：`haishKeyboardFrame` 事件。 */
 function fakeViewport() {
   const handlers = new Map();
   const listening = [];
@@ -240,6 +253,7 @@ test('the list and the composer travel together and the layout does not move unt
   // 收起：位移反向，落地之后布局才回到 0。
   listeners.get('keyboardWillHide')();
   await null;
+  assert.equal(dock.composerClasses.has('expanded'), false, 'composer compacts in the same will-hide callback');
   assert.equal(travelKeyframes(region).at(-1).transform, 'translate3d(0, 306px, 0)');
   assert.equal(travelKeyframes(dock).at(-1).transform, 'translate3d(0, 306px, 0)');
   listeners.get('keyboardDidHide')();
@@ -573,7 +587,7 @@ test('the frame the app forwards is what tells the layout the keyboard changed',
   await controller.start();
   assert.deepEqual(viewport.listening, [KEYBOARD_FRAME_EVENT]);
 
-  // 换键盘时插件一声不响（iOS 只发了 UIKeyboardWillChangeFrameNotification）：AppDelegate 转发的
+  // 换键盘时插件一声不响（iOS 只发了 UIKeyboardWillChangeFrameNotification）：原生 controller 转发的
   // frame 自己把这一层带到新高度上——从静息位（离底 42）起走 431 + 12 - 42 = 401。通知里一并带着
   // 这一趟的动画时长（`UIKeyboardAnimationDurationUserInfoKey`），跟键盘走的那一段用同一个时长。
   viewport.dispatch(KEYBOARD_FRAME_EVENT, { detail: { height: 431, duration: 0.35 } });
@@ -588,6 +602,7 @@ test('the frame the app forwards is what tells the layout the keyboard changed',
   // 键盘离开屏幕（收起时 iOS 把 frame 挪到屏幕外，报 0）：和 `keyboardWillHide` 是一回事，
   // 这一趟把已经写在布局里的 431 放回去。
   viewport.dispatch(KEYBOARD_FRAME_EVENT, { detail: { height: 0 } });
+  assert.equal(dock.composerClasses.has('expanded'), false, 'native frame dismissal compacts before the keyboard travels');
   assert.deepEqual(travelKeyframes(dock).at(-1).transform, 'translate3d(0, 401px, 0)');
   listeners.get('keyboardDidHide')();
 

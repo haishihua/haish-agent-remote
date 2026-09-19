@@ -39,6 +39,9 @@ const REQUIRED_OVERRIDES = [
   ['.haish-annotation-drafts>.haish-quote-block{width:100%;max-width:100%;margin:0}', '引用批注的草稿在手机上占满一行（桌面是最宽 480px 的并排块）'],
   ['html.native-app.haish-annotation-floating{position:absolute!important', 'iOS 评论编辑器固定在 composer dock 上方，随键盘一起移动'],
   ['.chat-message-row.user.haish-sent-annotations.haish-quote-text{-webkit-line-clamp:3', '已发送的长引用在用户气泡里截为三行'],
+  ['.composer.expanded>.haish-annotation-drafts', '输入框展开后引用草稿仍占满整行'],
+  ['.composer.expandedtextarea{min-width:0;grid-column:1/-1', '输入框展开后 Continue this task 在引用草稿下方另起整行'],
+  ['.annotation-menu.haish-selection-toolbarbutton{min-height:34px', '浏览器后备批注入口复用桌面 SelectionToolbar 并缩成手机尺寸'],
   ['.chat-message-row.message-shell~.chat-message-actions{opacity:1;pointer-events:auto}', '消息行的时间与复制按钮常显（桌面是悬停那一行才亮）'],
   ['.aui-tool-detail.haish-tool-elements[data-slot=code-diff]{width:100%;max-width:100%;overflow:hidden', '移动端 CodeDiff 有完整面板而不是只有逐行底色'],
 ];

@@ -843,7 +843,6 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   const [modelSyncError, setModelSyncError] = useState('');
   const [runConfigExpanded, setRunConfigExpanded] = useState(false);
   const [showRunConfig, setShowRunConfig] = useState(false);
-  const [composerExpanded, setComposerExpanded] = useState(false);
   const messageScrollRef = useRef(null);
   const messageRegionRef = useRef(null);
   const messageBodyRef = useRef(null);
@@ -924,7 +923,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   // 右侧配置图标出现/收起）会改变折行，这些时候必须重量一次。
   useEffect(() => {
     textareaFitSchedulerRef.current.schedule(messageInputRef.current, { force: true });
-  }, [id, composerExpanded, runConfig, runConfigExpanded]);
+  }, [id, runConfig, runConfigExpanded]);
   useEffect(() => {
     const fit = () => textareaFitSchedulerRef.current.schedule(messageInputRef.current, { force: true });
     window.addEventListener('resize', fit);
@@ -958,10 +957,23 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
 
   // 键盘跟着输入框走（见 ios-keyboard.js）：这个会话把会跟键盘移动的两块交给控制器——消息列表
   // （连窗口带内容）和输入框那一叠；离开会话时收回。
-  useEffect(() => registerKeyboardSurface({ regionRef: messageRegionRef, scrollerRef: messageScrollRef, dockRef: composerDockRef }), []);
+  useEffect(() => registerKeyboardSurface({
+    regionRef: messageRegionRef,
+    scrollerRef: messageScrollRef,
+    dockRef: composerDockRef,
+  }), []);
+
+  function expandComposer() {
+    // Pointer down runs before iOS starts the keyboard transition. Apply the class immediately so
+    // the input does not wait for a React commit while UIKit is already moving the keyboard.
+    messageInputRef.current?.form?.classList.add('expanded');
+    textareaFitSchedulerRef.current.schedule(messageInputRef.current, { force: true });
+  }
 
   function collapseComposer() {
-    setComposerExpanded(false);
+    // Mirror the focus path on dismissal: compact the composer in the same tap that resigns the
+    // textarea, before the native keyboard transition starts.
+    messageInputRef.current?.form?.classList.remove('expanded');
     messageInputRef.current?.blur();
   }
 
@@ -1379,7 +1391,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     hasMessageRef.current = false;
     setHasMessage(false);
     textareaFitSchedulerRef.current.schedule(messageInputRef.current, { force: true });
-    setComposerExpanded(false);
+    messageInputRef.current?.form?.classList.remove('expanded');
     messageInputRef.current?.blur();
     setBusy(true);
     setError('');
@@ -1648,7 +1660,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
             </span>
           </div>
         </div> : null}
-        <form className={`composer ${runConfig && !runConfigExpanded ? 'has-config-icon' : ''} ${composerExpanded ? 'expanded' : ''}`} onSubmit={submit} onDragOver={(event) => {
+        <form className={`composer ${runConfig && !runConfigExpanded ? 'has-config-icon' : ''}`} onSubmit={submit} onDragOver={(event) => {
           if (Array.from(event.dataTransfer?.items || []).some((item) => item.kind === 'file')) event.preventDefault();
         }} onDrop={(event) => {
           const images = Array.from(event.dataTransfer?.files || []).filter((file) => file.type.startsWith('image/'));
@@ -1674,7 +1686,11 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
           ))}</div> : null}
           {composerImages.some((image) => image.error) ? <p className="composer-image-error" role="alert">{composerImages.find((image) => image.error)?.error}</p> : null}
           <label htmlFor="task-message" className="sr-only">Send instructions</label>
-          <textarea ref={messageInputRef} id="task-message" rows={1} disabled={busy} onFocus={() => setComposerExpanded(true)} onChange={(event) => {
+          <textarea ref={messageInputRef} id="task-message" rows={1} disabled={busy} onPointerDown={expandComposer} onFocus={expandComposer} onBlur={(event) => {
+            // Programmatic/native resignFirstResponder can arrive without a click on the thread.
+            // Keep the DOM shell in sync even if iOS omits one of its keyboard callbacks.
+            event.currentTarget.form?.classList.remove('expanded');
+          }} onChange={(event) => {
             markComposerInputActivity();
             const nextHasMessage = Boolean(event.currentTarget.value.trim());
             if (nextHasMessage !== hasMessageRef.current) {

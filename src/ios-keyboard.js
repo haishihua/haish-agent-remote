@@ -47,8 +47,8 @@ export async function hideKeyboardAccessoryBar({ keyboard = Keyboard, native = i
  * - 键盘抬着的时候高度又变了一次（换输入法、切 emoji、系统键盘上多一条提示栏）走的是「新旧高度之差」，
  *   不是整个上移量：布局里还抬着上一把键盘的那一段，再补一整段就是用户报的「切换键盘，输入框又往上跑」。
  *   换键盘在 iOS 上常常只发 `UIKeyboardWillChangeFrameNotification`，Capacitor 的插件只订阅 will/didShow
- *   与 will/didHide，所以 AppDelegate 把这条通知里的高度原样转给这一层（`haishKeyboardFrame` 事件，
- *   见 ios/App/App/AppDelegate.swift）——插件一声不响时布局也不会留在上一把键盘的高度上；
+ *   与 will/didHide，所以原生 bridge controller 把这条通知里的高度原样转给这一层（`haishKeyboardFrame` 事件，
+ *   见 ios/App/App/HaishBridgeViewController.swift）——插件一声不响时布局也不会留在上一把键盘的高度上；
  * - 布局在运动期间原则上不动（唯一一次例外是上面那种配平：同一个任务里换完，画面不动），所以没有缺口可以闪；
  * - 落地时把 transform 换回布局：给 `--keyboard-inset` 写一次键盘高度，`.detail-screen` 的 padding-bottom
  *   把这一层连同输入框抬到同一个位置，输入框的底部安全区边距同时归零（styles.css）；写布局、清 transform、
@@ -99,9 +99,15 @@ export const KEYBOARD_MOTION_CLASS = 'keyboard-moving';
  *
  * `detail.height` 是键盘在屏幕上真正盖住的高度（点），0 表示键盘已经离开屏幕（收起时 iOS 就是把 frame
  * 挪到屏幕外）；`detail.duration` 是这一趟的动画时长（秒，`UIKeyboardAnimationDurationUserInfoKey`，插件
- * 不报它）。名字要和 ios/App/App/AppDelegate.swift 里的一致——构建那一步会到包里的二进制里找它。
+ * 不报它）。名字要和 ios/App/App/HaishBridgeViewController.swift 里的一致——构建会核原生与 Web 两端。
  */
 export const KEYBOARD_FRAME_EVENT = 'haishKeyboardFrame';
+/**
+ * The native frame notification is dispatched in the same run-loop turn UIKit starts the keyboard.
+ * When its height is zero (dismissal), compact the composer before starting the travel so Web and
+ * keyboard never spend a frame in different visual states. App.jsx uses the same class on focus.
+ */
+export const KEYBOARD_COMPOSER_EXPANDED_CLASS = 'expanded';
 
 /** 浏览器认不认这条 `linear()`：不认就用贝塞尔那条退路，别让整条动画掉回 linear。 */
 export function keyboardMotionEasing({ supports = defaultSupportsEasing } = {}) {
@@ -223,6 +229,7 @@ export function createKeyboardInsetController({
   viewport = typeof window === 'undefined' ? null : window,
   motionMs = KEYBOARD_MOTION_MS,
   supportsEasing = defaultSupportsEasing,
+  setComposerExpanded = (dock, expanded) => dock?.querySelector?.('.composer')?.classList?.toggle(KEYBOARD_COMPOSER_EXPANDED_CLASS, expanded),
 } = {}) {
   // 曲线一次定死（curve 7 是常量，只有认不认 `linear()` 这一件事），时长跟着原生报的走（`frame`）。
   const motionEasing = keyboardMotionEasing({ supports: supportsEasing });
@@ -443,16 +450,25 @@ export function createKeyboardInsetController({
   }
 
   /**
-   * AppDelegate 转发的键盘 frame：键盘类型切换（系统键盘 ↔ 第三方输入法、emoji、多一条提示栏）在 iOS 上
+   * 原生 bridge controller 转发的键盘 frame：键盘类型切换（系统键盘 ↔ 第三方输入法、emoji、多一条提示栏）在 iOS 上
    * 常常只发 `UIKeyboardWillChangeFrameNotification`，插件订阅的 will/didShow 不会来，布局里就会留着上一把
    * 键盘的高度——用户报的「切换键盘，输入框又往上跑」。高度交给同一套逻辑；0 表示键盘离场（收起时 iOS 把
    * frame 挪到屏幕外），和 `keyboardWillHide` 是一回事。
    */
+  function compactComposer() {
+    setComposerExpanded(pieces()?.dock, false);
+  }
+
   function frame(height, seconds) {
     // 时长先记住：这条通道是唯一带着它的地方，插件那四个事件都没有。
     durationMs = keyboardMotionMs(seconds, durationMs);
     if (keyboardInset(height)) raise(height);
-    else lower();
+    else {
+      // UIKit sends willChangeFrame before its dismissal animation. Compact synchronously in that
+      // same callback; waiting for React/blur leaves the large input suspended after the keyboard.
+      compactComposer();
+      lower();
+    }
   }
 
   function onKeyboardFrame(event) {
@@ -480,7 +496,7 @@ export function createKeyboardInsetController({
 
   async function start() {
     if (stopped || !native) return stop;
-    // 原生那一侧只负责报高度，怎么动由这一层决定（浏览器里没有这个事件，也就不会有监听）。
+    // 原生 controller 只负责同步报高度，怎么动由这一层决定（浏览器里没有这个事件，也就不会有监听）。
     viewport?.addEventListener?.(KEYBOARD_FRAME_EVENT, onKeyboardFrame);
     const events = [
       ['keyboardWillShow', (info) => raise(info?.keyboardHeight)],
@@ -490,7 +506,10 @@ export function createKeyboardInsetController({
         else raiseNow(info?.keyboardHeight);
         pinDocumentOffset();
       }],
-      ['keyboardWillHide', () => lower()],
+      ['keyboardWillHide', () => {
+        compactComposer();
+        lower();
+      }],
       ['keyboardDidHide', () => {
         if (motion) land();
         else if (inset) {

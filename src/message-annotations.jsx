@@ -27,10 +27,9 @@ import {
   useFloating,
   useInteractions,
 } from '@floating-ui/react';
-import { Quote } from 'lucide-react';
 import { isNativeApp } from './native-connection.js';
 import { addNativeCommentListener, reportNativeAnnotationSelection } from './native-comment-menu.js';
-import { QuoteBlock } from '../../haish-agent/app-web/src/shared/ui/agent-elements/Quote.jsx';
+import { QuoteBlock, SelectionToolbar } from '../../haish-agent/app-web/src/shared/ui/agent-elements/Quote.jsx';
 import {
   annotationError,
   annotationRange,
@@ -290,14 +289,10 @@ export const MessageAnnotations = React.forwardRef(function MessageAnnotations(
             />
             <div className="haish-annotation-editor-actions">
               <button type="button" onClick={close}>Cancel</button>
-              <button type="button" onClick={save}>{drafts.some((item) => item.id === editor.id) ? 'Save Comment' : 'Add Comment'}</button>
+              <button type="button" onClick={save}>{drafts.some((item) => item.id === editor.id) ? 'Save comment' : 'Add to chat'}</button>
             </div>
           </div>
-        ) : (
-          <button type="button" className="annotation-menu-item" onMouseDown={(event) => event.preventDefault()} onClick={begin}>
-            <Quote size={15} aria-hidden="true" /> Add Comment
-          </button>
-        )}
+        ) : <SelectionToolbar onComment={begin} />}
       </div>
     </FloatingFocusManager>
   ) : null;

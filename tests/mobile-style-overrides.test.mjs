@@ -43,8 +43,11 @@ test('手机样式表约束批注草稿、编辑器和已发送引用', async ()
   assert.ok(css.includes('.composer-dock { position: relative;'), 'composer dock 应为原生评论编辑器提供定位容器');
   assert.ok(css.includes('html.native-app .haish-annotation-floating { position: absolute !important;'), '原生评论编辑器应固定在 composer dock 上方');
   assert.ok(css.includes('.chat-message-row.user .haish-sent-annotations .haish-quote-text { -webkit-line-clamp: 3;'), '已发送长引用应在 iPhone 上截行');
-  // 浏览器/PWA 没有 UIKit 菜单，仍需要这个后备入口。
-  assert.ok(css.includes('.annotation-menu-item {'), '浏览器后备选区菜单样式不应被移除');
+  // 浏览器/PWA 没有 UIKit 菜单，后备入口直接复用桌面的 SelectionToolbar，只做尺寸适配。
+  assert.ok(css.includes('.annotation-menu .haish-selection-toolbar button {'), '浏览器后备入口应适配桌面的 SelectionToolbar');
+  assert.ok(!css.includes('.annotation-menu-item {'), '不应再维护一套手机专用批注按钮');
+  assert.ok(css.includes('.composer.expanded > .haish-annotation-drafts,'), '展开输入框时引用标签仍应占满整行');
+  assert.ok(css.includes('.composer.expanded textarea { min-width: 0; grid-column: 1 / -1;'), 'Continue this task 输入区应在引用标签下方另起整行');
 });
 
 test('check:styles 的清单里也有这一条', async () => {
@@ -55,6 +58,9 @@ test('check:styles 的清单里也有这一条', async () => {
   );
   assert.ok(script.includes('html.native-app.haish-annotation-floating{position:absolute!important'), '清单里要核原生编辑器定位');
   assert.ok(script.includes('.chat-message-row.user.haish-sent-annotations.haish-quote-text{-webkit-line-clamp:3'), '清单里要核已发送引用的截行');
+  assert.ok(script.includes('.composer.expanded>.haish-annotation-drafts'), '清单里要核展开后的引用标签仍占满整行');
+  assert.ok(script.includes('.composer.expandedtextarea{min-width:0;grid-column:1/-1'), '清单里要核展开后的正文输入区另起整行');
+  assert.ok(script.includes('.annotation-menu.haish-selection-toolbarbutton{min-height:34px'), '清单里要核桌面 SelectionToolbar 的手机尺寸适配');
 });
 
 // 消息行的时间（与它同排的复制按钮）在手机上常显：桌面那份是「悬停那一行才亮」，触摸设备靠

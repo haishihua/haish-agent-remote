@@ -362,8 +362,16 @@ html.detail-closing .app-shell > :not(.detail-screen) * { animation-play-state: 
 .composer { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 48px; gap: 7px; margin: 8px 10px 0; padding: 6px; border: 1px solid rgba(138, 166, 209, 0.28); border-radius: 18px; background: rgba(13, 16, 24, 0.96); transition: border-color 160ms ease, box-shadow 160ms ease; }
 .composer.has-config-icon { grid-template-columns: minmax(0, 1fr) 44px 48px; }
 .composer textarea { max-height: 132px; min-height: 48px; padding: 13px 11px; border: 0; border-radius: 12px; outline: 0; background: transparent; }
+/* Expanded is a stable four-column shell: textarea and every full-width attachment/quote row span
+   all columns, while the bottom controls keep their slots. Giving the textarea an explicit row
+   prevents the quote draft from being auto-placed into column 1 and squeezed into the tall strip
+   shown in attachment four. */
 .composer.expanded { grid-template-columns: 44px minmax(0, 1fr) 44px 48px; padding: 8px; border-color: rgba(138, 166, 209, 0.42); box-shadow: 0 -10px 32px rgba(0, 0, 0, 0.18); }
-.composer.expanded textarea { grid-column: 1 / -1; }
+.composer.expanded > .haish-annotation-drafts,
+.composer.expanded > .haish-annotation-notice,
+.composer.expanded > .composer-images,
+.composer.expanded > .composer-image-error { grid-column: 1 / -1; }
+.composer.expanded textarea { min-width: 0; grid-column: 1 / -1; grid-row: auto; }
 .composer-file-input { position: fixed; width: 1px; height: 1px; min-height: 0; padding: 0; overflow: hidden; border: 0; opacity: 0; pointer-events: none; clip-path: inset(50%); }
 .composer-photo-button { display: none; width: 44px; height: 44px; padding: 0; place-items: center; align-self: end; border: 0; border-radius: 12px; background: transparent; color: var(--text); cursor: pointer; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 .composer.expanded .composer-photo-button { display: grid; grid-column: 1 / 2; }
@@ -380,23 +388,22 @@ html.detail-closing .app-shell > :not(.detail-screen) * { animation-play-state: 
 .composer-image-remove { position: absolute; z-index: 3; top: 2px; right: 2px; display: grid; width: 20px; height: 20px; padding: 0; place-items: center; border: 0; border-radius: 50%; background: rgba(0, 0, 0, 0.7); color: white; }
 .composer-image-remove::before { position: absolute; inset: -9px; content: ''; }
 .composer-image-error { margin: -1px 6px 2px; grid-column: 1 / -1; color: var(--danger); font-size: 11px; line-height: 1.35; }
-/* 引用批注：桌面提供数据模型与 QuoteBlock，手机覆写交互壳和紧凑布局。 */
-/* 浏览器/PWA 没有 UIKit 原生选区菜单，才使用这个后备入口；原生 App 中不会渲染它。 */
-.annotation-menu { display: flex; z-index: 1700; padding: 4px; border: 1px solid rgba(140, 158, 196, 0.22); border-radius: 12px; background: rgba(28, 31, 42, 0.96); box-shadow: 0 10px 28px rgba(0, 0, 0, 0.42); }
-.annotation-menu-item { display: flex; min-height: 42px; padding: 0 13px; align-items: center; gap: 7px; border: 0; border-radius: 9px; background: transparent; color: #f2f4fa; font-family: var(--conversation-font); font-size: 14px; font-weight: 600; white-space: nowrap; }
-.annotation-menu-item svg { flex: 0 0 auto; color: var(--accent); }
+/* 引用批注：组件直接复用桌面的 SelectionToolbar / QuoteBlock；手机只缩尺寸，不另画一套框。 */
+.annotation-menu { z-index: 1700; }
+.annotation-menu .haish-selection-toolbar { border-radius: 9px; }
+.annotation-menu .haish-selection-toolbar button { min-height: 34px; padding: 5px 9px; font-size: 12px; }
+.annotation-menu .haish-selection-toolbar svg { width: 13px; height: 13px; }
 /* iOS 编辑器固定在 composer dock 上方并随 dock 一起走，不再以原文选区为锚；这样键盘弹出后
    不会被浮层定位算法推到屏幕外，也不会遮住原文中段。浏览器继续使用 floating-ui 的邻近定位。 */
 html.native-app .haish-annotation-floating { position: absolute !important; z-index: 1750; inset: auto 10px calc(100% + 8px) !important; width: auto; max-width: none; transform: none !important; }
-.haish-annotation-editor { width: min(420px, calc(100vw - 20px)); max-width: none; padding: 10px; border-color: rgba(138, 166, 209, 0.34); border-radius: 16px; background: rgba(13, 16, 24, 0.98); box-shadow: 0 14px 42px rgba(0, 0, 0, 0.52); }
+.haish-annotation-editor { width: min(360px, calc(100vw - 20px)); max-width: none; padding: 10px; }
 html.native-app .haish-annotation-editor { width: 100%; }
-.haish-annotation-editor > .haish-quote-block.is-preview { max-height: 72px; padding: 8px 10px; overflow: hidden; border-radius: 10px; background: rgba(138, 166, 209, 0.09); }
-.haish-annotation-editor textarea { min-height: 48px; max-height: 112px; margin-top: 8px; padding: 11px 12px; resize: none; border: 1px solid rgba(138, 166, 209, 0.22); border-radius: 11px; background: rgba(24, 33, 49, 0.88); font-size: 16px; }
-.haish-annotation-editor-actions { gap: 6px; padding-top: 8px; }
-.haish-annotation-editor-actions button { min-height: 38px; padding: 0 14px; border-radius: 10px; font-size: 14px; }
-.haish-annotation-editor-actions button:last-child { background: var(--accent); color: #17130b; font-weight: 700; }
+.haish-annotation-editor > .haish-quote-block.is-preview { max-height: 64px; padding: 8px 10px; overflow: hidden; }
+.haish-annotation-editor textarea { min-height: 52px; max-height: 104px; margin-top: 6px; padding: 9px 8px; resize: none; font-size: 14px; }
+.haish-annotation-editor-actions { padding-top: 7px; }
+.haish-annotation-editor-actions button { min-height: 34px; padding: 5px 11px; }
 /* 输入框里的引用草稿：一块一行，但限制总高，避免多条引用把主输入框顶出屏幕。 */
-.haish-annotation-drafts { max-height: 164px; padding: 8px 8px 0; gap: 6px; overflow-y: auto; overscroll-behavior: contain; }
+.haish-annotation-drafts { min-width: 0; max-height: 164px; padding: 8px 8px 0; grid-column: 1 / -1; gap: 6px; overflow-y: auto; overscroll-behavior: contain; }
 .haish-annotation-drafts > .haish-quote-block { width: 100%; max-width: 100%; margin: 0; }
 .haish-annotation-drafts .haish-quote-actions button { width: 32px; height: 32px; padding: 8px; }
 /* 已发送的批注属于用户消息气泡内部：去掉桌面版的外边距与大间距，并限制引用文本行数，
@@ -406,6 +413,7 @@ html.native-app .haish-annotation-editor { width: 100%; }
 .chat-message-row.user .haish-sent-annotations .haish-quote-text { -webkit-line-clamp: 3; font-size: 12px; line-height: 1.4; }
 .chat-message-row.user .haish-sent-annotations .haish-quote-comment { margin-top: 3px; font-size: 13px; line-height: 1.4; }
 .send-button { display: grid; grid-column: -2 / -1; width: 48px; height: 48px; padding: 0; place-items: center; align-self: end; border: 0; border-radius: 14px; background: var(--accent); color: #f7e7b0; }
+.composer.expanded .send-button { grid-column: 4 / 5; }
 .send-button.stop { padding: 0; border: 1px solid #d05050; background: linear-gradient(180deg, #d65a5a 0%, #b73a3a 55%, #8b2a2a 100%); color: #fff8f3; box-shadow: inset 0 1px 0 rgba(255, 220, 220, 0.28), inset 0 -1px 0 rgba(70, 20, 20, 0.28), 0 1px 2px rgba(0, 0, 0, 0.16); }
 .send-spinner { display: block; width: 20px; height: 20px; box-sizing: border-box; border: 2px solid color-mix(in srgb, currentColor 28%, transparent); border-top-color: currentColor; border-radius: 50%; transform-origin: 50% 50%; animation: spin 720ms linear infinite; }
 /* 发送/停止的图标跟桌面 chat 的发送键一致：ArrowUp 是发，实心圆角方块是停。桌面那套是
@@ -414,6 +422,7 @@ html.native-app .haish-annotation-editor { width: 100%; }
 .send-icon { display: block; width: 26px; height: 26px; animation: chat-send-icon-in 160ms ease-out; }
 .send-icon.stop-square { width: 14px; height: 14px; border-radius: 3px; }
 .run-config-icon-button { display: grid; width: 44px; height: 44px; padding: 0; grid-column: -3 / -2; place-items: center; align-self: end; border: 0; border-radius: 12px; background: transparent; color: var(--reasoning); }
+.composer.expanded .run-config-icon-button { grid-column: 3 / 4; }
 .run-config-icon-button:active { background: rgba(74, 140, 255, 0.1); }
 .run-config-gauge { width: 28px; height: 28px; overflow: visible; }
 .run-config-gauge-arc { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
