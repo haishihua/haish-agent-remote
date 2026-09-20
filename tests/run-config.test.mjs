@@ -7,7 +7,6 @@ import {
   modelOptionsFromTasks,
   providerOptionsFromSettings,
   resolveRunConfig,
-  settingsWithProviderModel,
   taskOptionsForRunConfig,
   withCurrentModel,
 } from '../src/run-config.js';
@@ -241,22 +240,6 @@ test('the client model catalog keeps configured and previously used models when 
   }, taskModels);
 
   assert.deepEqual(merged.map((item) => item.id), ['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4', 'gpt-6-astra']);
-});
-
-test('selecting a remote model updates exactly the matching client provider entry', () => {
-  const settings = {
-    chat: { provider: 'custom', name: 'opencode_go', model: 'deepseek-v4-flash' },
-    profiles: [
-      { id: 'llm-profile-openai-oauth', provider: 'openai', auth_mode: 'oauth', model: 'gpt-5.6-sol' },
-      { id: 'llm-profile-router', provider: 'custom', name: 'router', model: 'deepseek-v4-flash' },
-    ],
-  };
-  const next = settingsWithProviderModel(settings, 'llm-profile-openai-oauth', 'gpt-6-astra');
-
-  assert.equal(next.profiles[0].model, 'gpt-6-astra');
-  assert.equal(next.profiles[1].model, 'deepseek-v4-flash');
-  assert.equal(settings.profiles[0].model, 'gpt-5.6-sol');
-  assert.equal(settingsWithProviderModel(settings, 'missing', 'gpt-6-astra'), null);
 });
 
 test('a model the runtime list does not know stays selectable', () => {

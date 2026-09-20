@@ -96,7 +96,6 @@ import {
   modelOptionsFromTasks,
   providerOptionsFromSettings,
   resolveRunConfig,
-  settingsWithProviderModel,
   taskOptionsForRunConfig,
 } from './run-config.js';
 import { isCurrentTaskRunning, isFailureStatus } from './task-stream.js';
@@ -449,22 +448,35 @@ function ProjectPicker({ projects, onChoose, onClose }) {
   );
 }
 
-function RunConfigSheet({ config, agentLabel, agentLocked, agents, providers, models, modelLoading, syncing, syncError, onChange, onProviderChange, onModelChange, onClose }) {
+function RunConfigSheet({ config, agentLabel, agentLocked, agents, providers, models, modelLoading, onChange, onClose }) {
   const [activeField, setActiveField] = useState(null);
+
+  function changeProvider(providerId) {
+    const provider = providers.find((item) => item.id === providerId);
+    if (!provider) return;
+    onChange((current) => ({
+      ...current,
+      providerId,
+      modelId: provider.defaultModelId || provider.models[0]?.id || '',
+      thinking: THINKING_OPTIONS.some((item) => item.id === provider.reasoningEffort)
+        ? provider.reasoningEffort
+        : current.thinking,
+    }));
+  }
 
   const fields = [
     // agent 只在会话还没发过消息时能换：runtime 在首个被接受的 chat turn 上写死绑定，之后
     // 再换一定 400。锁着的时候显示服务端记着的那个 agent（见 agent-binding.js）。
     { id: 'agent', label: 'Agent', value: config.agentId, displayValue: agentLabel, options: agents, locked: agentLocked, change: (value) => onChange((current) => ({ ...current, agentId: value })) },
-    { id: 'provider', label: 'Provider', value: config.providerId, options: providers, change: onProviderChange, disabled: syncing },
-    { id: 'model', label: 'Model', value: config.modelId, options: models, change: onModelChange, disabled: syncing || modelLoading || !models.length },
+    { id: 'provider', label: 'Provider', value: config.providerId, options: providers, change: changeProvider },
+    { id: 'model', label: 'Model', value: config.modelId, options: models, change: (value) => onChange((current) => ({ ...current, modelId: value })), disabled: modelLoading || !models.length },
   ];
 
   return (
     <div className="sheet-scrim" role="presentation" onClick={onClose}>
       <section className="run-config-sheet" role="dialog" aria-modal="true" aria-labelledby="run-config-title" onClick={(event) => event.stopPropagation()}>
         <div className="sheet-handle" />
-        <div className="run-config-heading"><h2 id="run-config-title">Run configuration</h2><p>{syncing ? 'Syncing model selection to Haish…' : 'Applies to the next task in this conversation and syncs to Haish.'}</p>{syncError ? <p className="run-config-sync-error" role="alert">{syncError}</p> : null}</div>
+        <div className="run-config-heading"><h2 id="run-config-title">Run configuration</h2><p>Applies to the next task in this conversation.</p></div>
         <div className="run-config-fields">
           {fields.map((field) => {
             const open = activeField === field.id;
@@ -836,12 +848,9 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   const [taskRuntimes, setTaskRuntimes] = useState({});
   const [agents, setAgents] = useState([]);
   const [providers, setProviders] = useState([]);
-  const [llmSettings, setLlmSettings] = useState(null);
   const [runConfig, setRunConfig] = useState(null);
   const [models, setModels] = useState([]);
   const [modelLoading, setModelLoading] = useState(false);
-  const [modelSyncing, setModelSyncing] = useState(false);
-  const [modelSyncError, setModelSyncError] = useState('');
   const [showReasoningPicker, setShowReasoningPicker] = useState(false);
   const [showRunConfig, setShowRunConfig] = useState(false);
   const messageScrollRef = useRef(null);
@@ -865,8 +874,6 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   const liveRunFrameRef = useRef(0);
   const liveRunQuietTimerRef = useRef(0);
   const runConfigRef = useRef(null);
-  const llmSettingsRef = useRef(null);
-  const modelSyncRequestRef = useRef(0);
   const loadedTraceIdsRef = useRef(new Set());
   const hasMessageRef = useRef(false);
   const textareaFitSchedulerRef = useRef(null);
@@ -908,8 +915,6 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     if (!liveRunFrameRef.current && !liveRunQuietTimerRef.current) liveRunRef.current = liveRun;
   }, [liveRun]);
   useEffect(() => { runConfigRef.current = runConfig; }, [runConfig]);
-  useEffect(() => { llmSettingsRef.current = llmSettings; }, [llmSettings]);
-  useEffect(() => () => { modelSyncRequestRef.current += 1; }, []);
   useEffect(() => { composerImagesRef.current = composerImages; }, [composerImages]);
   useEffect(() => { optimisticUserMessagesRef.current = optimisticUserMessages; }, [optimisticUserMessages]);
   useEffect(() => { onBackRef.current = onBack; }, [onBack]);
@@ -1043,17 +1048,12 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   useEffect(() => {
     let cancelled = false;
     setRunConfig(null);
-    setLlmSettings(null);
-    setModelSyncing(false);
-    setModelSyncError('');
-    modelSyncRequestRef.current += 1;
     setShowReasoningPicker(false);
     setShowRunConfig(false);
     Promise.all([api.agents(), api.llmSettings()])
       .then(([agentPayload, llmPayload]) => {
         if (cancelled) return;
         setAgents(agentOptionsFromPayload(agentPayload));
-        setLlmSettings(llmPayload);
         setProviders(providerOptionsFromSettings(llmPayload));
       })
       .catch((nextError) => {
@@ -1096,51 +1096,6 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
       });
     return () => { cancelled = true; };
   }, [providers, runConfig?.providerId, modelCatalogTasks]);
-
-  const syncProviderModel = useCallback(async (providerId, modelId, optimisticConfig) => {
-    const previousConfig = runConfigRef.current;
-    const nextSettings = settingsWithProviderModel(llmSettingsRef.current, providerId, modelId);
-    if (!previousConfig || !nextSettings) {
-      setModelSyncError('This provider is no longer available in Haish settings. Refresh and try again.');
-      return;
-    }
-    const requestId = modelSyncRequestRef.current + 1;
-    modelSyncRequestRef.current = requestId;
-    setModelSyncError('');
-    setModelSyncing(true);
-    setRunConfig(optimisticConfig);
-    try {
-      const saved = await api.updateLlmSettings(nextSettings);
-      if (modelSyncRequestRef.current !== requestId) return;
-      const nextProviders = providerOptionsFromSettings(saved);
-      if (!nextProviders.some((item) => item.id === providerId)) throw new Error('Haish removed the selected provider while saving.');
-      setLlmSettings(saved);
-      setProviders(nextProviders);
-      setRunConfig((current) => current && current.providerId === providerId ? { ...current, modelId } : current);
-    } catch (nextError) {
-      if (modelSyncRequestRef.current !== requestId) return;
-      setRunConfig(previousConfig);
-      setModelSyncError(nextError?.message || 'Could not sync the model selection to Haish.');
-    } finally {
-      if (modelSyncRequestRef.current === requestId) setModelSyncing(false);
-    }
-  }, []);
-
-  const changeRunProvider = useCallback((providerId) => {
-    if (modelSyncing) return;
-    const provider = providers.find((item) => item.id === providerId);
-    if (!provider) return;
-    const modelId = provider.defaultModelId || provider.models[0]?.id || '';
-    const thinking = THINKING_OPTIONS.some((item) => item.id === provider.reasoningEffort)
-      ? provider.reasoningEffort
-      : runConfigRef.current?.thinking;
-    syncProviderModel(providerId, modelId, { ...runConfigRef.current, providerId, modelId, thinking });
-  }, [modelSyncing, providers, syncProviderModel]);
-
-  const changeRunModel = useCallback((modelId) => {
-    if (modelSyncing || !runConfigRef.current) return;
-    syncProviderModel(runConfigRef.current.providerId, modelId, { ...runConfigRef.current, modelId });
-  }, [modelSyncing, syncProviderModel]);
 
   const activeTask = useMemo(() => {
     const tasks = conversation?.tasks || [];
@@ -1786,7 +1741,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
           </div>
         </section>
       </div> : null}
-      {showRunConfig && runConfig ? <RunConfigSheet config={runConfig} agentLabel={conversation?.profile_display_name} agentLocked={agentLocked} agents={agents} providers={providers} models={models} modelLoading={modelLoading} syncing={modelSyncing} syncError={modelSyncError} onChange={setRunConfig} onProviderChange={changeRunProvider} onModelChange={changeRunModel} onClose={() => setShowRunConfig(false)} /> : null}
+      {showRunConfig && runConfig ? <RunConfigSheet config={runConfig} agentLabel={conversation?.profile_display_name} agentLocked={agentLocked} agents={agents} providers={providers} models={models} modelLoading={modelLoading} onChange={setRunConfig} onClose={() => setShowRunConfig(false)} /> : null}
       <ImagePreview image={previewImage} onClose={() => setPreviewImage(null)} />
     </main>
   );

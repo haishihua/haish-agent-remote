@@ -88,27 +88,6 @@ export function mergeProviderModels(provider, catalog, taskModels = [], currentM
   );
 }
 
-export function settingsWithProviderModel(settings, providerId, modelId) {
-  const id = String(providerId || '').trim();
-  const model = String(modelId || '').trim();
-  if (!settings || typeof settings !== 'object' || !id || !model) return null;
-  const providers = providerOptionsFromSettings(settings);
-  const providerIndex = providers.findIndex((item) => item.id === id);
-  if (providerIndex < 0) return null;
-  const next = {
-    ...settings,
-    chat: settings.chat && typeof settings.chat === 'object' ? { ...settings.chat } : {},
-    profiles: Array.isArray(settings.profiles) ? settings.profiles.map((profile) => ({ ...profile })) : [],
-  };
-  if (providerIndex === 0 && settings.chat?.provider) next.chat.model = model;
-  else {
-    const profileIndex = providerIndex - (settings.chat?.provider ? 1 : 0);
-    if (!next.profiles[profileIndex]) return null;
-    next.profiles[profileIndex].model = model;
-  }
-  return next;
-}
-
 export function agentOptionsFromPayload(payload) {
   return (Array.isArray(payload) ? payload : payload?.agents || []).map((item) => ({
     id: String(item?.agent_id || item?.id || item?.profile_id || '').trim(),

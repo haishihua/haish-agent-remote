@@ -285,7 +285,7 @@ class RemoteProxyTest(unittest.TestCase):
         self.assertTrue(_route_allowed("GET", "projects"))
         self.assertTrue(_route_allowed("GET", "agents"))
         self.assertTrue(_route_allowed("GET", "settings/llm"))
-        self.assertTrue(_route_allowed("PUT", "settings/llm"))
+        self.assertFalse(_route_allowed("PUT", "settings/llm"))
         self.assertTrue(_route_allowed("POST", "llm/models"))
         self.assertTrue(_route_allowed("POST", "messages/images"))
         self.assertTrue(_route_allowed("GET", "conversations/abc/messages/images/preview"))
@@ -308,21 +308,23 @@ class RemoteProxyTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             app = create_app(data_dir=Path(directory), dist_dir=Path(directory))
             client = TestClient(app)
-            for path, method in (
-                ("/api/conversations/conversation-1", "PATCH"),
-                ("/api/settings/llm", "PUT"),
-            ):
-                with self.subTest(method=method):
-                    response = client.options(
-                        path,
-                        headers={
-                            "Origin": "capacitor://localhost",
-                            "Access-Control-Request-Method": method,
-                            "Access-Control-Request-Headers": "authorization,content-type",
-                        },
-                    )
-                    self.assertEqual(response.status_code, 200)
-                    self.assertIn(method, response.headers["access-control-allow-methods"])
+            path, method = "/api/conversations/conversation-1", "PATCH"
+            response = client.options(
+                path,
+                headers={
+                    "Origin": "capacitor://localhost",
+                    "Access-Control-Request-Method": method,
+                    "Access-Control-Request-Headers": "authorization,content-type",
+                },
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertIn(method, response.headers["access-control-allow-methods"])
+
+    def test_remote_proxy_rejects_global_llm_settings_writes(self):
+        with TemporaryDirectory() as directory:
+            client, headers = self._client(Path(directory))
+            response = client.put("/api/settings/llm", headers=headers, json={"profiles": []})
+            self.assertEqual(response.status_code, 403)
 
     def test_stopped_runtime_is_reported_as_unavailable(self):
         with TemporaryDirectory() as directory:

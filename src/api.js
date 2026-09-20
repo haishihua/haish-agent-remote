@@ -112,10 +112,6 @@ export const api = {
     }
   },
   llmSettings: () => request('/api/settings/llm'),
-  updateLlmSettings: (settings) => request('/api/settings/llm', {
-    method: 'PUT',
-    body: JSON.stringify(settings),
-  }),
   providerModels: async (provider) => {
     const body = {
       provider: provider.provider,

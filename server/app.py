@@ -87,10 +87,9 @@ _ALLOWED_CORE_ROUTES: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("PATCH", r"conversations/[^/]+"),
         ("GET", r"projects"),
         ("GET", r"agents"),
+        # Remote clients may read the provider catalog to build per-task options,
+        # but must never mutate the desktop's global LLM settings.
         ("GET", r"settings/llm"),
-        # The remote picker persists the selected model through the runtime's
-        # canonical settings API so desktop and phone read the same provider entry.
-        ("PUT", r"settings/llm"),
         ("POST", r"llm/models"),
         ("POST", r"messages/images"),
         ("GET", r"conversations/[^/]+"),
@@ -822,10 +821,7 @@ def create_app(*, data_dir: Path | None = None, dist_dir: Path | None = None) ->
         CORSMiddleware,
         allow_origins=["capacitor://localhost", "https://localhost"],
         allow_credentials=False,
-        # Provider/model changes use the runtime's canonical PUT /api/settings/llm endpoint.
-        # Starlette rejects the WebView preflight before the allowlisted proxy route runs unless
-        # PUT is declared here as well (the installed 0.2.0 adapter surfaced that as “Load failed”).
-        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Accept", "Authorization", "Content-Type"],
     )
     app.state.device_store = store
