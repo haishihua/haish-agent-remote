@@ -192,7 +192,18 @@ function fakeViewport() {
   };
 }
 
-function controllerFor({ region, dock, scroller, viewportHeight = 852, listeners = new Map(), writes = [], viewport = null, supportsEasing = () => true }) {
+function controllerFor({
+  region,
+  dock,
+  scroller,
+  viewportHeight = 852,
+  listeners = new Map(),
+  writes = [],
+  viewport = null,
+  supportsEasing = () => true,
+  requestFrame = (callback) => { callback(); return 1; },
+  cancelFrame = () => {},
+}) {
   const controller = createKeyboardInsetController({
     native: true,
     keyboard: {
@@ -211,6 +222,8 @@ function controllerFor({ region, dock, scroller, viewportHeight = 852, listeners
     readRect: (element) => ({ bottom: element.bottom }),
     readViewportHeight: () => viewportHeight,
     viewport,
+    requestFrame,
+    cancelFrame,
     supportsEasing,
   });
   return { controller, listeners, writes };
@@ -572,7 +585,7 @@ test('a duration that is missing or absurd leaves the last known one alone', asy
   await null;
 
   // 收起时没带时长（报了个 0）：沿用上一把键盘的 400，不退回默认的 250。
-  viewport.dispatch(KEYBOARD_FRAME_EVENT, { detail: { height: 0, duration: 0 } });
+  viewport.dispatch(KEYBOARD_FRAME_EVENT, { detail: { height: 0, duration: 0, dismissal: true } });
   assert.equal(dock.animations.at(-1).options.duration, 400);
   assert.equal(dock.animations.at(-1).keyframes.at(-1).transform, 'translate3d(0, 306px, 0)');
   controller.stop();
@@ -601,7 +614,7 @@ test('the frame the app forwards is what tells the layout the keyboard changed',
 
   // 键盘离开屏幕（收起时 iOS 把 frame 挪到屏幕外，报 0）：和 `keyboardWillHide` 是一回事，
   // 这一趟把已经写在布局里的 431 放回去。
-  viewport.dispatch(KEYBOARD_FRAME_EVENT, { detail: { height: 0 } });
+  viewport.dispatch(KEYBOARD_FRAME_EVENT, { detail: { height: 0, dismissal: true } });
   assert.equal(dock.composerClasses.has('expanded'), false, 'native frame dismissal compacts before the keyboard travels');
   assert.deepEqual(travelKeyframes(dock).at(-1).transform, 'translate3d(0, 401px, 0)');
   listeners.get('keyboardDidHide')();
@@ -609,6 +622,92 @@ test('the frame the app forwards is what tells the layout the keyboard changed',
   // 会话关掉就把监听收回：回到目录页之后不再有人往这一层报键盘。
   controller.stop();
   assert.deepEqual(viewport.listening, []);
+});
+
+test('rapid keyboard-switch frames coalesce to the latest height before layout work starts', async () => {
+  const region = fakeTraveler();
+  const dock = fakeDock();
+  const scroller = fakeScroll({ contentHeight: 4000, viewportHeight: 585, scrollTop: 3415 });
+  const viewport = fakeViewport();
+  const frames = [];
+  const cancelled = [];
+  const { controller } = controllerFor({
+    region,
+    dock,
+    scroller,
+    viewport,
+    requestFrame: (callback) => { frames.push(callback); return 51; },
+    cancelFrame: (frame) => cancelled.push(frame),
+  });
+  await controller.start();
+
+  // Third-party keyboard replacement may report transient geometry several times in one display
+  // frame. None may start/cancel an animation until the latest target is known.
+  viewport.dispatch(KEYBOARD_FRAME_EVENT, { detail: { height: 336, duration: 0.25 } });
+  viewport.dispatch(KEYBOARD_FRAME_EVENT, { detail: { height: 402, duration: 0.25 } });
+  viewport.dispatch(KEYBOARD_FRAME_EVENT, { detail: { height: 431, duration: 0.35 } });
+  assert.equal(frames.length, 1);
+  assert.equal(region.animations.length, 0);
+  assert.equal(dock.animations.length, 0);
+
+  frames[0]();
+  assert.equal(region.animations.length, 1);
+  assert.deepEqual(travelKeyframes(region), [
+    { transform: 'translate3d(0, 0px, 0)' },
+    { transform: 'translate3d(0, -401px, 0)' },
+  ]);
+  assert.equal(region.animations[0].options.duration, 350);
+  controller.stop();
+  assert.deepEqual(cancelled, []);
+});
+
+test('a transient zero frame during input-method replacement does not collapse the focused composer', async () => {
+  const region = fakeTraveler();
+  const dock = fakeDock();
+  const scroller = fakeScroll({ contentHeight: 4000, viewportHeight: 585, scrollTop: 3415 });
+  const viewport = fakeViewport();
+  const frames = [];
+  const { controller, listeners, writes } = controllerFor({
+    region,
+    dock,
+    scroller,
+    viewport,
+    requestFrame: (callback) => { frames.push(callback); return frames.length; },
+  });
+  await controller.start();
+  listeners.get('keyboardWillShow')({ keyboardHeight: 336 });
+  await null;
+  listeners.get('keyboardDidShow')({ keyboardHeight: 336 });
+  assert.equal(dock.composerClasses.has('expanded'), true);
+
+  viewport.dispatch(KEYBOARD_FRAME_EVENT, { detail: { height: 0, dismissal: false } });
+  assert.equal(dock.composerClasses.has('expanded'), true);
+  assert.deepEqual(writes.slice(-2), [[KEYBOARD_INSET_VAR, '336px'], [KEYBOARD_LIFT_VAR, '306px']]);
+  assert.equal(frames.length, 0);
+  controller.stop();
+});
+
+test('stopping cancels keyboard geometry queued for the next animation frame', async () => {
+  const region = fakeTraveler();
+  const dock = fakeDock();
+  const scroller = fakeScroll({ contentHeight: 4000, viewportHeight: 585, scrollTop: 3415 });
+  const viewport = fakeViewport();
+  const frames = [];
+  const cancelled = [];
+  const { controller } = controllerFor({
+    region,
+    dock,
+    scroller,
+    viewport,
+    requestFrame: (callback) => { frames.push(callback); return 77; },
+    cancelFrame: (frame) => cancelled.push(frame),
+  });
+  await controller.start();
+  viewport.dispatch(KEYBOARD_FRAME_EVENT, { detail: { height: 431 } });
+  controller.stop();
+
+  assert.deepEqual(cancelled, [77]);
+  assert.equal(region.animations.length, 0);
 });
 
 test('the browser leaves the keyboard to the browser', async () => {

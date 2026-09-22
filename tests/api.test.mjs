@@ -60,6 +60,31 @@ test('pairing submits only the code because the server identifies the remote dev
   }
 });
 
+test('conversation reads use the adapter canonical read-marker endpoints', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (path, init = {}) => {
+    calls.push([path, init.method || 'GET', init.body ? JSON.parse(init.body) : null]);
+    return new Response(JSON.stringify(path.endsWith('conversation-1')
+      ? { conversation_id: 'conversation-1', seen_at_ms: 1234 }
+      : { seen_at: { 'conversation-1': 1234 } }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+
+  try {
+    assert.deepEqual(await api.conversationReads(), { seen_at: { 'conversation-1': 1234 } });
+    assert.equal((await api.markConversationRead('conversation-1', 1234)).seen_at_ms, 1234);
+    assert.deepEqual(calls, [
+      ['/remote/conversation-reads', 'GET', null],
+      ['/remote/conversation-reads/conversation-1', 'PUT', { seen_at_ms: 1234 }],
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('image uploads and task starts use the desktop image attachment protocol', async () => {
   const originalFetch = globalThis.fetch;
   const calls = [];

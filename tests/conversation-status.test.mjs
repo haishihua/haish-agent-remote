@@ -7,6 +7,7 @@ import {
   conversationTerminalNotice,
   loadConversationSeenAt,
   markConversationSeen,
+  mergeConversationSeenAt,
   saveConversationSeenAt,
   seedConversationSeenAt,
   taskSettledAt,
@@ -134,6 +135,19 @@ test('the seen-at table seeds new conversations at “now” and leaves known on
   assert.equal(seedConversationSeenAt(seenAt, ['c1'], SEEN_AFTER), seenAt, '一个都没新增时原样返回');
   assert.equal(seedConversationSeenAt(seenAt, null, SEEN_AFTER), seenAt);
   assert.equal(seedConversationSeenAt(undefined, ['c1'], SEEN_AFTER).c1, SEEN_AFTER);
+});
+
+test('shared read cursors merge monotonically across desktop and remote clients', () => {
+  const seenAt = { c1: SEEN_AFTER, c2: SEEN_BEFORE };
+  const merged = mergeConversationSeenAt(seenAt, {
+    c1: SEEN_BEFORE,
+    c2: SEEN_AFTER,
+    c3: DONE_AT,
+    bad: 'not-a-time',
+  });
+  assert.deepEqual(merged, { c1: SEEN_AFTER, c2: SEEN_AFTER, c3: DONE_AT });
+  assert.equal(mergeConversationSeenAt(merged, { c1: SEEN_BEFORE }), merged);
+  assert.equal(mergeConversationSeenAt(merged, null), merged);
 });
 
 test('marking a conversation seen moves its stamp, and the table survives a reload', () => {

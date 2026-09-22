@@ -200,6 +200,11 @@ export const api = {
     method: 'POST',
     body: JSON.stringify({ answers }),
   }),
+  conversationReads: () => request('/remote/conversation-reads'),
+  markConversationRead: (conversationId, seenAtMs = Date.now()) => request(
+    `/remote/conversation-reads/${encodeURIComponent(conversationId)}`,
+    { method: 'PUT', body: JSON.stringify({ seen_at_ms: seenAtMs }) },
+  ),
   devices: () => request('/remote/devices'),
   revokeDevice: (id) => request(`/remote/devices/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   logout: async () => {

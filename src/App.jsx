@@ -41,7 +41,7 @@ import {
   pickImagesFromLibrary,
   remainingImageSlots,
 } from './photo-picker.js';
-import { createComposerTextareaFitScheduler } from './composer-height.js';
+import { createComposerTextareaFitScheduler, createComposerViewportResizeHandler } from './composer-height.js';
 import { composerInputQuietDelay, isComposerInputActive, markComposerInputActivity } from './composer-input-activity.js';
 import { hideKeyboardAccessoryBar, isKeyboardMoving, mountKeyboardInset, registerKeyboardSurface } from './ios-keyboard.js';
 import penguinLogo from './assets/penguin_logo_user.png';
@@ -116,6 +116,7 @@ import {
   conversationStatusSlot,
   loadConversationSeenAt,
   markConversationSeen,
+  mergeConversationSeenAt,
   saveConversationSeenAt,
   seedConversationSeenAt,
 } from './conversation-status.js';
@@ -876,7 +877,9 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   const runConfigRef = useRef(null);
   const loadedTraceIdsRef = useRef(new Set());
   const hasMessageRef = useRef(false);
+  const composerComposingRef = useRef(false);
   const textareaFitSchedulerRef = useRef(null);
+  const composerResizeHandlerRef = useRef(null);
   if (!textareaFitSchedulerRef.current) textareaFitSchedulerRef.current = createComposerTextareaFitScheduler();
 
   // 流式回答是一串很密的事件（每几个字一条）：一条一条 setState 就是每几个字把整页重渲染一次，
@@ -921,6 +924,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   useEffect(() => {
     if (messageInputRef.current) messageInputRef.current.value = '';
     hasMessageRef.current = false;
+    composerComposingRef.current = false;
     setHasMessage(false);
   }, [id]);
 
@@ -930,9 +934,20 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     textareaFitSchedulerRef.current.schedule(messageInputRef.current, { force: true });
   }, [id, runConfig, showReasoningPicker]);
   useEffect(() => {
-    const fit = () => textareaFitSchedulerRef.current.schedule(messageInputRef.current, { force: true });
+    // Native keyboard and input-method transitions may resize only the viewport height. Text wraps
+    // by width, so forcing `height: auto` for those events is pure layout churn and can displace
+    // WebKit's marked text/caret. Re-fit only after an actual width change (for example rotation).
+    const fit = createComposerViewportResizeHandler({
+      getTextarea: () => messageInputRef.current,
+      schedule: (textarea, options) => textareaFitSchedulerRef.current.schedule(textarea, options),
+      shouldSchedule: () => !composerComposingRef.current,
+    });
+    composerResizeHandlerRef.current = fit;
     window.addEventListener('resize', fit);
-    return () => window.removeEventListener('resize', fit);
+    return () => {
+      window.removeEventListener('resize', fit);
+      if (composerResizeHandlerRef.current === fit) composerResizeHandlerRef.current = null;
+    };
   }, []);
   useEffect(() => () => {
     textareaFitSchedulerRef.current.cancel();
@@ -1656,9 +1671,28 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
           <textarea ref={messageInputRef} id="task-message" rows={1} disabled={busy} onPointerDown={activateComposer} onFocus={activateComposer} onBlur={(event) => {
             // Programmatic/native resignFirstResponder can arrive without a click on the thread.
             // Keep the DOM shell in sync even if iOS omits one of its keyboard callbacks.
+            composerComposingRef.current = false;
             event.currentTarget.form?.classList.remove('expanded');
+          }} onCompositionStart={() => {
+            composerComposingRef.current = true;
+            markComposerInputActivity();
+          }} onCompositionEnd={(event) => {
+            composerComposingRef.current = false;
+            markComposerInputActivity();
+            const nextHasMessage = Boolean(event.currentTarget.value.trim());
+            if (nextHasMessage !== hasMessageRef.current) {
+              hasMessageRef.current = nextHasMessage;
+              setHasMessage(nextHasMessage);
+            }
+            textareaFitSchedulerRef.current.schedule(event.currentTarget);
+            // If the device rotated during composition, apply the deferred width fit now that
+            // WebKit has committed marked text and owns a stable selection again.
+            composerResizeHandlerRef.current?.();
           }} onChange={(event) => {
             markComposerInputActivity();
+            // While an IME owns marked text, do not write textarea height or trigger the empty/non-
+            // empty React boundary. Both can make WebKit rebuild the editable box and move its caret.
+            if (event.nativeEvent.isComposing || composerComposingRef.current) return;
             const nextHasMessage = Boolean(event.currentTarget.value.trim());
             if (nextHasMessage !== hasMessageRef.current) {
               hasMessageRef.current = nextHasMessage;
@@ -1830,14 +1864,28 @@ export default function App() {
   const approvalsSignatureRef = useRef('');
   const seenAtRef = useRef(seenAt);
 
-  // 进会话与离开会话都把「看过」推到当下：行尾的终态点跟着灭（桌面「看过就熄灯」那条规矩）。
-  const markSeen = useCallback((conversationId) => {
-    if (!conversationId) return;
-    const next = markConversationSeen(seenAtRef.current, conversationId, Date.now());
+  const applySeenAt = useCallback((incoming) => {
+    const next = mergeConversationSeenAt(seenAtRef.current, incoming);
+    if (next === seenAtRef.current) return next;
     seenAtRef.current = next;
+    // Keep this cache only as an offline/bootstrap fallback. The adapter table is the canonical
+    // cross-client marker and is merged into this projection on every directory refresh.
     saveConversationSeenAt(window.localStorage, next);
     setSeenAt(next);
+    return next;
   }, []);
+
+  // 进会话与离开会话都把「看过」推到当下：先本地熄灯，再异步写同一份 Adapter 游标供桌面读取。
+  const markSeen = useCallback((conversationId) => {
+    if (!conversationId) return;
+    const now = Date.now();
+    applySeenAt(markConversationSeen(seenAtRef.current, conversationId, now));
+    api.markConversationRead(conversationId, now).then((result) => {
+      applySeenAt({ [conversationId]: result?.seen_at_ms });
+    }).catch(() => {
+      // The local projection still behaves offline; a later directory refresh merges the server.
+    });
+  }, [applySeenAt]);
 
   const loadStatus = useCallback(async () => {
     const next = await api.status();
@@ -1880,7 +1928,11 @@ export default function App() {
 
   const loadTasks = useCallback(async () => {
     try {
-      const projectsResponse = await api.projects();
+      const [projectsResponse, readResponse] = await Promise.all([
+        api.projects(),
+        api.conversationReads().catch(() => null),
+      ]);
+      applySeenAt(readResponse?.seen_at);
       // The directory answered: whatever the previous attempt reported is stale now.
       directoryErrorRef.current = false;
       setFatalError('');
@@ -1911,7 +1963,7 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, [loadStatus]);
+  }, [applySeenAt, loadStatus]);
 
   // What the 5s poll does, and what a pull-down on the directory runs: the list is the one
   // screen whose own failure has no other way back.

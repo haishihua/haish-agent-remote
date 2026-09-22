@@ -141,5 +141,19 @@ export function seedConversationSeenAt(seenAt, conversationIds, now) {
 export function markConversationSeen(seenAt, conversationId, now) {
   const id = String(conversationId || '');
   if (!id) return seenAt;
-  return { ...seenAt, [id]: now };
+  return mergeConversationSeenAt(seenAt, { [id]: now });
+}
+
+/** Merge the adapter's canonical cursors without letting a stale poll move any cursor backwards. */
+export function mergeConversationSeenAt(seenAt, incoming) {
+  const current = seenAt && typeof seenAt === 'object' ? seenAt : {};
+  if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) return current;
+  let next = current;
+  for (const [conversationId, value] of Object.entries(incoming)) {
+    const at = Number(value);
+    if (!conversationId || !Number.isFinite(at) || at <= Number(current[conversationId] || 0)) continue;
+    if (next === current) next = { ...current };
+    next[conversationId] = at;
+  }
+  return next;
 }

@@ -26,7 +26,11 @@ test('the native controller forwards keyboard frames directly to the WebView', a
   ]);
 
   assert.match(controller, /keyboardWillChangeFrameNotification/);
+  assert.match(controller, /keyboardWillHideNotification/);
+  assert.match(controller, /forwardKeyboardFrame\(notification, dismissal: false\)/);
+  assert.match(controller, /forwardKeyboardFrame\(notification, dismissal: true\)/);
   assert.match(controller, /webView\.evaluateJavaScript\("window\.dispatchEvent\(new CustomEvent\('haishKeyboardFrame'/);
+  assert.ok(controller.includes('dismissal: \\(dismissal)'));
   assert.match(controller, /keyboardAnimationDurationUserInfoKey/);
   assert.doesNotMatch(delegate, /selector: #selector\(keyboardWillChangeFrame/);
   assert.doesNotMatch(delegate, /bridge\.eval\(js:/);

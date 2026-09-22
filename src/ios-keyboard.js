@@ -97,9 +97,10 @@ export const KEYBOARD_MOTION_CLASS = 'keyboard-moving';
 /**
  * AppDelegate 转发的键盘 frame 事件（`UIKeyboardWillChangeFrameNotification`）。
  *
- * `detail.height` 是键盘在屏幕上真正盖住的高度（点），0 表示键盘已经离开屏幕（收起时 iOS 就是把 frame
- * 挪到屏幕外）；`detail.duration` 是这一趟的动画时长（秒，`UIKeyboardAnimationDurationUserInfoKey`，插件
- * 不报它）。名字要和 ios/App/App/HaishBridgeViewController.swift 里的一致——构建会核原生与 Web 两端。
+ * `detail.height` 是键盘在屏幕上真正盖住的高度（点）；切换输入法时它可以瞬时为 0，所以只有来自独立
+ * `UIKeyboardWillHideNotification` 的 `detail.dismissal` 才表示收起。`detail.duration` 是这一趟的动画时长
+ * （秒，`UIKeyboardAnimationDurationUserInfoKey`，插件不报它）。名字要和
+ * ios/App/App/HaishBridgeViewController.swift 里的一致——构建会核原生与 Web 两端。
  */
 export const KEYBOARD_FRAME_EVENT = 'haishKeyboardFrame';
 /**
@@ -227,6 +228,8 @@ export function createKeyboardInsetController({
   readRect = (element) => element.getBoundingClientRect(),
   readViewportHeight = () => window.innerHeight,
   viewport = typeof window === 'undefined' ? null : window,
+  requestFrame = (callback) => requestAnimationFrame(callback),
+  cancelFrame = (frame) => cancelAnimationFrame(frame),
   motionMs = KEYBOARD_MOTION_MS,
   supportsEasing = defaultSupportsEasing,
   setComposerExpanded = (dock, expanded) => dock?.querySelector?.('.composer')?.classList?.toggle(KEYBOARD_COMPOSER_EXPANDED_CLASS, expanded),
@@ -242,6 +245,8 @@ export function createKeyboardInsetController({
   let motion = null;
   let moving = false;
   let handles = [];
+  let pendingFrame = null;
+  let pendingFrameRequest = 0;
   let stopped = false;
 
   function writeInset(next) {
@@ -452,27 +457,53 @@ export function createKeyboardInsetController({
   /**
    * 原生 bridge controller 转发的键盘 frame：键盘类型切换（系统键盘 ↔ 第三方输入法、emoji、多一条提示栏）在 iOS 上
    * 常常只发 `UIKeyboardWillChangeFrameNotification`，插件订阅的 will/didShow 不会来，布局里就会留着上一把
-   * 键盘的高度——用户报的「切换键盘，输入框又往上跑」。高度交给同一套逻辑；0 表示键盘离场（收起时 iOS 把
-   * frame 挪到屏幕外），和 `keyboardWillHide` 是一回事。
+   * 键盘的高度——用户报的「切换键盘，输入框又往上跑」。高度交给同一套逻辑；切换过程里的瞬时 0 高度忽略，
+   * 只有原生独立转发的 `keyboardWillHide`（`detail.dismissal`）才表示键盘真的离场。
    */
   function compactComposer() {
     setComposerExpanded(pieces()?.dock, false);
   }
 
-  function frame(height, seconds) {
-    // 时长先记住：这条通道是唯一带着它的地方，插件那四个事件都没有。
-    durationMs = keyboardMotionMs(seconds, durationMs);
-    if (keyboardInset(height)) raise(height);
-    else {
-      // UIKit sends willChangeFrame before its dismissal animation. Compact synchronously in that
-      // same callback; waiting for React/blur leaves the large input suspended after the keyboard.
-      compactComposer();
-      lower();
-    }
+  function cancelPendingFrame() {
+    if (pendingFrameRequest) cancelFrame(pendingFrameRequest);
+    pendingFrameRequest = 0;
+    pendingFrame = null;
+  }
+
+  function flushKeyboardFrame() {
+    pendingFrameRequest = 0;
+    const next = pendingFrame;
+    pendingFrame = null;
+    if (next) raise(next.height);
   }
 
   function onKeyboardFrame(event) {
-    frame(event?.detail?.height, event?.detail?.duration);
+    const detail = event?.detail || {};
+    // Remember duration synchronously so a duplicate Capacitor will-show event in this turn uses
+    // UIKit's value even though the geometry work below waits until the next paint.
+    durationMs = keyboardMotionMs(detail.duration, durationMs);
+    const height = keyboardInset(detail.height);
+    if (detail.dismissal) {
+      // A dedicated keyboardWillHide notification is the only zero frame that means dismissal.
+      // Input-method switches and floating keyboards can transiently report zero while the same
+      // textarea remains first responder; collapsing there moves both the editor and its caret.
+      cancelPendingFrame();
+      compactComposer();
+      lower();
+      return;
+    }
+    if (!height) return;
+    // UIKit can report several intermediate frames while changing input methods. Starting and
+    // cancelling a Web Animation for every callback forces transform/layout reads on the main
+    // thread. Keep only the newest positive target for this display frame.
+    pendingFrame = { height };
+    if (!pendingFrameRequest) {
+      // The real requestAnimationFrame is asynchronous; keeping this sentinel also makes injected
+      // synchronous schedulers preserve the same state transition in unit tests.
+      pendingFrameRequest = -1;
+      const frameRequest = requestFrame(flushKeyboardFrame);
+      if (pendingFrameRequest === -1) pendingFrameRequest = frameRequest;
+    }
   }
 
   // 落地事件自己带着高度：`willShow` 整个丢掉时直接落地，不补一段已经过时的动画。
@@ -507,6 +538,7 @@ export function createKeyboardInsetController({
         pinDocumentOffset();
       }],
       ['keyboardWillHide', () => {
+        cancelPendingFrame();
         compactComposer();
         lower();
       }],
@@ -532,6 +564,7 @@ export function createKeyboardInsetController({
   function stop() {
     stopped = true;
     viewport?.removeEventListener?.(KEYBOARD_FRAME_EVENT, onKeyboardFrame);
+    cancelPendingFrame();
     const active = handles;
     handles = [];
     active.forEach((handle) => handle?.remove?.());

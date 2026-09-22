@@ -11,6 +11,17 @@ test('typing keeps the draft in the textarea instead of React state', async () =
   assert.doesNotMatch(app, /value=\{message\}/);
   assert.match(app, /messageInputRef\.current\?\.value/);
   assert.match(app, /markComposerInputActivity\(\)/);
+  assert.match(app, /onCompositionStart=/);
+  assert.match(app, /onCompositionEnd=/);
+  assert.match(app, /event\.nativeEvent\.isComposing \|\| composerComposingRef\.current/);
+});
+
+test('keyboard height changes do not force textarea remeasurement', async () => {
+  const app = await read('../src/App.jsx');
+
+  assert.match(app, /createComposerViewportResizeHandler/);
+  assert.match(app, /shouldSchedule: \(\) => !composerComposingRef\.current/);
+  assert.doesNotMatch(app, /const fit = \(\) => textareaFitSchedulerRef\.current\.schedule\(messageInputRef\.current, \{ force: true \}\)/);
 });
 
 test('the first composer tap expands and focuses in the same trusted pointer event', async () => {

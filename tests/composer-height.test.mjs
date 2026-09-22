@@ -6,6 +6,7 @@ import {
   COMPOSER_TEXTAREA_MIN_HEIGHT,
   composerTextareaHeight,
   createComposerTextareaFitScheduler,
+  createComposerViewportResizeHandler,
   fitComposerTextarea,
 } from '../src/composer-height.js';
 
@@ -134,6 +135,43 @@ test('rapid textarea fits coalesce into one animation-frame measurement', () => 
   assert.deepEqual(calls, []);
   frames[0]();
   assert.deepEqual(calls, [{ textarea: latest, options: { force: true } }]);
+});
+
+test('keyboard height-only resizes do not force a textarea layout measurement', () => {
+  let width = 390;
+  const textarea = { value: 'marked text' };
+  const calls = [];
+  const resize = createComposerViewportResizeHandler({
+    readWidth: () => width,
+    getTextarea: () => textarea,
+    schedule: (...args) => calls.push(args),
+  });
+
+  assert.equal(resize(), false);
+  assert.deepEqual(calls, []);
+
+  width = 844;
+  assert.equal(resize(), true);
+  assert.deepEqual(calls, [[textarea, { force: true }]]);
+});
+
+test('a width fit waits until IME composition has committed', () => {
+  let width = 390;
+  let composing = true;
+  const calls = [];
+  const resize = createComposerViewportResizeHandler({
+    readWidth: () => width,
+    getTextarea: () => ({ value: '拼音' }),
+    schedule: (...args) => calls.push(args),
+    shouldSchedule: () => !composing,
+  });
+
+  width = 844;
+  assert.equal(resize(), false);
+  assert.deepEqual(calls, []);
+  composing = false;
+  assert.equal(resize(), true);
+  assert.equal(calls.length, 1);
 });
 
 test('cancelling a scheduled textarea fit drops its pending layout read', () => {

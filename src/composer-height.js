@@ -110,3 +110,35 @@ export function createComposerTextareaFitScheduler({
 
   return { schedule, flush, cancel };
 }
+
+/**
+ * A native keyboard transition can emit `window.resize` even though only the viewport height
+ * changed. Re-fitting the textarea for those events writes `height: auto` and synchronously reads
+ * `scrollHeight` while WebKit is also maintaining marked text and the caret. Only a viewport-width
+ * change can alter wrapping, so remember that cheap scalar and force a fit only when it changes.
+ */
+export function createComposerViewportResizeHandler({
+  readWidth = () => window.innerWidth,
+  getTextarea = () => null,
+  schedule = () => {},
+  shouldSchedule = () => true,
+} = {}) {
+  const measuredWidth = () => {
+    const value = Number(readWidth());
+    return Number.isFinite(value) ? Math.round(value) : null;
+  };
+  let width = measuredWidth();
+
+  return function handleViewportResize() {
+    const next = measuredWidth();
+    if (next === null || next === width) return false;
+    // Keep the old width while the caller is in an IME composition. Calling this handler again at
+    // compositionend will then perform the deferred forced fit with no extra state or timer.
+    if (!shouldSchedule()) return false;
+    width = next;
+    const textarea = getTextarea();
+    if (!textarea) return false;
+    schedule(textarea, { force: true });
+    return true;
+  };
+}

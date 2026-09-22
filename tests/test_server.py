@@ -169,6 +169,15 @@ class DeviceStoreTest(unittest.TestCase):
             self.assertTrue(store.revoke(device["device_id"]))
             self.assertIsNone(store.authenticate(token))
 
+    def test_conversation_read_markers_are_shared_and_monotonic(self):
+        with TemporaryDirectory() as directory:
+            store = DeviceStore(Path(directory) / "remote.sqlite3")
+            self.assertEqual(store.conversation_reads(), {})
+            self.assertEqual(store.mark_conversation_read("conversation-1", 2000, "phone"), 2000)
+            self.assertEqual(store.mark_conversation_read("conversation-1", 1000, "desktop"), 2000)
+            self.assertEqual(store.mark_conversation_read("conversation-1", 3000, "desktop"), 3000)
+            self.assertEqual(store.conversation_reads(), {"conversation-1": 3000})
+
     @patch.dict("server.app.os.environ", {"HAISH_REMOTE_PUBLIC_ENDPOINT": "https://47.97.24.242"})
     def test_public_endpoint_builds_the_versioned_pairing_uri(self):
         self.assertEqual(_public_endpoint(), "https://47.97.24.242")
@@ -271,6 +280,65 @@ class DeviceStoreTest(unittest.TestCase):
             response = client.delete(f"/remote/devices/{device['device_id']}")
             self.assertEqual(response.status_code, 200)
             self.assertEqual(client.get("/remote/devices").json(), {"devices": []})
+
+    def test_desktop_and_remote_device_share_conversation_read_markers(self):
+        with TemporaryDirectory() as directory:
+            app = create_app(data_dir=Path(directory), dist_dir=Path(directory))
+            store = app.state.device_store
+            token, _ = store.exchange(store.issue_pairing_code(), "iPhone")
+            client = TestClient(app)
+            headers = {"Authorization": f"Bearer {token}"}
+
+            preflight = client.options(
+                "/remote/conversation-reads/conversation-1",
+                headers={
+                    "Origin": "capacitor://localhost",
+                    "Access-Control-Request-Method": "PUT",
+                    "Access-Control-Request-Headers": "authorization,content-type",
+                },
+            )
+            self.assertEqual(preflight.status_code, 200)
+            self.assertIn("PUT", preflight.headers["access-control-allow-methods"])
+
+            response = client.put(
+                "/remote/conversation-reads/conversation-1",
+                headers=headers,
+                json={"seen_at_ms": 2000},
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["seen_at_ms"], 2000)
+            self.assertEqual(client.get("/remote/conversation-reads").json(), {
+                "seen_at": {"conversation-1": 2000},
+            })
+
+            response = client.put(
+                "/remote/conversation-reads/conversation-1",
+                json={"seen_at_ms": 3000},
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["seen_at_ms"], 3000)
+            self.assertEqual(
+                client.get("/remote/conversation-reads", headers=headers).json(),
+                {"seen_at": {"conversation-1": 3000}},
+            )
+
+            response = client.put(
+                "/remote/conversation-reads/conversation-1",
+                headers=headers,
+                json={"seen_at_ms": 1000},
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["seen_at_ms"], 3000)
+            self.assertEqual(client.put(
+                "/remote/conversation-reads/not.safe",
+                headers=headers,
+                json={"seen_at_ms": 3000},
+            ).status_code, 422)
+            self.assertEqual(client.put(
+                "/remote/conversation-reads/conversation-1",
+                headers=headers,
+                json={"seen_at_ms": 9_007_199_254_740_992},
+            ).status_code, 422)
 
 
 class RemoteProxyTest(unittest.TestCase):

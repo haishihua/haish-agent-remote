@@ -197,6 +197,11 @@ class DeviceStore:
                     last_seen_at REAL NOT NULL,
                     revoked_at REAL
                 );
+                CREATE TABLE IF NOT EXISTS conversation_reads (
+                    conversation_id TEXT PRIMARY KEY,
+                    seen_at_ms INTEGER NOT NULL,
+                    updated_by TEXT NOT NULL
+                );
                 """
             )
 
@@ -274,9 +279,41 @@ class DeviceStore:
             )
         return cursor.rowcount > 0
 
+    def conversation_reads(self) -> dict[str, int]:
+        with self._connect() as db:
+            rows = db.execute("SELECT conversation_id, seen_at_ms FROM conversation_reads").fetchall()
+        return {str(row["conversation_id"]): int(row["seen_at_ms"]) for row in rows}
+
+    def mark_conversation_read(self, conversation_id: str, seen_at_ms: int, updated_by: str) -> int:
+        # Read cursors are monotonic. A delayed request from either client must never make a
+        # conversation unread again after the other client already acknowledged a newer result.
+        with self._connect() as db:
+            db.execute(
+                """
+                INSERT INTO conversation_reads(conversation_id, seen_at_ms, updated_by)
+                VALUES (?, ?, ?)
+                ON CONFLICT(conversation_id) DO UPDATE SET
+                    seen_at_ms = max(conversation_reads.seen_at_ms, excluded.seen_at_ms),
+                    updated_by = CASE
+                        WHEN excluded.seen_at_ms >= conversation_reads.seen_at_ms THEN excluded.updated_by
+                        ELSE conversation_reads.updated_by
+                    END
+                """,
+                (conversation_id, seen_at_ms, updated_by),
+            )
+            row = db.execute(
+                "SELECT seen_at_ms FROM conversation_reads WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+        return int(row["seen_at_ms"])
+
 
 class PairingRequest(BaseModel):
     code: str = Field(pattern=r"^\d{8}$")
+
+
+class ConversationReadRequest(BaseModel):
+    seen_at_ms: int = Field(gt=0, le=9_007_199_254_740_991)
 
 
 def _remote_device_name(request: Request) -> str:
@@ -821,7 +858,7 @@ def create_app(*, data_dir: Path | None = None, dist_dir: Path | None = None) ->
         CORSMiddleware,
         allow_origins=["capacitor://localhost", "https://localhost"],
         allow_credentials=False,
-        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Accept", "Authorization", "Content-Type"],
     )
     app.state.device_store = store
@@ -895,6 +932,25 @@ def create_app(*, data_dir: Path | None = None, dist_dir: Path | None = None) ->
     @app.get("/remote/devices")
     async def devices(_: dict[str, Any] = Depends(desktop_or_current_device)) -> JSONResponse:
         return JSONResponse({"devices": store.list_devices()})
+
+    @app.get("/remote/conversation-reads")
+    async def conversation_reads(_: dict[str, Any] = Depends(desktop_or_current_device)) -> JSONResponse:
+        return JSONResponse({"seen_at": store.conversation_reads()})
+
+    @app.put("/remote/conversation-reads/{conversation_id}")
+    async def mark_conversation_read(
+        conversation_id: str,
+        payload: ConversationReadRequest,
+        device: dict[str, Any] = Depends(desktop_or_current_device),
+    ) -> JSONResponse:
+        if not _SAFE_CONVERSATION_ID.fullmatch(conversation_id):
+            raise HTTPException(status_code=422, detail="Invalid conversation ID.")
+        seen_at_ms = store.mark_conversation_read(
+            conversation_id,
+            payload.seen_at_ms,
+            str(device.get("device_id") or "unknown"),
+        )
+        return JSONResponse({"conversation_id": conversation_id, "seen_at_ms": seen_at_ms})
 
     @app.delete("/remote/devices/{device_id}")
     async def revoke_device(device_id: str, _: dict[str, Any] = Depends(desktop_or_current_device)) -> JSONResponse:
