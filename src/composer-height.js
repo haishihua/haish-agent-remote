@@ -75,28 +75,47 @@ export function fitComposerTextarea(textarea, { getStyles = (node) => getCompute
 /**
  * Coalesce rapid input events into one layout read per animation frame. The input value itself is
  * still updated synchronously by React; only the optional auto-height measurement is deferred.
+ *
+ * `shouldDefer` is the keyboard's own guard: while the keyboard is moving, a `height: auto` write
+ * plus a `scrollHeight` read is a forced layout that lands exactly when the keyboard event is
+ * trying to reach the page — the composer then starts its travel a frame or two late (the reported
+ * "the keyboard is already up, the input bar is still below"), and WebKit is also mid-way through
+ * rebuilding its marked text, where a height write can drag the caret. The measurement waits for
+ * the motion to land instead, with `deferLimitMs` as a hard stop in case the state never clears.
  */
+export const COMPOSER_FIT_DEFER_LIMIT_MS = 900;
+
 export function createComposerTextareaFitScheduler({
   fit = fitComposerTextarea,
   requestFrame = (callback) => requestAnimationFrame(callback),
   cancelFrame = (frame) => cancelAnimationFrame(frame),
+  shouldDefer = () => false,
+  now = () => Date.now(),
+  deferLimitMs = COMPOSER_FIT_DEFER_LIMIT_MS,
 } = {}) {
   let frame = 0;
   let textarea = null;
   let force = false;
+  let deferUntil = 0;
 
   function flush() {
     frame = 0;
+    if (shouldDefer() && now() < deferUntil) {
+      frame = requestFrame(flush);
+      return 0;
+    }
     const target = textarea;
     const shouldForce = force;
     textarea = null;
     force = false;
+    deferUntil = 0;
     return fit(target, { force: shouldForce });
   }
 
   function schedule(nextTextarea, options = {}) {
     textarea = nextTextarea;
     force = force || Boolean(options.force);
+    deferUntil = now() + deferLimitMs;
     if (!frame) frame = requestFrame(flush);
     return frame;
   }
@@ -106,6 +125,7 @@ export function createComposerTextareaFitScheduler({
     frame = 0;
     textarea = null;
     force = false;
+    deferUntil = 0;
   }
 
   return { schedule, flush, cancel };

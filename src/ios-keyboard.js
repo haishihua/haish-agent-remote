@@ -59,6 +59,14 @@ export async function hideKeyboardAccessoryBar({ keyboard = Keyboard, native = i
  *   两个落地事件里各把 `window.scrollY / scrollX` 按回 0 一次（`pinDocumentOffset`）：整页是个 `inset: 0`
  *   的固定壳，文档本来就不该滚动，没被顶走时一次也不碰；
  *
+ * 这一层是从键盘自己的时间线上起步的：原生那条 frame 通道把通知发出的时刻（`at`，毫秒）一并带过来，动画
+ * 用负的 delay 从「键盘已经走到的那一格」开始播（`keyboardElapsedMs`）。事件要穿过 bridge，还可能排在主
+ * 线程上的重活后面（这一趟里正好有输入框自己的量高、IME 的 marked text），晚到多少就从进度里补回多少——
+ * 用户报的「键盘已经上来，输入框还停在下面」就是这段差价：从事件到达才算 0 的那一版，前半趟整个躲在键盘
+ * 后面，落地才被布局扳上去。落地兜底也按这条时间线排（`rebaseLandingTimer`）：键盘自己走完（`at` + 时长）
+ * 的那一下换布局，而不是「我们收到事件之后时长 + 650ms 保险」——换键盘时 iOS 常常只发 will-change、没有
+ * 落地事件，兜底晚 650ms 写下去，看到的就是界面上下跳一下。
+ *
  * 落地的时刻取 `keyboardDidShow` / `keyboardDidHide`。时长与曲线都尽量取 iOS 自己的：曲线是 curve 7（一条
  * 无过冲的弹簧，起步快、收尾慢）的采样，时长由 AppDelegate 那条 frame 通道从
  * `UIKeyboardAnimationDurationUserInfoKey` 带过来（这两个值插件都不往外报）。之前那条
@@ -99,7 +107,9 @@ export const KEYBOARD_MOTION_CLASS = 'keyboard-moving';
  *
  * `detail.height` 是键盘在屏幕上真正盖住的高度（点）；切换输入法时它可以瞬时为 0，所以只有来自独立
  * `UIKeyboardWillHideNotification` 的 `detail.dismissal` 才表示收起。`detail.duration` 是这一趟的动画时长
- * （秒，`UIKeyboardAnimationDurationUserInfoKey`，插件不报它）。名字要和
+ * （秒，`UIKeyboardAnimationDurationUserInfoKey`，插件不报它）；`detail.at` 是通知发出的时刻（毫秒，与
+ * `Date.now()` 同一把尺子），这一层用它把动画锚在键盘自己的时间线上（见 `keyboardElapsedMs`）。
+ * 名字要和
  * ios/App/App/HaishBridgeViewController.swift 里的一致——构建会核原生与 Web 两端。
  */
 export const KEYBOARD_FRAME_EVENT = 'haishKeyboardFrame';
@@ -130,6 +140,31 @@ export function keyboardMotionMs(seconds, fallback = KEYBOARD_MOTION_MS) {
   if (!Number.isFinite(value) || value <= 0) return fallback;
   const [min, max] = KEYBOARD_MOTION_MS_RANGE;
   return Math.min(max, Math.max(min, Math.round(value * 1000)));
+}
+
+/**
+ * 键盘自己的动画已经走了多久（毫秒）：原生报来的那一刻（`at`，与 `Date.now()` 同一把尺子）到这一刻的差。
+ *
+ * 这一层拿到键盘高度的时候键盘往往已经在动了——通知要先穿过 bridge，再等 Web 进程的主线程空出来。晚到多少
+ * 就得从进度里补回多少，否则动画从 0 起步，用户看到的就是「键盘已经上来，输入框还停在下面」。没带时刻、
+ * 两边的钟对不上（负数）、时长为 0 都按没报算（0）；比整趟还久（事件晚到一步到位）按走完算——那时键盘已经
+ * 到位，输入框就该一步到位。
+ */
+export function keyboardElapsedMs({ at = null, now = Date.now(), duration = KEYBOARD_MOTION_MS } = {}) {
+  const startedAt = keyboardStartAt(at);
+  const current = Number(now);
+  const span = Number(duration);
+  if (startedAt === null || !Number.isFinite(current) || !Number.isFinite(span) || span <= 0) return 0;
+  const elapsed = current - startedAt;
+  if (!Number.isFinite(elapsed) || elapsed <= 0) return 0;
+  return Math.min(Math.round(span), Math.round(elapsed));
+}
+
+/** 原生报来的时刻（毫秒）：没带、或者不是个数就当没报（`null`）。 */
+export function keyboardStartAt(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const at = Number(value);
+  return Number.isFinite(at) ? at : null;
 }
 
 /**
@@ -212,10 +247,14 @@ function revealFocusedField(scroller) {
   active.scrollIntoView({ block: 'nearest' });
 }
 
-function animateTravel(element, from, to, duration, easing) {
+/**
+ * 位移铺到合成层上。`elapsed` 是键盘那一趟已经走过的时间：负的 delay 就是「从动画的这一格开始播」——
+ * 键盘走到哪一格、这一层就从哪一格起步（没带时刻的调用方传 0，行为与逐帧同步的那一版一致）。
+ */
+function animateTravel(element, from, to, duration, easing, elapsed = 0) {
   return element.animate(
     [{ transform: `translate3d(0, ${from}px, 0)` }, { transform: `translate3d(0, ${to}px, 0)` }],
-    { duration, easing, fill: 'both' },
+    { duration, easing, fill: 'both', delay: elapsed > 0 ? -elapsed : 0 },
   );
 }
 
@@ -230,6 +269,11 @@ export function createKeyboardInsetController({
   viewport = typeof window === 'undefined' ? null : window,
   requestFrame = (callback) => requestAnimationFrame(callback),
   cancelFrame = (frame) => cancelAnimationFrame(frame),
+  // 落地兜底的定时器（见 `rebaseLandingTimer`）：测试换掉它就能读到这一趟排在什么时候。
+  scheduleTimer = (callback, ms) => setTimeout(callback, ms),
+  unscheduleTimer = (timer) => clearTimeout(timer),
+  // 与原生报来的时刻对表的那把钟（`Date.now()`）：测试里可以喂一个确定的数。
+  readClock = () => Date.now(),
   motionMs = KEYBOARD_MOTION_MS,
   supportsEasing = defaultSupportsEasing,
   setComposerExpanded = (dock, expanded) => dock?.querySelector?.('.composer')?.classList?.toggle(KEYBOARD_COMPOSER_EXPANDED_CLASS, expanded),
@@ -307,7 +351,7 @@ export function createKeyboardInsetController({
     motion = null;
     setMoving(false);
     if (!pending) return;
-    if (pending.timer) clearTimeout(pending.timer);
+    if (pending.timer) unscheduleTimer(pending.timer);
     pending.animations.forEach((animation) => animation.cancel());
     pending.region?.classList.remove(KEYBOARD_MOTION_CLASS);
   }
@@ -318,7 +362,7 @@ export function createKeyboardInsetController({
     if (!pending || !pending.landed || !pending.moved) return;
     motion = null;
     setMoving(false);
-    if (pending.timer) clearTimeout(pending.timer);
+    if (pending.timer) unscheduleTimer(pending.timer);
     writeInset(pending.target);
     writeLift(pending.settledLift);
     keepView({
@@ -376,7 +420,7 @@ export function createKeyboardInsetController({
     viewport.scrollTo(0, 0);
   }
 
-  function moveTo(target) {
+  function moveTo(target, { startedAt = null, now = readClock() } = {}) {
     if (target === inset && !motion) return;
     const next = pieces();
     const scroller = next?.scroller || null;
@@ -392,6 +436,18 @@ export function createKeyboardInsetController({
     const following = listTravels(geometry);
     const start = next && following ? translateYOf(readTransform(next.region)) : 0;
     const settledLift = settledLiftFor(target, following);
+    // 键盘那一趟已经走了多久：原生那条 frame 通道带着它开始的时刻（`at`）。事件晚到多少，动画就从键盘
+    // 此刻所在的进度起步，而不是从零重走一遍。
+    const started = keyboardStartAt(startedAt);
+    const elapsed = keyboardElapsedMs({ at: started, now, duration: durationMs });
+    // 两块各自现在停在哪一格先读出来（读的是动画正跑到的地方）：打断、换手都从这里接着走。
+    const travelers = [];
+    if (next && following) travelers.push(next.region);
+    if (next) travelers.push(next.dock);
+    const travels = travelers
+      .map((element) => ({ element, from: translateYOf(readTransform(element)) }))
+      .filter((item) => item.from !== travel)
+      .map((item) => ({ ...item, to: travel }));
     stopMotion();
     // 往下走的那一趟（收起，或者换上一把更矮的键盘）里窗口上沿会跟着往下滑：布局里那段负 margin 必须
     // 同时抬着，窗口上沿才留在页头上方。「上一次抬起时读者没贴底（布局里没抬）、这一次贴底（要动画）」
@@ -412,46 +468,96 @@ export function createKeyboardInsetController({
       region: next?.region || null,
       scroller,
       following,
+      travels,
       animations: [],
-      landed: false,
+      startedAt: started,
+      elapsed,
+      // 事件晚到一步到位（键盘那边已经走完了）：这一趟剩下的就是把布局换过去。
+      landed: started !== null && elapsed >= durationMs,
       moved: false,
       timer: 0,
     };
     motion = pending;
-    if (next) {
-      if (following) next.region.classList.add(KEYBOARD_MOTION_CLASS);
-      for (const element of following ? [next.region, next.dock] : [next.dock]) {
-        const startY = element === next.region ? start : translateYOf(readTransform(element));
-        if (startY !== travel) pending.animations.push(animateTravel(element, startY, travel, durationMs, motionEasing));
-      }
-    }
-    pending.moved = pending.animations.length === 0;
+    if (next && following) next.region.classList.add(KEYBOARD_MOTION_CLASS);
+    playTravels(pending);
     setMoving(!pending.moved);
     settleMotion();
-    pending.animations.forEach((animation) => {
+    rebaseLandingTimer(pending);
+  }
+
+  /**
+   * 把这一趟的位移铺到合成层上。`pending.elapsed`（键盘那边已经走过的时间）交给 `animateTravel` 的负
+   * delay：键盘走到哪一格、这一层就从哪一格起步。`fromLive` 是「从元素此刻所在的像素重新铺一次」
+   * （见 `reanchor`：后到的时刻把已经在走的那一趟重新锚一次）。
+   */
+  function playTravels(pending, { fromLive = false } = {}) {
+    pending.animations = pending.travels.map((item) => {
+      const startY = fromLive ? translateYOf(readTransform(item.element)) : item.from;
+      const animation = animateTravel(item.element, startY, item.to, durationMs, motionEasing, pending.elapsed);
       animation.finished.then(() => {
-        if (motion !== pending) return;
+        // 已经被新的一趟换掉的那些（cancelled）不再算「走完」。
+        if (motion !== pending || !pending.animations.includes(animation)) return;
         pending.moved = true;
         settleMotion();
       }, () => {});
+      return animation;
     });
-    pending.timer = setTimeout(() => {
+    pending.moved = pending.animations.length === 0;
+    return pending.animations;
+  }
+
+  /**
+   * 落地兜底：`keyboardDidShow` / `keyboardDidHide` 一次都不来（换键盘时 iOS 常常只发 will-change）时
+   * 也得把布局换过去。这条定时器按键盘自己的时间线排：它已经走过 `pending.elapsed` 了，这一趟剩下的就只有
+   * `时长 - elapsed`，再加一段「事件可能还在路上」的保险。从事件到达重新数一遍（旧行为）会让换键盘时的
+   * 布局晚 650ms 才写下去，看到的正好是界面上下跳一下。
+   */
+  function rebaseLandingTimer(pending) {
+    if (pending.timer) unscheduleTimer(pending.timer);
+    const remaining = Math.max(0, durationMs - pending.elapsed) + KEYBOARD_LANDING_GRACE_MS;
+    pending.timer = scheduleTimer(() => {
       if (motion !== pending) return;
       pending.moved = true;
       pending.landed = true;
       settleMotion();
-    }, durationMs + KEYBOARD_LANDING_GRACE_MS);
+    }, remaining);
   }
 
-  function raise(height) {
+  /**
+   * 插件的事件和原生那条 frame 通道会在同一轮里先后到达：先到的如果是插件（没有时刻），动画就已经从 0
+   * 起步了。后到的那条带着时刻——把这一趟重新铺一次，从键盘此刻的进度接着走，别把已经走完的那段再演一遍。
+   */
+  function reanchor(startedAt) {
+    const pending = motion;
+    const started = keyboardStartAt(startedAt);
+    if (!pending || started === null || pending.startedAt !== null || !pending.travels.length) return false;
+    const elapsed = keyboardElapsedMs({ at: started, now: readClock(), duration: durationMs });
+    if (elapsed <= 0) return false;
+    pending.startedAt = started;
+    pending.elapsed = elapsed;
+    pending.animations.forEach((animation) => animation.cancel());
+    playTravels(pending, { fromLive: true });
+    // 键盘那边已经走完（事件晚得离谱）：这一趟剩下的就是把布局换过去。
+    if (elapsed >= durationMs) pending.landed = true;
+    setMoving(!pending.moved);
+    rebaseLandingTimer(pending);
+    settleMotion();
+    return true;
+  }
+
+  function raise(height, startedAt = null) {
     const target = keyboardInset(height);
     // 只有 QuickType 提示栏的变动会被插件报成 0（`shouldIgnoreResizeForHeight`：不足屏幕高度的
     // 20% 就不算键盘）：键盘还在，布局就留在原地。真正收起只走 `keyboardWillHide`。
     if (!target) return;
     if (target === inset && !motion) return;
-    // 已经在往同一个高度走了：插件的事件和 AppDelegate 转发的 frame 会撞在一起，别把动画重开一遍。
-    if (motion && motion.target === target) return;
-    moveTo(target);
+    // 已经在往同一个高度走了：插件的事件和 AppDelegate 转发的 frame 会撞在一起，别把动画重开一遍；
+    // 后到的那条如果带着键盘那一刻的时刻，就把这一趟重新锚一次（`reanchor`）。
+    if (motion && motion.target === target) {
+      reanchor(startedAt);
+      return;
+    }
+    moveTo(target, { startedAt });
   }
 
   /**
@@ -474,7 +580,7 @@ export function createKeyboardInsetController({
     pendingFrameRequest = 0;
     const next = pendingFrame;
     pendingFrame = null;
-    if (next) raise(next.height);
+    if (next) raise(next.height, next.at);
   }
 
   function onKeyboardFrame(event) {
@@ -489,14 +595,14 @@ export function createKeyboardInsetController({
       // textarea remains first responder; collapsing there moves both the editor and its caret.
       cancelPendingFrame();
       compactComposer();
-      lower();
+      lower(detail.at);
       return;
     }
     if (!height) return;
     // UIKit can report several intermediate frames while changing input methods. Starting and
     // cancelling a Web Animation for every callback forces transform/layout reads on the main
     // thread. Keep only the newest positive target for this display frame.
-    pendingFrame = { height };
+    pendingFrame = { height, at: detail.at };
     if (!pendingFrameRequest) {
       // The real requestAnimationFrame is asynchronous; keeping this sentinel also makes injected
       // synchronous schedulers preserve the same state transition in unit tests.
@@ -519,10 +625,13 @@ export function createKeyboardInsetController({
     pinToBottom({ scroller: next?.scroller || null, following: travels });
   }
 
-  function lower() {
+  function lower(startedAt = null) {
     if (!inset && !motion) return;
-    if (motion && motion.target === 0) return;
-    moveTo(0);
+    if (motion && motion.target === 0) {
+      reanchor(startedAt);
+      return;
+    }
+    moveTo(0, { startedAt });
   }
 
   async function start() {

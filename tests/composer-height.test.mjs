@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  COMPOSER_FIT_DEFER_LIMIT_MS,
   COMPOSER_TEXTAREA_MAX_HEIGHT,
   COMPOSER_TEXTAREA_MIN_HEIGHT,
   composerTextareaHeight,
@@ -189,4 +190,41 @@ test('cancelling a scheduled textarea fit drops its pending layout read', () => 
 
   assert.deepEqual(cancelled, [41]);
   assert.deepEqual(calls, []);
+});
+
+test('a textarea fit waits out a keyboard motion instead of landing inside it', () => {
+  const frames = [];
+  const calls = [];
+  let moving = true;
+  let clock = 1_000;
+  const scheduler = createComposerTextareaFitScheduler({
+    fit: (...args) => calls.push(args),
+    requestFrame: (callback) => { frames.push(callback); return frames.length; },
+    cancelFrame: () => {},
+    shouldDefer: () => moving,
+    now: () => clock,
+  });
+  const textarea = { value: 'hello' };
+
+  // 键盘那趟动画正好在这个窗口里：`height: auto` + `scrollHeight` 的强制布局先不量，排到下一帧。
+  scheduler.schedule(textarea, { force: true });
+  assert.equal(frames.length, 1);
+  frames.shift()();
+  assert.deepEqual(calls, []);
+  assert.equal(frames.length, 1, '排到下一帧再来');
+
+  // 键盘落地：下一帧就量，`force` 也没丢。
+  moving = false;
+  frames.shift()();
+  assert.deepEqual(calls, [[textarea, { force: true }]]);
+
+  // 状态万一没回来（一直说「还在动」）：到了上限也不再等，否则输入框就永远不跟着长高了。
+  moving = true;
+  clock = 5_000;
+  scheduler.schedule({ value: 'x' });
+  const pending = frames.shift();
+  clock = 5_000 + COMPOSER_FIT_DEFER_LIMIT_MS;
+  pending();
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1], [{ value: 'x' }, { force: false }]);
 });

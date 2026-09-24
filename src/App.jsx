@@ -880,7 +880,11 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   const composerComposingRef = useRef(false);
   const textareaFitSchedulerRef = useRef(null);
   const composerResizeHandlerRef = useRef(null);
-  if (!textareaFitSchedulerRef.current) textareaFitSchedulerRef.current = createComposerTextareaFitScheduler();
+  if (!textareaFitSchedulerRef.current) {
+    // 键盘正在动的那几百毫秒里连这一帧都不量（`shouldDefer`，见 composer-height.js）：那一次
+    // `height: auto` + `scrollHeight` 的强制布局正好落在键盘事件的到达窗口里，输入框会因此晚一步才跟上。
+    textareaFitSchedulerRef.current = createComposerTextareaFitScheduler({ shouldDefer: isKeyboardMoving });
+  }
 
   // 流式回答是一串很密的事件（每几个字一条）：一条一条 setState 就是每几个字把整页重渲染一次，
   // 真机上跑任务时整页都在抖。改成先折进 ref，每帧最多往 React 递一次；这一趟收尾由调用方

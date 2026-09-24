@@ -45,6 +45,14 @@ test('the photo button keeps the textarea focused until its click opens the pick
   assert.match(app, /onClick=\{\(\) => \{[\s\S]*?openPhotoPicker\(\)/);
 });
 
+test('a keyboard motion defers the textarea fit instead of stealing its frames', async () => {
+  const app = await read('../src/App.jsx');
+
+  // 键盘动画那几百毫秒里不量高：一次强制布局落在键盘事件到达的窗口里，输入框就晚一步才跟上。
+  assert.match(app, /import \{[\s\S]*?isKeyboardMoving[\s\S]*?\} from '\.\/ios-keyboard\.js'/);
+  assert.match(app, /createComposerTextareaFitScheduler\(\{ shouldDefer: isKeyboardMoving \}\)/);
+});
+
 test('the expensive detail subtrees have memo boundaries and stable props', async () => {
   const [app, thread, approvals] = await Promise.all([
     read('../src/App.jsx'),

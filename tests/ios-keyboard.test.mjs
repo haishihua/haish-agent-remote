@@ -11,12 +11,15 @@ import {
   KEYBOARD_MOTION_CLASS,
   KEYBOARD_MOTION_EASING,
   KEYBOARD_MOTION_EASING_FALLBACK,
+  KEYBOARD_LANDING_GRACE_MS,
   KEYBOARD_MOTION_MS,
+  keyboardElapsedMs,
   keyboardFollowing,
   keyboardInset,
   keyboardLift,
   keyboardMotionEasing,
   keyboardMotionMs,
+  keyboardStartAt,
   isKeyboardMoving,
   mountKeyboardInset,
   registerKeyboardSurface,
@@ -203,6 +206,8 @@ function controllerFor({
   supportsEasing = () => true,
   requestFrame = (callback) => { callback(); return 1; },
   cancelFrame = () => {},
+  timers = null,
+  readClock = null,
 }) {
   const controller = createKeyboardInsetController({
     native: true,
@@ -225,8 +230,15 @@ function controllerFor({
     requestFrame,
     cancelFrame,
     supportsEasing,
+    // 落地兜底那一条定时器可以收下来看：不注入时就是真的 setTimeout。
+    ...(timers ? {
+      scheduleTimer: (callback, ms) => { timers.push({ callback, ms }); return timers.length; },
+      unscheduleTimer: () => {},
+    } : {}),
+    // 与原生时刻对表的那把钟也可以固定下来（不注入就是 Date.now）。
+    ...(readClock ? { readClock } : {}),
   });
-  return { controller, listeners, writes };
+  return { controller, listeners, writes, timers };
 }
 
 function travelKeyframes(element) {
@@ -744,4 +756,123 @@ test('the keyboard only reports itself as moving while the animation is in fligh
   assert.equal(isKeyboardMoving(), true);
   controller.stop();
   assert.equal(isKeyboardMoving(), false);
+});
+
+test('the elapsed time is measured on the keyboard clock, not from when the event arrived', () => {
+  assert.equal(keyboardElapsedMs({ at: 1_000, now: 1_120, duration: 250 }), 120);
+  // 事件晚到一步到位：键盘那边已经走完，按走完算（那时输入框就该一步到位）。
+  assert.equal(keyboardElapsedMs({ at: 1_000, now: 1_400, duration: 250 }), 250);
+  // 没带时刻、两边的钟对不上（负数）、时长不是个数：都按没报算（照旧从 0 起步）。
+  assert.equal(keyboardElapsedMs({ at: null, now: 1_400, duration: 250 }), 0);
+  assert.equal(keyboardElapsedMs({ at: 1_400, now: 1_000, duration: 250 }), 0);
+  assert.equal(keyboardElapsedMs({ at: 1_000, now: 1_120, duration: 0 }), 0);
+  assert.equal(keyboardElapsedMs({}), 0);
+
+  // 原生报的是小数秒的大数（毫秒）：字符串也认；空值/不是数就当没报。
+  assert.equal(keyboardStartAt('1758712345678.9'), 1758712345678.9);
+  assert.equal(keyboardStartAt(1758712345678), 1758712345678);
+  assert.equal(keyboardStartAt(null), null);
+  assert.equal(keyboardStartAt(undefined), null);
+  assert.equal(keyboardStartAt(''), null);
+  assert.equal(keyboardStartAt('later'), null);
+});
+
+test('a frame that arrives late starts the travel already part-way up the keyboard', async () => {
+  const region = fakeTraveler();
+  const dock = fakeDock();
+  const scroller = fakeScroll({ contentHeight: 4000, viewportHeight: 585, scrollTop: 3415 });
+  const viewport = fakeViewport();
+  const timers = [];
+  let clock = 5_000_000;
+  const { controller } = controllerFor({ region, dock, scroller, viewport, timers, readClock: () => clock });
+  await controller.start();
+
+  // 原生在 120ms 前就把键盘动画放出去了，这一层这一刻才拿到高度：从一个格子起步，而不是从 0 重走
+  // ——「键盘已经上来，输入框还停在下面」就是这段差价。
+  clock += 120;
+  viewport.dispatch(KEYBOARD_FRAME_EVENT, { detail: { height: 336, duration: 0.25, at: clock - 120 } });
+  assert.equal(dock.animations.at(-1).options.delay, -120);
+  assert.equal(region.animations.at(-1).options.delay, -120);
+  assert.deepEqual(travelKeyframes(dock).at(-1).transform, 'translate3d(0, -306px, 0)');
+  // 落地兜底也从键盘那条时间线数：剩下的只有 250 - 120 = 130ms，再加那段保险
+  // （从事件到达重新数 250 + 650 的话，换键盘时布局会晚 650ms 才换过去）。
+  assert.equal(timers.at(-1).ms, 130 + KEYBOARD_LANDING_GRACE_MS);
+  controller.stop();
+});
+
+test('a frame without a timestamp keeps the plain landing window', async () => {
+  const region = fakeTraveler();
+  const dock = fakeDock();
+  const scroller = fakeScroll({ contentHeight: 4000, viewportHeight: 585, scrollTop: 3415 });
+  const timers = [];
+  const { controller, listeners } = controllerFor({ region, dock, scroller, timers });
+  await controller.start();
+
+  // 插件的 will-show 不带时刻（它只报高度）：从 0 起步，落地窗口照旧是时长 + 保险。
+  listeners.get('keyboardWillShow')({ keyboardHeight: 336 });
+  await null;
+  assert.equal(dock.animations.at(-1).options.delay, 0);
+  assert.equal(timers.at(-1).ms, KEYBOARD_MOTION_MS + KEYBOARD_LANDING_GRACE_MS);
+  controller.stop();
+});
+
+test('a frame timestamp that arrives after the plugin event re-anchors the travel in flight', async () => {
+  const region = fakeTraveler();
+  const dock = fakeDock();
+  const scroller = fakeScroll({ contentHeight: 4000, viewportHeight: 585, scrollTop: 3415 });
+  const viewport = fakeViewport();
+  let clock = 9_000_000;
+  const { controller, listeners } = controllerFor({ region, dock, scroller, viewport, readClock: () => clock });
+  await controller.start();
+
+  listeners.get('keyboardWillShow')({ keyboardHeight: 336 });
+  await null;
+  assert.equal(dock.animations.at(-1).options.delay, 0);
+
+  // 原生那条带着 90ms 前的时刻后到（两条在同一轮里撞上）：把已经在走的那一趟重新铺一次，
+  // 从键盘第 90ms 那一格接着走，不把已经走完的那段再演一遍。
+  viewport.dispatch(KEYBOARD_FRAME_EVENT, { detail: { height: 336, duration: 0.25, at: clock - 90 } });
+  assert.equal(dock.animations.length, 2);
+  assert.equal(dock.animations[0].cancelled, true);
+  assert.equal(dock.animations.at(-1).options.delay, -90);
+  assert.deepEqual(travelKeyframes(dock).at(-1).transform, 'translate3d(0, -306px, 0)');
+  controller.stop();
+});
+
+test('a frame that arrives after the keyboard already landed writes the layout without waiting', async () => {
+  const region = fakeTraveler();
+  const dock = fakeDock();
+  const scroller = fakeScroll({ contentHeight: 4000, viewportHeight: 585, scrollTop: 3415 });
+  const viewport = fakeViewport();
+  let clock = 3_000_000;
+  const { controller, writes } = controllerFor({ region, dock, scroller, viewport, readClock: () => clock });
+  await controller.start();
+
+  // 事件晚到 400ms（整趟只有 250ms）：键盘已经到位，输入框不该再演一遍，这一趟剩下的就是把布局换过去。
+  viewport.dispatch(KEYBOARD_FRAME_EVENT, { detail: { height: 336, duration: 0.25, at: clock - 400 } });
+  await null;
+  assert.deepEqual(writes, [[KEYBOARD_INSET_VAR, '336px'], [KEYBOARD_LIFT_VAR, '306px']]);
+  controller.stop();
+});
+
+test('a dismissal frame is anchored to the same clock', async () => {
+  const region = fakeTraveler();
+  const dock = fakeDock();
+  const scroller = fakeScroll({ contentHeight: 4000, viewportHeight: 585, scrollTop: 3415 });
+  const viewport = fakeViewport();
+  let clock = 7_000_000;
+  const { controller, listeners } = controllerFor({ region, dock, scroller, viewport, readClock: () => clock });
+  await controller.start();
+
+  listeners.get('keyboardWillShow')({ keyboardHeight: 336 });
+  await null;
+  listeners.get('keyboardDidShow')({ keyboardHeight: 336 });
+  dock.animations.length = 0;
+
+  // 收起那一趟同样从键盘自己的进度起步（原生 will-hide 也带着时刻）。
+  clock += 80;
+  viewport.dispatch(KEYBOARD_FRAME_EVENT, { detail: { height: 0, duration: 0.3, dismissal: true, at: clock - 80 } });
+  assert.equal(dock.animations.at(-1).options.delay, -80);
+  assert.deepEqual(travelKeyframes(dock).at(-1).transform, 'translate3d(0, 306px, 0)');
+  controller.stop();
 });

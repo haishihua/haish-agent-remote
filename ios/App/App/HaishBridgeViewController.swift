@@ -124,6 +124,13 @@ final class HaishBridgeViewController: CAPBridgeViewController {
         // A zero will-change frame is not necessarily a hide: input-method replacement and
         // floating/undocked keyboard transitions can pass through a non-covering frame while the
         // textarea stays first responder. Only the dedicated will-hide notification may dismiss.
-        webView.evaluateJavaScript("window.dispatchEvent(new CustomEvent('haishKeyboardFrame', { detail: { height: \(height), duration: \(duration), dismissal: \(dismissal) } }))")
+        //
+        // `at` is the moment UIKit posted this notification, on the same wall clock the page reads
+        // with `Date.now()`. The page hears about the keyboard only after the bridge hop, while the
+        // keyboard window started moving in this very run-loop turn; without the timestamp the
+        // composed travel starts from the wrong end of the animation and the composer spends the
+        // first half of the rise behind the keyboard. src/ios-keyboard.js anchors to it instead.
+        let at = String(format: "%.1f", Date().timeIntervalSince1970 * 1000)
+        webView.evaluateJavaScript("window.dispatchEvent(new CustomEvent('haishKeyboardFrame', { detail: { height: \(height), duration: \(duration), dismissal: \(dismissal), at: \(at) } }))")
     }
 }
