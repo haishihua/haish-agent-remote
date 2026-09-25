@@ -41,7 +41,7 @@ import {
   pickImagesFromLibrary,
   remainingImageSlots,
 } from './photo-picker.js';
-import { composerInputQuietDelay, isComposerInputActive, markComposerInputActivity } from './composer-input-activity.js';
+import { composerInputQuietDelay, isComposerInputActive, markComposerInputActivity, setComposerInputFocused } from './composer-input-activity.js';
 import { hideKeyboardAccessoryBar, isKeyboardMoving, mountKeyboardInset, registerKeyboardSurface } from './ios-keyboard.js';
 import penguinLogo from './assets/penguin_logo_user.png';
 import { ScrollToBottomButton } from './ScrollToBottomButton.jsx';
@@ -930,6 +930,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   // 展开态固定为两行并在框内滚动：输入与 IME 组字路径不再读取 scrollHeight，也不写 textarea 高度。
   // 这比“下一帧合并一次重量”更重要——长线程已经把布局标脏时，哪怕只读一次也会同步重排整页。
   useEffect(() => () => {
+    setComposerInputFocused(false);
     if (liveRunFrameRef.current) window.cancelAnimationFrame(liveRunFrameRef.current);
     if (liveRunQuietTimerRef.current) window.clearTimeout(liveRunQuietTimerRef.current);
     liveRunFrameRef.current = 0;
@@ -963,6 +964,8 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   }), []);
 
   function activateComposer(event) {
+    setComposerInputFocused(true);
+    markComposerInputActivity();
     const input = event?.currentTarget || messageInputRef.current;
     // Expanding on pointerdown moves the textarea before WebKit performs its default focus action.
     // On iOS that can invalidate the original hit target, so the first tap only expands and a
@@ -975,6 +978,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   function collapseComposer() {
     // Mirror the focus path on dismissal: compact the composer in the same tap that resigns the
     // textarea, before the native keyboard transition starts.
+    setComposerInputFocused(false);
     messageInputRef.current?.form?.classList.remove('expanded');
     messageInputRef.current?.blur();
   }
@@ -1648,6 +1652,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
             // Programmatic/native resignFirstResponder can arrive without a click on the thread.
             // Keep the DOM shell in sync even if iOS omits one of its keyboard callbacks.
             composerComposingRef.current = false;
+            setComposerInputFocused(false);
             event.currentTarget.form?.classList.remove('expanded');
           }} onCompositionStart={() => {
             composerComposingRef.current = true;

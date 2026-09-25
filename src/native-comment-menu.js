@@ -3,8 +3,17 @@
 export const NATIVE_ADD_COMMENT_EVENT = 'haishNativeAddComment';
 export const NATIVE_ANNOTATION_SELECTION_HANDLER = 'haishAnnotationSelection';
 
+const lastAvailabilityByHandler = new WeakMap();
+
 export function reportNativeAnnotationSelection(available, bridge = globalThis.webkit?.messageHandlers) {
-  bridge?.[NATIVE_ANNOTATION_SELECTION_HANDLER]?.postMessage?.(Boolean(available));
+  const handler = bridge?.[NATIVE_ANNOTATION_SELECTION_HANDLER];
+  if (!handler?.postMessage) return;
+  const next = Boolean(available);
+  // IME marked-text updates can emit many selectionchange events per character. The native menu only
+  // needs edge transitions, never a repeated stream of the same boolean across the WKWebView bridge.
+  if (lastAvailabilityByHandler.get(handler) === next) return;
+  lastAvailabilityByHandler.set(handler, next);
+  handler.postMessage(next);
 }
 
 export function addNativeCommentListener(handler, target = window) {

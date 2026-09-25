@@ -14,7 +14,6 @@ export const KEYBOARD_FRAME_EVENT = 'haishKeyboardFrame';
 export const KEYBOARD_MOTION_MS = 250;
 export const KEYBOARD_MOTION_MS_RANGE = [100, 600];
 export const KEYBOARD_MOTION_EASING = 'cubic-bezier(0.3, 0.35, 0.15, 1)';
-export const KEYBOARD_SCROLL_BOTTOM_PADDING = 176;
 export const KEYBOARD_COMPOSER_EXPANDED_CLASS = 'expanded';
 
 export function keyboardInset(value) {
@@ -66,8 +65,6 @@ export function createKeyboardInsetController({
   getSurface = () => keyboardSurface,
   viewport = typeof window === 'undefined' ? null : window,
   readClock = () => Date.now(),
-  requestFrame = (callback) => requestAnimationFrame(callback),
-  cancelFrame = (frame) => cancelAnimationFrame(frame),
   scheduleTimer = (callback, ms) => setTimeout(callback, ms),
   unscheduleTimer = (timer) => clearTimeout(timer),
   easing = KEYBOARD_MOTION_EASING,
@@ -76,9 +73,7 @@ export function createKeyboardInsetController({
   let stopped = false;
   let lift = 0;
   let inset = 0;
-  let layoutInset = 0;
   let timer = 0;
-  let pinFrame = 0;
   let dockAnimation = null;
   let moving = false;
 
@@ -106,26 +101,7 @@ export function createKeyboardInsetController({
 
   function pieces() {
     const surface = getSurface?.();
-    return {
-      dock: surface?.dockRef?.current || null,
-      scroller: surface?.scrollerRef?.current || null,
-      following: surface?.followingRef?.current !== false,
-    };
-  }
-
-  function scheduleScrollLayout(scroller, following, nextInset) {
-    if (pinFrame) cancelFrame(pinFrame);
-    pinFrame = requestFrame(() => {
-      pinFrame = 0;
-      const delta = nextInset - layoutInset;
-      if (scroller) {
-        scroller.style.paddingBottom = `${KEYBOARD_SCROLL_BOTTOM_PADDING + nextInset}px`;
-        // The exact new scroll range is old range + delta. Preserve the reader's screen without a
-        // scrollHeight/clientHeight read; WebKit clamps the write if content is shorter.
-        if (following && delta) scroller.scrollTop += delta;
-      }
-      layoutInset = nextInset;
-    });
+    return { dock: surface?.dockRef?.current || null };
   }
 
   function applyFrame(event) {
@@ -139,7 +115,7 @@ export function createKeyboardInsetController({
       : keyboardLift({ keyboardHeight: inset, lift: detail.fromLift });
     const duration = keyboardMotionMs(detail.duration);
     const remaining = keyboardRemainingMs({ at: detail.at, now: readClock(), duration });
-    const { dock, scroller, following } = pieces();
+    const { dock } = pieces();
 
     if (dismissal) setComposerExpanded(dock, false);
 
@@ -162,9 +138,9 @@ export function createKeyboardInsetController({
       previous?.cancel?.();
     }
 
-    // The long thread gets its one contained layout write on the next frame, after the compositor
-    // has accepted the dock animation. Its scroll adjustment uses the known inset delta only.
-    scheduleScrollLayout(scroller, following, nextInset);
+    // Never mutate the long message scroller from a keyboard callback. Its fixed reserve already
+    // keeps the latest row clear of the composer; changing padding here invalidated every skipped
+    // content-visibility row and woke Mutation/Resize observers during IME work.
     inset = nextInset;
     lift = nextLift;
     markMoving(remaining);
@@ -180,16 +156,12 @@ export function createKeyboardInsetController({
     if (stopped) return;
     stopped = true;
     viewport?.removeEventListener?.(KEYBOARD_FRAME_EVENT, applyFrame);
-    if (pinFrame) cancelFrame(pinFrame);
-    pinFrame = 0;
     clearMotionTimer();
-    const { dock, scroller } = pieces();
+    const { dock } = pieces();
     dockAnimation?.cancel?.();
     dockAnimation = null;
     if (dock) dock.style.transform = 'translate3d(0, 0, 0)';
-    if (scroller) scroller.style.paddingBottom = `${KEYBOARD_SCROLL_BOTTOM_PADDING}px`;
     inset = 0;
-    layoutInset = 0;
     lift = 0;
   }
 

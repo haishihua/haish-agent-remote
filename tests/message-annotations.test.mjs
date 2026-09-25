@@ -11,6 +11,7 @@
 import './support/window-stub.mjs';
 
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import { buildChatRows } from '../src/chat-runtime.js';
@@ -20,6 +21,13 @@ import {
   visibleAnnotationDrafts,
   withoutAcknowledgedAnnotations,
 } from '../../haish-agent/app-web/src/features/chat/model/message-annotations.js';
+
+const read = (path) => readFile(new URL(path, import.meta.url), 'utf8');
+
+test('composer caret changes return before annotation capture or native bridge work', async () => {
+  const source = await read('../src/message-annotations.jsx');
+  assert.match(source, /if \(isEditableSelection\) \{[\s\S]*?return;[\s\S]*?if \(frameRef\.current\) return;/);
+});
 
 const ANNOTATION = {
   id: 'a1',

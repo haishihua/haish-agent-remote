@@ -20,6 +20,8 @@ test('selection availability is reported as a boolean to WebKit', () => {
   const values = [];
   const bridge = { haishAnnotationSelection: { postMessage: (value) => values.push(value) } };
   reportNativeAnnotationSelection(1, bridge);
+  reportNativeAnnotationSelection(1, bridge);
+  reportNativeAnnotationSelection(0, bridge);
   reportNativeAnnotationSelection(0, bridge);
   assert.deepEqual(values, [true, false]);
 });

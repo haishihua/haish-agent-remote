@@ -11,6 +11,8 @@ test('typing keeps the draft in the textarea instead of React state', async () =
   assert.doesNotMatch(app, /value=\{message\}/);
   assert.match(app, /messageInputRef\.current\?\.value/);
   assert.match(app, /markComposerInputActivity\(\)/);
+  assert.match(app, /setComposerInputFocused\(true\)/);
+  assert.match(app, /setComposerInputFocused\(false\)/);
   assert.match(app, /onCompositionStart=/);
   assert.match(app, /onCompositionEnd=/);
   assert.match(app, /event\.nativeEvent\.isComposing \|\| composerComposingRef\.current/);
@@ -56,6 +58,7 @@ test('keyboard motion isolates the composer from the long message tree', async (
 
   assert.match(app, /followingRef=\{keyboardFollowingRef\}/);
   assert.doesNotMatch(keyboard, /getComputedStyle\(|getBoundingClientRect\(|\.scrollHeight|\.clientHeight/);
+  assert.doesNotMatch(keyboard, /paddingBottom|scrollTop/);
   assert.doesNotMatch(keyboard, /regionRef|message-region|\.region/);
   assert.match(css, /\.composer-dock \{ position: absolute;/);
   assert.match(css, /\.message-scroll \{[^}]*contain: layout paint style;/);

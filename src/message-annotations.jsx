@@ -139,6 +139,19 @@ export const MessageAnnotations = React.forwardRef(function MessageAnnotations(
   React.useEffect(() => {
     if (editor) return undefined;
     const capture = () => {
+      // WebKit emits selectionchange for every marked-text and caret update. Exit before scheduling
+      // annotation work: only selections inside the message scroller can become annotations. The
+      // bridge reporter deduplicates the single false edge, so later IME events stay local.
+      const active = document.activeElement;
+      const isEditableSelection = active instanceof HTMLInputElement
+        || active instanceof HTMLTextAreaElement
+        || active?.isContentEditable;
+      if (isEditableSelection) {
+        selectionRef.current = null;
+        if (isNativeApp) reportNativeAnnotationSelection(false);
+        else setSelection(null);
+        return;
+      }
       if (frameRef.current) return;
       frameRef.current = window.requestAnimationFrame(() => {
         frameRef.current = 0;
@@ -146,10 +159,6 @@ export const MessageAnnotations = React.forwardRef(function MessageAnnotations(
         const captured = captureAnnotationSelection(listRef.current);
         const domSelection = window.getSelection();
         const hasDocumentSelection = Boolean(domSelection?.rangeCount && !domSelection.isCollapsed);
-        const active = document.activeElement;
-        const isEditableSelection = active instanceof HTMLInputElement
-          || active instanceof HTMLTextAreaElement
-          || active?.isContentEditable;
         if (captured) {
           selectionRef.current = captured;
           anchorTo(captured.range);
@@ -161,7 +170,7 @@ export const MessageAnnotations = React.forwardRef(function MessageAnnotations(
         // iOS 的入口属于系统菜单，不再画第二块浮层；同时把“这是不是可批注选区”报给
         // HaishWebView。UIKit 收起 DOM range 的瞬间继续保留最后一次有效抓取，避免用户点菜单项
         // 时 Add Comment 先一步消失；输入框或无关页面出现真实选区时则立即禁用。
-        const nativeSelectionAvailable = Boolean(captured || (!hasDocumentSelection && !isEditableSelection && selectionRef.current));
+        const nativeSelectionAvailable = Boolean(captured || (!hasDocumentSelection && selectionRef.current));
         if (isNativeApp) reportNativeAnnotationSelection(nativeSelectionAvailable);
         setSelection(isNativeApp ? null : captured);
       });

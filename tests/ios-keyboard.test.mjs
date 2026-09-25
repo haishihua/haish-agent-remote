@@ -8,7 +8,6 @@ import {
   KEYBOARD_FRAME_EVENT,
   KEYBOARD_MOTION_EASING,
   KEYBOARD_MOTION_MS,
-  KEYBOARD_SCROLL_BOTTOM_PADDING,
   keyboardInset,
   keyboardLift,
   keyboardMotionMs,
@@ -90,7 +89,6 @@ function controllerFor({ following = true, clock = 10_000 } = {}) {
   const viewport = fakeViewport();
   const dock = fakeDock();
   const scroller = { style: {}, scrollTop: 0 };
-  const frames = [];
   const timers = [];
   const followingRef = { current: following };
   const controller = createKeyboardInsetController({
@@ -102,17 +100,15 @@ function controllerFor({ following = true, clock = 10_000 } = {}) {
       followingRef,
     }),
     readClock: () => clock,
-    requestFrame: (callback) => { frames.push(callback); return frames.length; },
-    cancelFrame: () => {},
     scheduleTimer: (callback, ms) => { timers.push({ callback, ms }); return timers.length; },
     unscheduleTimer: () => {},
   });
   controller.start();
-  return { controller, viewport, dock, scroller, frames, timers, followingRef };
+  return { controller, viewport, dock, scroller, timers, followingRef };
 }
 
 test('show animates only the composer and does not read message geometry', () => {
-  const { controller, viewport, dock, scroller, frames, timers } = controllerFor();
+  const { controller, viewport, dock, scroller, timers } = controllerFor();
   viewport.dispatch(KEYBOARD_FRAME_EVENT, { height: 336, lift: 306, duration: 0.25, at: 9_900 });
 
   assert.deepEqual(dock.animations.at(-1).keyframes, [
@@ -125,13 +121,11 @@ test('show animates only the composer and does not read message geometry', () =>
     easing: KEYBOARD_MOTION_EASING,
     fill: 'both',
   });
-  assert.equal(scroller.style.paddingBottom, undefined, 'long-thread layout waits until the next frame');
+  assert.equal(scroller.style.paddingBottom, undefined, 'keyboard path never invalidates the long thread');
+  assert.equal(scroller.scrollTop, 0);
   assert.equal(isKeyboardMoving(), true);
   assert.equal(timers.at(-1).ms, 150);
 
-  frames.at(-1)();
-  assert.equal(scroller.style.paddingBottom, `${KEYBOARD_SCROLL_BOTTOM_PADDING + 336}px`);
-  assert.equal(scroller.scrollTop, 336);
   assert.deepEqual(viewport.scrollCalls, []);
   timers.at(-1).callback();
   assert.equal(isKeyboardMoving(), false);
@@ -150,7 +144,7 @@ test('dismiss compacts immediately and reverses the small-layer animation', () =
     { transform: 'translate3d(0, -306px, 0)' },
     { transform: 'translate3d(0, 0px, 0)' },
   ]);
-  assert.notEqual(scroller.style.paddingBottom, `${KEYBOARD_SCROLL_BOTTOM_PADDING}px`, 'dismiss layout is deferred');
+  assert.equal(scroller.style.paddingBottom, undefined, 'dismiss does not relayout the thread');
   controller.stop();
 });
 
@@ -175,9 +169,8 @@ test('a transient zero frame is ignored unless UIKit marks dismissal', () => {
 });
 
 test('a reader viewing history is not pinned to the latest message', () => {
-  const { controller, viewport, scroller, frames } = controllerFor({ following: false });
+  const { controller, viewport, scroller } = controllerFor({ following: false });
   viewport.dispatch(KEYBOARD_FRAME_EVENT, { height: 336, lift: 306, duration: 0.25, at: 10_000 });
-  frames.at(-1)();
   assert.equal(scroller.scrollTop, 0);
   controller.stop();
 });
