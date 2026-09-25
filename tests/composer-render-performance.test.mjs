@@ -8,8 +8,11 @@ test('typing keeps the draft in the textarea instead of React state', async () =
   const app = await read('../src/App.jsx');
 
   assert.doesNotMatch(app, /const \[message, setMessage\] = useState/);
+  assert.doesNotMatch(app, /const \[hasMessage, setHasMessage\] = useState/);
+  assert.doesNotMatch(app, /setHasMessage\(/);
   assert.doesNotMatch(app, /value=\{message\}/);
   assert.match(app, /messageInputRef\.current\?\.value/);
+  assert.match(app, /syncComposerMessageState\(event\.currentTarget/);
   assert.match(app, /markComposerInputActivity\(\)/);
   assert.match(app, /setComposerInputFocused\(true\)/);
   assert.match(app, /setComposerInputFocused\(false\)/);
@@ -25,17 +28,29 @@ test('typing and keyboard changes never measure textarea layout', async () => {
   assert.doesNotMatch(app, /createComposerViewportResizeHandler/);
   assert.doesNotMatch(app, /textareaFitSchedulerRef/);
   assert.doesNotMatch(app, /\.scrollHeight/);
-  assert.match(css, /\.composer\.expanded textarea \{[^}]*height: 82px;[^}]*min-height: 82px;[^}]*max-height: 82px;/);
+  assert.match(css, /\.composer\.expanded textarea \{[^}]*height: 60px;[^}]*min-height: 60px;[^}]*max-height: 60px;[^}]*line-height: 22px;/);
 });
 
-test('the first composer tap expands and focuses in the same trusted pointer event', async () => {
+test('the trusted composer tap focuses once and focus expands the isolated overlay', async () => {
   const app = await read('../src/App.jsx');
 
   assert.match(app, /function activateComposer\(event\)/);
   assert.doesNotMatch(app, /event\?\.type === 'pointerdown'.*event\.preventDefault\(\)/);
-  assert.match(app, /input\?\.form\?\.classList\.add\('expanded'\)/);
-  assert.match(app, /input\.focus\(\{ preventScroll: true \}\)/);
-  assert.match(app, /onPointerDown=\{activateComposer\} onFocus=\{activateComposer\}/);
+  assert.match(app, /event\.currentTarget\.form\?\.classList\.add\('expanded'\)/);
+  assert.doesNotMatch(app, /\.focus\(\{ preventScroll: true \}\)/);
+  assert.doesNotMatch(app, /onPointerDown=\{activateComposer\}/);
+  assert.match(app, /rows=\{2\} disabled=\{busy\} onFocus=\{activateComposer\}/);
+});
+
+test('IME text toggles only composer DOM state and keeps both action buttons mounted', async () => {
+  const [app, css] = await Promise.all([read('../src/App.jsx'), read('../src/styles.css')]);
+
+  assert.match(app, /form\?\.classList\.toggle\('has-message', hasText\)/);
+  assert.match(app, /form\?\.querySelector\?\.\('\.composer-send-button'\)/);
+  assert.match(app, /composer-stop-button/);
+  assert.match(app, /composer-send-button/);
+  assert.match(css, /\.composer-stop-button \{ display: none; \}/);
+  assert.match(css, /\.composer\.is-running:not\(\.has-message\):not\(\.has-image\) \.composer-stop-button/);
 });
 
 test('the photo button keeps the textarea focused until its click opens the picker', async () => {

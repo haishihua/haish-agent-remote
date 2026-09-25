@@ -834,9 +834,8 @@ function taskIdsOf(conversation) {
 function ConversationDetail({ id, projectName, initialConversation, modelCatalogTasks, onBack, connection, nativeSwipeBack = false }) {
   const [conversation, setConversation] = useState(initialConversation || null);
   const [conversationHydrated, setConversationHydrated] = useState(false);
-  // 正文留在 textarea 自己的 DOM value 里：每个按键不再 setState、也就不会重渲染整张详情。
-  // React 只跟踪“是否有可发送文字”，这个布尔值只在空/非空边界变化。
-  const [hasMessage, setHasMessage] = useState(false);
+  // 正文和“是否有可发送文字”都留在 composer DOM 里。尤其不能在中文候选词提交时
+  // setState：即便只跨一次空/非空边界，也会同步重渲染这条超长对话并阻塞 WebKit 的 marked text。
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [liveRun, setLiveRun] = useState(null);
@@ -922,9 +921,8 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   useEffect(() => { onBackRef.current = onBack; }, [onBack]);
   useEffect(() => {
     if (messageInputRef.current) messageInputRef.current.value = '';
-    hasMessageRef.current = false;
+    syncComposerMessageState(messageInputRef.current, false);
     composerComposingRef.current = false;
-    setHasMessage(false);
   }, [id]);
 
   // 展开态固定为两行并在框内滚动：输入与 IME 组字路径不再读取 scrollHeight，也不写 textarea 高度。
@@ -963,16 +961,30 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     followingRef: keyboardFollowingRef,
   }), []);
 
+  function syncComposerMessageState(input, nextHasMessage) {
+    const hasText = Boolean(nextHasMessage);
+    hasMessageRef.current = hasText;
+    const form = input?.form;
+    form?.classList.toggle('has-message', hasText);
+    // Keep the only per-keystroke mutation inside the tiny composer subtree. React must not own
+    // this boundary: a candidate commit followed by a long-thread render makes the IME and caret
+    // appear to freeze even though the text node itself updated immediately.
+    const sendButton = form?.querySelector?.('.composer-send-button');
+    if (sendButton) {
+      const blocked = sendButton.dataset.blocked === 'true';
+      const hasOtherContent = form.classList.contains('has-other-sendable');
+      sendButton.disabled = blocked || (!hasText && !hasOtherContent);
+    }
+  }
+
   function activateComposer(event) {
     setComposerInputFocused(true);
     markComposerInputActivity();
-    const input = event?.currentTarget || messageInputRef.current;
-    // Expanding on pointerdown moves the textarea before WebKit performs its default focus action.
-    // On iOS that can invalidate the original hit target, so the first tap only expands and a
-    // second tap is needed for the keyboard. Focus explicitly in the same trusted event; leave the
-    // default pointer action intact so a tap in existing text can still place the caret precisely.
-    input?.form?.classList.add('expanded');
-    if (input && document.activeElement !== input) input.focus({ preventScroll: true });
+    // Let WebKit's trusted tap establish first responder exactly once. Calling focus() from
+    // pointerdown made WebKit perform a second synchronous editable-layout pass before UIKit could
+    // start the keyboard. By the time focus fires, moving this isolated overlay cannot invalidate
+    // the original hit target.
+    event.currentTarget.form?.classList.add('expanded');
   }
 
   function collapseComposer() {
@@ -1355,8 +1367,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     composerImagesRef.current = [];
     setComposerImages([]);
     if (messageInputRef.current) messageInputRef.current.value = '';
-    hasMessageRef.current = false;
-    setHasMessage(false);
+    syncComposerMessageState(messageInputRef.current, false);
     messageInputRef.current?.form?.classList.remove('expanded');
     messageInputRef.current?.blur();
     setBusy(true);
@@ -1454,8 +1465,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
         composerImagesRef.current = submittedComposerImages;
         setComposerImages(submittedComposerImages);
         if (messageInputRef.current) messageInputRef.current.value = nextMessage;
-        hasMessageRef.current = Boolean(nextMessage);
-        setHasMessage(hasMessageRef.current);
+        syncComposerMessageState(messageInputRef.current, Boolean(nextMessage));
         setError(nextError.message);
         return;
       }
@@ -1622,7 +1632,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
           onSave={saveAnnotation}
           onError={setAnnotationNotice}
         />
-        <form className={`composer ${runConfig ? 'has-config-icon' : ''}`} onSubmit={submit} onDragOver={(event) => {
+        <form className={`composer ${runConfig ? 'has-config-icon' : ''} ${running ? 'is-running' : ''} ${hasMessageRef.current ? 'has-message' : ''} ${composerImages.some((image) => image.imageId && !image.error) ? 'has-image' : ''} ${(annotationDrafts.length || composerImages.some((image) => image.imageId && !image.error)) ? 'has-other-sendable' : ''}`} onSubmit={submit} onDragOver={(event) => {
           if (Array.from(event.dataTransfer?.items || []).some((item) => item.kind === 'file')) event.preventDefault();
         }} onDrop={(event) => {
           const images = Array.from(event.dataTransfer?.files || []).filter((file) => file.type.startsWith('image/'));
@@ -1648,7 +1658,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
           ))}</div> : null}
           {composerImages.some((image) => image.error) ? <p className="composer-image-error" role="alert">{composerImages.find((image) => image.error)?.error}</p> : null}
           <label htmlFor="task-message" className="sr-only">Send instructions</label>
-          <textarea ref={messageInputRef} id="task-message" rows={1} disabled={busy} onPointerDown={activateComposer} onFocus={activateComposer} onBlur={(event) => {
+          <textarea ref={messageInputRef} id="task-message" rows={2} disabled={busy} onFocus={activateComposer} onBlur={(event) => {
             // Programmatic/native resignFirstResponder can arrive without a click on the thread.
             // Keep the DOM shell in sync even if iOS omits one of its keyboard callbacks.
             composerComposingRef.current = false;
@@ -1660,22 +1670,14 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
           }} onCompositionEnd={(event) => {
             composerComposingRef.current = false;
             markComposerInputActivity();
-            const nextHasMessage = Boolean(event.currentTarget.value.trim());
-            if (nextHasMessage !== hasMessageRef.current) {
-              hasMessageRef.current = nextHasMessage;
-              setHasMessage(nextHasMessage);
-            }
-            // Height is fixed while focused; committing marked text does not touch layout.
+            syncComposerMessageState(event.currentTarget, Boolean(event.currentTarget.value.trim()));
+            // Height is fixed while focused; committing marked text never touches the thread.
           }} onChange={(event) => {
             markComposerInputActivity();
-            // While an IME owns marked text, do not write textarea height or trigger the empty/non-
-            // empty React boundary. Both can make WebKit rebuild the editable box and move its caret.
+            // While an IME owns marked text, do not write textarea height or even toggle composer
+            // DOM state. WebKit owns the editable box until compositionend commits the candidate.
             if (event.nativeEvent.isComposing || composerComposingRef.current) return;
-            const nextHasMessage = Boolean(event.currentTarget.value.trim());
-            if (nextHasMessage !== hasMessageRef.current) {
-              hasMessageRef.current = nextHasMessage;
-              setHasMessage(nextHasMessage);
-            }
+            syncComposerMessageState(event.currentTarget, Boolean(event.currentTarget.value.trim()));
           }} onPaste={(event) => {
             const images = Array.from(event.clipboardData?.items || []).filter((item) => item.kind === 'file' && item.type.startsWith('image/')).map((item) => item.getAsFile()).filter(Boolean);
             if (!images.length) return;
@@ -1712,17 +1714,19 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
             event.target.value = '';
           }} />
           {runConfig ? <button type="button" className="run-config-icon-button" onClick={() => setShowReasoningPicker(true)} disabled={running} aria-label={`Choose thinking level, currently ${selectedThinking?.label || 'unknown'}`} aria-haspopup="dialog"><svg className="run-config-gauge" style={{ '--gauge-rotation': reasoningGaugeRotation }} viewBox="0 0 24 24" aria-hidden="true"><path className="run-config-gauge-arc" d="M3.34 19a10 10 0 1 1 17.32 0" /><g className="run-config-gauge-needle"><path className="run-config-gauge-pointer" d="M10.9 13.4 12.6 15.1 18.65 7.35Z" /><circle cx="12" cy="14" r="1.8" /></g></svg></button> : null}
-          {running && !hasMessage && !composerImages.some((image) => image.imageId && !image.error) ? (
-            <button type="button" className="send-button stop" onClick={stop} disabled={busy} aria-label="Stop task">
-              {/* 图标照桌面 chat 的发送/停止键：ArrowUp 是发，实心圆角方块是停
-                  （40px 的桌面按钮里 22px 箭头 / 12px 方块，这里按钮是 48px，等比放大）。 */}
-              {busy ? <span className="send-spinner" aria-hidden="true" /> : <Square className="send-icon stop-square" fill="currentColor" strokeWidth={0} aria-hidden="true" />}
-            </button>
-          ) : (
-            <button className="send-button" disabled={busy || composerImages.some((image) => image.uploading) || (!hasMessage && !annotationDrafts.length && !composerImages.some((image) => image.imageId && !image.error)) || (running && annotationDrafts.length) || (!running && !runConfig)} aria-label={running ? 'Add instruction' : 'Send'}>
-              {busy ? <span className="send-spinner" aria-hidden="true" /> : <ArrowUp className="send-icon" strokeWidth={2.3} aria-hidden="true" />}
-            </button>
-          )}
+          <button type="button" className="send-button stop composer-stop-button" onClick={stop} disabled={busy} aria-label="Stop task">
+            {/* 图标照桌面 chat 的发送/停止键：ArrowUp 是发，实心圆角方块是停
+                （40px 的桌面按钮里 22px 箭头 / 12px 方块，这里按钮是 48px，等比放大）。 */}
+            {busy ? <span className="send-spinner" aria-hidden="true" /> : <Square className="send-icon stop-square" fill="currentColor" strokeWidth={0} aria-hidden="true" />}
+          </button>
+          <button
+            className="send-button composer-send-button"
+            data-blocked={busy || composerImages.some((image) => image.uploading) || (running && annotationDrafts.length) || (!running && !runConfig) ? 'true' : 'false'}
+            disabled={busy || composerImages.some((image) => image.uploading) || (!hasMessageRef.current && !annotationDrafts.length && !composerImages.some((image) => image.imageId && !image.error)) || (running && annotationDrafts.length) || (!running && !runConfig)}
+            aria-label={running ? 'Add instruction' : 'Send'}
+          >
+            {busy ? <span className="send-spinner" aria-hidden="true" /> : <ArrowUp className="send-icon" strokeWidth={2.3} aria-hidden="true" />}
+          </button>
         </form>
       </div>
       {showReasoningPicker && runConfig ? <div className="sheet-scrim reasoning-sheet-scrim" role="presentation" onClick={() => setShowReasoningPicker(false)}>
