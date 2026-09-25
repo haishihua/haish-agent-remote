@@ -2,7 +2,7 @@ import React from 'react';
 
 const SHOW_THRESHOLD = 96;
 
-export function ScrollToBottomButton({ scrollRef, resetKey = '' }) {
+export function ScrollToBottomButton({ scrollRef, resetKey = '', followingRef = null }) {
   const [visible, setVisible] = React.useState(false);
   const frameRef = React.useRef(null);
   const followLatestRef = React.useRef(true);
@@ -12,6 +12,7 @@ export function ScrollToBottomButton({ scrollRef, resetKey = '' }) {
     if (!element) return undefined;
 
     followLatestRef.current = true;
+    if (followingRef) followingRef.current = true;
     const update = () => {
       frameRef.current = null;
       setVisible(element.scrollHeight - element.scrollTop - element.clientHeight > SHOW_THRESHOLD);
@@ -21,6 +22,7 @@ export function ScrollToBottomButton({ scrollRef, resetKey = '' }) {
     };
     const handleScroll = () => {
       followLatestRef.current = element.scrollHeight - element.scrollTop - element.clientHeight <= SHOW_THRESHOLD;
+      if (followingRef) followingRef.current = followLatestRef.current;
       scheduleUpdate();
     };
     const handleContentChange = () => {
@@ -46,6 +48,7 @@ export function ScrollToBottomButton({ scrollRef, resetKey = '' }) {
 
   function scrollToLatest() {
     followLatestRef.current = true;
+    if (followingRef) followingRef.current = true;
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
   }
 

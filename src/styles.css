@@ -26,15 +26,15 @@
   --danger: #fb7185;
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-top: env(safe-area-inset-top, 0px);
-  /* 键盘占掉的高度，由 src/ios-keyboard.js 在键盘落地时写入（键盘不缩 WebView，见该模块）。 */
-  --keyboard-inset: 0px;
+  /* composer 是覆盖层；始终给其最大展开高度留足滚动尾距，聚焦时消息网格无需重新布局。 */
+  --composer-reserve: 176px;
   /* 目录顶栏那层背景模糊。详情页盖住目录时置 none，见下面的说明。 */
   --topbar-backdrop: blur(22px) saturate(130%);
 }
 
 * { box-sizing: border-box; }
 html, body, #root { margin: 0; min-width: 320px; min-height: 100%; background: var(--background); }
-body { min-height: 100dvh; padding-bottom: var(--keyboard-inset); overscroll-behavior-y: none; }
+body { min-height: 100dvh; overscroll-behavior-y: none; }
 button, input, textarea { font: inherit; }
 button { cursor: pointer; touch-action: manipulation; }
 button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 75%, white); outline-offset: 2px; }
@@ -265,26 +265,15 @@ input::placeholder, textarea::placeholder { color: var(--muted-2); }
   z-index: 50;
   inset: 0;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  /* `inset: 0` 就是视口本身，不写 `height: 100dvh`：高度一旦交给 dvh 值，视口变化时它会晚一帧，而那一
-     帧的缺口正好把下面这层会话列表露出来（收起键盘时闪的就是它）。浏览器里另算，见下。 */
-  padding-bottom: var(--keyboard-inset);
+  grid-template-rows: auto minmax(0, 1fr);
+  /* 原生键盘不再改这棵长消息树的布局；composer 是独立覆盖层，只移动自己的合成层。 */
   touch-action: pan-y;
 }
 /* 浏览器（含 PWA）里高度跟着可见视口走，免得输入框被地址栏挡住；App 里 WebView 的高度就是窗口
    （键位不缩 WebView，见 src/ios-keyboard.js），`inset: 0` 已经是全部。 */
 html:not(.native-app) .detail-screen { height: 100dvh; }
-/* 消息列表和输入框是同一层：键盘抬起时两者一起平移（src/ios-keyboard.js），输入框停在键盘上沿上方一段，
-   消息列表的窗口连内容一起动——没有任何一块会被推出自己的裁剪框，也没有背景从缺口里露出来。落地后
-   transform 换回布局，两者描述同一批像素。
-   `--keyboard-lift` 是同一个“落地才写”的高度：键盘抬着的时候消息列表再向上长一段（负的 margin-top
-   把它的框顶抬到页头上方，内容从那里开始画），收起来的那一段里窗口上沿跟着往下走，多出来的这段把上
-   面的历史消息留在窗口里（原生收起键盘时窗口是向上长的，看到的就是这些历史）；它和上面那个
-   padding 在消息列表的可见高度上正好抵消，滚动位置不用动。 */
-.message-region { margin-top: calc(-1 * var(--keyboard-lift, 0px)); }
-/* 跟键盘一起动的那 250ms 里，把消息列表里的定时动画都停掉（这一条覆盖整棵线程，
-   桌面那套 shimmer / 走马灯都算在里面）：逐帧重绘的合成层跟着平移就会一卡一卡。 */
-.message-region.keyboard-moving * { animation-play-state: paused; }
+/* 消息树不参与键盘动画。离屏行让 WebKit 跳过渲染，并用已测高度维持稳定滚动范围。 */
+.chat-row { content-visibility: auto; contain-intrinsic-size: auto 160px; }
 .app-shell.detail-open > :not(.detail-screen) { pointer-events: none; }
 /* The directory stays mounted below an open conversation so WebKit's native interactive
    back snapshot reveals the same list and scroll position. Its repeating animations are paused
@@ -310,12 +299,11 @@ html.detail-closing .app-shell > :not(.detail-screen) * { animation-play-state: 
 .detail-body { height: 100%; }
 /* 线程从顶上往下排，跟桌面 `.chat-message-list` 一样：它那边 padding-top 的 24px 之后直接是第一行，
    没有 `margin-top: auto` 这种东西。内容比窗口短时，空白留在下面。以前这里把首行压到底（首行的
-   margin-top: auto），手机上看着就是「消息浮在中间、离页头空一大截」。键盘那一套位移不靠这个锚：跟
-   键盘一起动的是窗口的**下**沿（`--keyboard-lift` 那段负 margin，见 src/ios-keyboard.js），内容按
-   自己的方向排就行。`flex: 0 0 auto` 是必须的：滚动容器里的 flex 子项默认会被压扁。 */
+   margin-top: auto），手机上看着就是「消息浮在中间、离页头空一大截」。键盘动画不再移动这块窗口；
+   composer 作为覆盖层单独移动。`flex: 0 0 auto` 是必须的：滚动容器里的 flex 子项默认会被压扁。 */
 /* 行与行之间留桌面那 15px（桌面落在 .chat-message-list 的 gap 上；手机这边线程的行是直接挂在
    滚动窗口下的，所以这一条写在 .message-scroll 上）。 */
-.message-scroll { display: flex; height: 100%; flex-direction: column; overflow-x: hidden; overflow-y: auto; padding: 20px 16px 28px; gap: 15px; overscroll-behavior: contain; scrollbar-width: none; -ms-overflow-style: none; }
+.message-scroll { display: flex; height: 100%; flex-direction: column; overflow-x: hidden; overflow-y: auto; padding: 20px 16px var(--composer-reserve); gap: 15px; contain: layout paint style; overscroll-behavior: contain; scrollbar-width: none; -ms-overflow-style: none; }
 .message-scroll > * { flex: 0 0 auto; }
 .message-scroll::-webkit-scrollbar { display: none; width: 0; height: 0; }
 /* 气泡吃满行宽：桌面的两条上限（`.chat-bubble` 的 min(680px, 72%)、助手行的 82%）是给
@@ -354,14 +342,11 @@ html.detail-closing .app-shell > :not(.detail-screen) * { animation-play-state: 
 .scroll-to-bottom-button.is-visible { opacity: 1; pointer-events: auto; transform: translate(-50%, 0); }
 .scroll-to-bottom-button:focus-visible { border-color: rgba(239, 191, 100, 0.5); outline: none; }
 .scroll-to-bottom-button svg { width: 23px; height: 23px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-.composer-dock { position: relative; min-width: 0; margin-bottom: max(12px, 8px + var(--safe-bottom) - var(--keyboard-inset)); }
-/* 输入框那一叠的位置由上面那行和这一行一起管：静息时离屏幕底 8px + 安全区；键盘上来时收成 12px——那是照
-   用户给的参考图（ChatGPT）量的一条呼吸位：输入框两侧本来就留 10px，底下也留一段，整块才是浮在键盘上，
-   而不是长在键盘上。收掉的量与跟键盘走的那一层上移的距离正好抵消，落地换手才看不见，见 src/ios-keyboard.js
-   的 KEYBOARD_DOCK_GAP（两处必须一致）。 */
+.composer-dock { position: absolute; z-index: 40; right: 0; bottom: max(12px, 8px + var(--safe-bottom)); left: 0; min-width: 0; will-change: transform; transform: translate3d(0, 0, 0); }
+/* composer 是独立覆盖层：展开与键盘位移都不改变 detail grid，也不会重排消息树。 */
 .composer { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 48px; gap: 7px; margin: 8px 10px 0; padding: 6px; border: 1px solid rgba(138, 166, 209, 0.28); border-radius: 18px; background: rgba(13, 16, 24, 0.96); transition: border-color 160ms ease, box-shadow 160ms ease; }
 .composer.has-config-icon { grid-template-columns: minmax(0, 1fr) 44px 48px; }
-.composer textarea { max-height: 132px; min-height: 48px; padding: 13px 11px; border: 0; border-radius: 12px; outline: 0; background: transparent; }
+.composer textarea { height: 48px; min-height: 48px; max-height: 48px; padding: 13px 11px; overflow-y: auto; border: 0; border-radius: 12px; outline: 0; background: transparent; resize: none; }
 /* Expanded is a stable four-column shell: textarea and every full-width attachment/quote row span
    all columns, while the bottom controls keep their slots. Giving the textarea an explicit row
    prevents the quote draft from being auto-placed into column 1 and squeezed into the tall strip
@@ -371,7 +356,7 @@ html.detail-closing .app-shell > :not(.detail-screen) * { animation-play-state: 
 .composer.expanded > .haish-annotation-notice,
 .composer.expanded > .composer-images,
 .composer.expanded > .composer-image-error { grid-column: 1 / -1; }
-.composer.expanded textarea { min-width: 0; grid-column: 1 / -1; grid-row: auto; }
+.composer.expanded textarea { min-width: 0; grid-column: 1 / -1; width: 100%; height: 82px; min-height: 82px; max-height: 82px; grid-row: auto; }
 .composer-file-input { position: fixed; width: 1px; height: 1px; min-height: 0; padding: 0; overflow: hidden; border: 0; opacity: 0; pointer-events: none; clip-path: inset(50%); }
 .composer-photo-button { display: none; width: 44px; height: 44px; padding: 0; place-items: center; align-self: end; border: 0; border-radius: 12px; background: transparent; color: var(--text); cursor: pointer; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 .composer.expanded .composer-photo-button { display: grid; grid-column: 1 / 2; }

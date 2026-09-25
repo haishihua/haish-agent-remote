@@ -41,7 +41,6 @@ import {
   pickImagesFromLibrary,
   remainingImageSlots,
 } from './photo-picker.js';
-import { createComposerTextareaFitScheduler, createComposerViewportResizeHandler } from './composer-height.js';
 import { composerInputQuietDelay, isComposerInputActive, markComposerInputActivity } from './composer-input-activity.js';
 import { hideKeyboardAccessoryBar, isKeyboardMoving, mountKeyboardInset, registerKeyboardSurface } from './ios-keyboard.js';
 import penguinLogo from './assets/penguin_logo_user.png';
@@ -878,13 +877,9 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   const loadedTraceIdsRef = useRef(new Set());
   const hasMessageRef = useRef(false);
   const composerComposingRef = useRef(false);
-  const textareaFitSchedulerRef = useRef(null);
-  const composerResizeHandlerRef = useRef(null);
-  if (!textareaFitSchedulerRef.current) {
-    // 键盘正在动的那几百毫秒里连这一帧都不量（`shouldDefer`，见 composer-height.js）：那一次
-    // `height: auto` + `scrollHeight` 的强制布局正好落在键盘事件的到达窗口里，输入框会因此晚一步才跟上。
-    textareaFitSchedulerRef.current = createComposerTextareaFitScheduler({ shouldDefer: isKeyboardMoving });
-  }
+  // 键盘回调不能再去读这份长线程的 scrollHeight/clientHeight。滚动事件已经有这些几何值，
+  // 在这里把“是否跟着最新消息”缓存下来，键盘路径只读一个布尔值。
+  const keyboardFollowingRef = useRef(true);
 
   // 流式回答是一串很密的事件（每几个字一条）：一条一条 setState 就是每几个字把整页重渲染一次，
   // 真机上跑任务时整页都在抖。改成先折进 ref，每帧最多往 React 递一次；这一趟收尾由调用方
@@ -932,29 +927,9 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     setHasMessage(false);
   }, [id]);
 
-  // 输入事件只把高度测量合并到下一帧；正文不进 React state。宽度变化（展开、旋转屏幕、
-  // 右侧配置图标出现/收起）会改变折行，这些时候必须重量一次。
-  useEffect(() => {
-    textareaFitSchedulerRef.current.schedule(messageInputRef.current, { force: true });
-  }, [id, runConfig, showReasoningPicker]);
-  useEffect(() => {
-    // Native keyboard and input-method transitions may resize only the viewport height. Text wraps
-    // by width, so forcing `height: auto` for those events is pure layout churn and can displace
-    // WebKit's marked text/caret. Re-fit only after an actual width change (for example rotation).
-    const fit = createComposerViewportResizeHandler({
-      getTextarea: () => messageInputRef.current,
-      schedule: (textarea, options) => textareaFitSchedulerRef.current.schedule(textarea, options),
-      shouldSchedule: () => !composerComposingRef.current,
-    });
-    composerResizeHandlerRef.current = fit;
-    window.addEventListener('resize', fit);
-    return () => {
-      window.removeEventListener('resize', fit);
-      if (composerResizeHandlerRef.current === fit) composerResizeHandlerRef.current = null;
-    };
-  }, []);
+  // 展开态固定为两行并在框内滚动：输入与 IME 组字路径不再读取 scrollHeight，也不写 textarea 高度。
+  // 这比“下一帧合并一次重量”更重要——长线程已经把布局标脏时，哪怕只读一次也会同步重排整页。
   useEffect(() => () => {
-    textareaFitSchedulerRef.current.cancel();
     if (liveRunFrameRef.current) window.cancelAnimationFrame(liveRunFrameRef.current);
     if (liveRunQuietTimerRef.current) window.clearTimeout(liveRunQuietTimerRef.current);
     liveRunFrameRef.current = 0;
@@ -982,9 +957,9 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   // 键盘跟着输入框走（见 ios-keyboard.js）：这个会话把会跟键盘移动的两块交给控制器——消息列表
   // （连窗口带内容）和输入框那一叠；离开会话时收回。
   useEffect(() => registerKeyboardSurface({
-    regionRef: messageRegionRef,
     scrollerRef: messageScrollRef,
     dockRef: composerDockRef,
+    followingRef: keyboardFollowingRef,
   }), []);
 
   function activateComposer(event) {
@@ -994,7 +969,6 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     // second tap is needed for the keyboard. Focus explicitly in the same trusted event; leave the
     // default pointer action intact so a tap in existing text can still place the caret precisely.
     input?.form?.classList.add('expanded');
-    textareaFitSchedulerRef.current.schedule(input, { force: true });
     if (input && document.activeElement !== input) input.focus({ preventScroll: true });
   }
 
@@ -1379,7 +1353,6 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     if (messageInputRef.current) messageInputRef.current.value = '';
     hasMessageRef.current = false;
     setHasMessage(false);
-    textareaFitSchedulerRef.current.schedule(messageInputRef.current, { force: true });
     messageInputRef.current?.form?.classList.remove('expanded');
     messageInputRef.current?.blur();
     setBusy(true);
@@ -1479,7 +1452,6 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
         if (messageInputRef.current) messageInputRef.current.value = nextMessage;
         hasMessageRef.current = Boolean(nextMessage);
         setHasMessage(hasMessageRef.current);
-        textareaFitSchedulerRef.current.schedule(messageInputRef.current, { force: true });
         setError(nextError.message);
         return;
       }
@@ -1633,7 +1605,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
             {!conversation && !detailLoadFailed ? <div className="center-state"><LoaderCircle className="spin" /></div> : null}
           </div>
         </div>
-        <ScrollToBottomButton scrollRef={messageScrollRef} resetKey={id} />
+        <ScrollToBottomButton scrollRef={messageScrollRef} resetKey={id} followingRef={keyboardFollowingRef} />
       </div>
       <div className="composer-dock" ref={composerDockRef}>
         {/* iOS 的 Add Comment 在系统选区菜单里；编辑器放在 dock 内，和主输入区共用原生键盘位移。
@@ -1688,10 +1660,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
               hasMessageRef.current = nextHasMessage;
               setHasMessage(nextHasMessage);
             }
-            textareaFitSchedulerRef.current.schedule(event.currentTarget);
-            // If the device rotated during composition, apply the deferred width fit now that
-            // WebKit has committed marked text and owns a stable selection again.
-            composerResizeHandlerRef.current?.();
+            // Height is fixed while focused; committing marked text does not touch layout.
           }} onChange={(event) => {
             markComposerInputActivity();
             // While an IME owns marked text, do not write textarea height or trigger the empty/non-
@@ -1702,7 +1671,6 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
               hasMessageRef.current = nextHasMessage;
               setHasMessage(nextHasMessage);
             }
-            textareaFitSchedulerRef.current.schedule(event.currentTarget);
           }} onPaste={(event) => {
             const images = Array.from(event.clipboardData?.items || []).filter((item) => item.kind === 'file' && item.type.startsWith('image/')).map((item) => item.getAsFile()).filter(Boolean);
             if (!images.length) return;

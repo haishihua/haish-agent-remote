@@ -96,6 +96,24 @@ final class HaishBridgeViewController: CAPBridgeViewController {
                 MainActor.assumeIsolated {
                     self?.forwardKeyboardFrame(notification, dismissal: true)
                 }
+            },
+            NotificationCenter.default.addObserver(
+                forName: UIResponder.keyboardDidShowNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.pinWebViewOffset()
+                }
+            },
+            NotificationCenter.default.addObserver(
+                forName: UIResponder.keyboardDidHideNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.pinWebViewOffset()
+                }
             }
         ]
         // iOS 15 still uses UIMenuController for WebKit's selection menu. iOS 16+ is handled by
@@ -109,17 +127,32 @@ final class HaishBridgeViewController: CAPBridgeViewController {
         }
     }
 
+    private func pinWebViewOffset() {
+        guard let scrollView = webView?.scrollView, scrollView.contentOffset != .zero else { return }
+        scrollView.setContentOffset(.zero, animated: false)
+    }
+
     private func forwardKeyboardFrame(_ notification: Notification, dismissal: Bool) {
         guard let webView else { return }
         let duration = (notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0
         var height = 0
-        if !dismissal,
-           let value = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue,
-           let window = webView.window {
-            let keyboard = window.convert(value.cgRectValue, from: window.screen.coordinateSpace)
+        var lift = 0
+        var fromLift = 0
+        if let window = webView.window {
             let screen = window.bounds
-            let covered = keyboard.minY < screen.maxY ? min(keyboard.height, screen.maxY - keyboard.minY) : 0
-            height = Int(max(0, covered).rounded())
+            let coveredHeight: (NSValue?) -> CGFloat = { value in
+                guard let value else { return 0 }
+                let keyboard = window.convert(value.cgRectValue, from: window.screen.coordinateSpace)
+                return keyboard.minY < screen.maxY ? max(0, min(keyboard.height, screen.maxY - keyboard.minY)) : 0
+            }
+            let beginCovered = coveredHeight(notification.userInfo?[UIResponder.keyboardFrameBeginUserInfoKey] as? NSValue)
+            let endCovered = dismissal ? 0 : coveredHeight(notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)
+            let restingGap = max(12, 8 + window.safeAreaInsets.bottom)
+            height = Int(endCovered.rounded())
+            // UIKit gives both ends of the transition. Forward both native positions so an
+            // interrupted input-method switch starts from its real pixel without a DOM style read.
+            fromLift = Int(max(0, beginCovered + 12 - restingGap).rounded())
+            lift = Int(max(0, endCovered + 12 - restingGap).rounded())
         }
         // A zero will-change frame is not necessarily a hide: input-method replacement and
         // floating/undocked keyboard transitions can pass through a non-covering frame while the
@@ -131,6 +164,6 @@ final class HaishBridgeViewController: CAPBridgeViewController {
         // composed travel starts from the wrong end of the animation and the composer spends the
         // first half of the rise behind the keyboard. src/ios-keyboard.js anchors to it instead.
         let at = String(format: "%.1f", Date().timeIntervalSince1970 * 1000)
-        webView.evaluateJavaScript("window.dispatchEvent(new CustomEvent('haishKeyboardFrame', { detail: { height: \(height), duration: \(duration), dismissal: \(dismissal), at: \(at) } }))")
+        webView.evaluateJavaScript("window.dispatchEvent(new CustomEvent('haishKeyboardFrame', { detail: { height: \(height), fromLift: \(fromLift), lift: \(lift), duration: \(duration), dismissal: \(dismissal), at: \(at) } }))")
     }
 }

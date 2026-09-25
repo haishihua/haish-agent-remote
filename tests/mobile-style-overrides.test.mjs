@@ -40,7 +40,7 @@ const ANNOTATION_DRAFT_RULE = '.haish-annotation-drafts > .haish-quote-block { w
 test('手机样式表约束批注草稿、编辑器和已发送引用', async () => {
   const css = await readFile(path.join(repoRoot, 'src', 'styles.css'), 'utf8');
   assert.ok(css.includes(ANNOTATION_DRAFT_RULE), `src/styles.css 里应当有 \`${ANNOTATION_DRAFT_RULE}\``);
-  assert.ok(css.includes('.composer-dock { position: relative;'), 'composer dock 应为原生评论编辑器提供定位容器');
+  assert.ok(css.includes('.composer-dock { position: absolute;'), 'composer dock 应为原生评论编辑器提供独立覆盖层定位容器');
   assert.ok(css.includes('html.native-app .haish-annotation-floating { position: absolute !important;'), '原生评论编辑器应固定在 composer dock 上方');
   assert.ok(css.includes('.chat-message-row.user .haish-sent-annotations .haish-quote-text { -webkit-line-clamp: 3;'), '已发送长引用应在 iPhone 上截行');
   // 浏览器/PWA 没有 UIKit 菜单，后备入口直接复用桌面的 SelectionToolbar，只做尺寸适配。

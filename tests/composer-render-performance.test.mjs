@@ -16,12 +16,14 @@ test('typing keeps the draft in the textarea instead of React state', async () =
   assert.match(app, /event\.nativeEvent\.isComposing \|\| composerComposingRef\.current/);
 });
 
-test('keyboard height changes do not force textarea remeasurement', async () => {
-  const app = await read('../src/App.jsx');
+test('typing and keyboard changes never measure textarea layout', async () => {
+  const [app, css] = await Promise.all([read('../src/App.jsx'), read('../src/styles.css')]);
 
-  assert.match(app, /createComposerViewportResizeHandler/);
-  assert.match(app, /shouldSchedule: \(\) => !composerComposingRef\.current/);
-  assert.doesNotMatch(app, /const fit = \(\) => textareaFitSchedulerRef\.current\.schedule\(messageInputRef\.current, \{ force: true \}\)/);
+  assert.doesNotMatch(app, /createComposerTextareaFitScheduler/);
+  assert.doesNotMatch(app, /createComposerViewportResizeHandler/);
+  assert.doesNotMatch(app, /textareaFitSchedulerRef/);
+  assert.doesNotMatch(app, /\.scrollHeight/);
+  assert.match(css, /\.composer\.expanded textarea \{[^}]*height: 82px;[^}]*min-height: 82px;[^}]*max-height: 82px;/);
 });
 
 test('the first composer tap expands and focuses in the same trusted pointer event', async () => {
@@ -45,12 +47,19 @@ test('the photo button keeps the textarea focused until its click opens the pick
   assert.match(app, /onClick=\{\(\) => \{[\s\S]*?openPhotoPicker\(\)/);
 });
 
-test('a keyboard motion defers the textarea fit instead of stealing its frames', async () => {
-  const app = await read('../src/App.jsx');
+test('keyboard motion isolates the composer from the long message tree', async () => {
+  const [app, keyboard, css] = await Promise.all([
+    read('../src/App.jsx'),
+    read('../src/ios-keyboard.js'),
+    read('../src/styles.css'),
+  ]);
 
-  // 键盘动画那几百毫秒里不量高：一次强制布局落在键盘事件到达的窗口里，输入框就晚一步才跟上。
-  assert.match(app, /import \{[\s\S]*?isKeyboardMoving[\s\S]*?\} from '\.\/ios-keyboard\.js'/);
-  assert.match(app, /createComposerTextareaFitScheduler\(\{ shouldDefer: isKeyboardMoving \}\)/);
+  assert.match(app, /followingRef=\{keyboardFollowingRef\}/);
+  assert.doesNotMatch(keyboard, /getComputedStyle\(|getBoundingClientRect\(|\.scrollHeight|\.clientHeight/);
+  assert.doesNotMatch(keyboard, /regionRef|message-region|\.region/);
+  assert.match(css, /\.composer-dock \{ position: absolute;/);
+  assert.match(css, /\.message-scroll \{[^}]*contain: layout paint style;/);
+  assert.match(css, /\.chat-row \{ content-visibility: auto;/);
 });
 
 test('the expensive detail subtrees have memo boundaries and stable props', async () => {
