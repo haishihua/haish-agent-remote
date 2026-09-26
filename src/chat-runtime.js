@@ -245,23 +245,50 @@ function resolveRowStatus(runtime, summary) {
   return runtimeStatus;
 }
 
-// 时间线里已经有的那段话不再当正文重复一遍。取消/失败的任务最容易碰上：那次回答
-// 还没定稿就被打断，过程文本（commentary）留在时间线上，answer_text 又是同一段。
-function shownByTimeline(text, timelineItems) {
-  const wanted = String(text || '').trim();
+// 取消/失败的任务在 runtime 侧没有落库的助手消息，正文取 `answer_text` —— 它是**整轮可见
+// 文本的拼接**（真机实测有一轮 12,820 字）：几段之间没有任何分隔符（中文段落后面直接接英文
+// 段落），而时间线上每一段本来就各占一行。按「逐段字面相等」去重挡不住这种拼接体，手机上
+// 于是在工具卡下面再铺一整串同样的字（用户原话：只保留上面的可见文本 + 工具调用，下面那一
+// 长串拼接不要）。两条过法：先按时间线的顺序把已经显示过的每一段从正文里剪掉，剩下的再按
+// 「抹掉空白后被时间线覆盖」整段丢掉。时间线上没出现过的字（错误说明、没有折进时间线的那半
+// 段）照旧留着，所以失败行的报错不会跟着消失。
+function collapseWhitespace(value) {
+  return String(value || '').replace(/\s+/g, '');
+}
+
+// 时间线上真正显示给用户的那些字（工具卡 / todo / 审批卡不算文本）。
+function timelineTextItems(timelineItems) {
+  return (Array.isArray(timelineItems) ? timelineItems : [])
+    .filter((item) => item?.kind === 'text')
+    .map((item) => String(item.text || '').trim())
+    .filter(Boolean);
+}
+
+function shownByTimeline(text, visibleText) {
+  const wanted = collapseWhitespace(text);
   if (!wanted) return false;
-  return timelineItems.some(
-    (item) => item.kind === 'text' && String(item.text || '').trim() === wanted,
-  );
+  return visibleText.includes(wanted);
 }
 
 // 正文是一段段拼的（回答 + 错误说明），只去掉时间线上已经有的那几段。
 function withoutTimelineDuplicates(text, timelineItems) {
-  return String(text || '')
+  const items = timelineTextItems(timelineItems);
+  // 时间线还没折出来（只有任务摘要）时没有「上面」可比，正文照旧留在行上。
+  if (!items.length) return String(text || '');
+  const visibleText = collapseWhitespace(items.join('\n\n'));
+  let remaining = String(text || '');
+  // 拼接体里没有分隔符，所以按段落切不开：改成拿时间线那几段去正文里各剪一刀（顺序一致）。
+  // 字面对不上（时间线那段带了 markdown 强调之类）就跳过，交给下面那层包含判断。
+  items.forEach((item) => {
+    const index = remaining.indexOf(item);
+    if (index < 0) return;
+    remaining = `${remaining.slice(0, index)}${remaining.slice(index + item.length)}`;
+  });
+  return remaining
     .split('\n\n')
     .map((part) => part.trim())
     .filter(Boolean)
-    .filter((part) => !shownByTimeline(part, timelineItems))
+    .filter((part) => !shownByTimeline(part, visibleText))
     .join('\n\n');
 }
 

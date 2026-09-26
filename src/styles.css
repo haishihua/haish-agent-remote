@@ -407,14 +407,25 @@ html.native-app .haish-annotation-editor { width: 100%; }
 .chat-message-row.user .haish-sent-annotations .haish-quote-block { gap: 5px; margin: 0; padding: 7px 9px; border-left: 2px solid rgba(239, 191, 100, 0.55); border-radius: 8px; background: rgba(10, 16, 28, 0.22); }
 .chat-message-row.user .haish-sent-annotations .haish-quote-text { -webkit-line-clamp: 3; font-size: 12px; line-height: 1.4; }
 .chat-message-row.user .haish-sent-annotations .haish-quote-comment { margin-top: 3px; font-size: 13px; line-height: 1.4; }
-.send-button { display: grid; grid-column: -2 / -1; width: 48px; height: 48px; padding: 0; place-items: center; align-self: end; border: 0; border-radius: 14px; background: var(--accent); color: #f7e7b0; }
+/* 发送/停止键：桌面 chat 的 .chat-send 就是一颗 40px 深色圆盘（1px 蓝灰描边 + 顶部高光 +
+   投影），外面再套 metal-fx 的 chromatic「液体金属」环；按下时 scale(.95)。这里按钮是 48px，
+   尺寸按比例来（图标 26px / 14px，见下）。 */
+.send-button { display: grid; grid-column: -2 / -1; width: 48px; height: 48px; padding: 0; place-items: center; align-self: end; border: 1px solid rgba(72, 83, 109, 0.78); border-radius: 50%; background: linear-gradient(180deg, #1b2231, #121722); color: rgba(239, 243, 252, 0.94); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 4px 12px rgba(0, 0, 0, 0.28); transition: border-color 160ms ease, background 160ms ease, color 160ms ease, box-shadow 160ms ease, opacity 140ms ease, transform 140ms ease; }
+.send-button:active:not(:disabled) { transform: scale(0.95); }
+.send-button:disabled { box-shadow: none; }
 .composer.expanded .send-button { grid-column: 4 / 5; }
 /* Both controls stay mounted so IME input never asks React to replace the active button or redraw
    the detail tree. The tiny composer class mutation alone selects stop versus send. */
 .composer-stop-button { display: none; }
 .composer.is-running:not(.has-message):not(.has-image) .composer-stop-button { display: grid; }
 .composer.is-running:not(.has-message):not(.has-image) .composer-send-button { display: none; }
-.send-button.stop { padding: 0; border: 1px solid #d05050; background: linear-gradient(180deg, #d65a5a 0%, #b73a3a 55%, #8b2a2a 100%); color: #fff8f3; box-shadow: inset 0 1px 0 rgba(255, 220, 220, 0.28), inset 0 -1px 0 rgba(70, 20, 20, 0.28), 0 1px 2px rgba(0, 0, 0, 0.16); }
+/* 桌面那颗金属环是 metal-fx 的 WebGL 着色器画的（在跑任务时全亮）。手机不挂着色器：
+   48px 的 canvas 每帧重绘就是这轮一直在躲的开销；改用一层静态 conic-gradient 边框把同一份
+   观感（深色圆盘 + 细彩环）拿回来，空闲时压暗、任务在跑时提亮（对应桌面 is-idle → 全亮）。 */
+.send-button.composer-send-button, .send-button.composer-stop-button { border: 2px solid transparent; background: linear-gradient(180deg, #1b2231, #121722) padding-box, conic-gradient(from 145deg, #46536e, #6f7f9c, #8e9bb8, #5d6b8a, #3f4c66, #46536e) border-box; }
+.composer.is-running .send-button.composer-send-button, .composer.is-running .send-button.composer-stop-button, .composer.has-message .send-button.composer-send-button, .composer.has-image .send-button.composer-send-button { background: linear-gradient(180deg, #1b2231, #121722) padding-box, conic-gradient(from 145deg, #8e97ff, #7fe0c6, #ffdf95, #ff9ed6, #8ccdff, #8e97ff) border-box; }
+/* 停止不再用红盘：桌面 chat 里这两颗是同一颗深色圆盘，只有图标不同。 */
+.send-button.stop { padding: 0; border: 2px solid transparent; background: linear-gradient(180deg, #1b2231, #121722) padding-box, conic-gradient(from 145deg, #8e97ff, #7fe0c6, #ffdf95, #ff9ed6, #8ccdff, #8e97ff) border-box; color: #ffffff; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 4px 12px rgba(0, 0, 0, 0.28); }
 .send-spinner { display: block; width: 20px; height: 20px; box-sizing: border-box; border: 2px solid color-mix(in srgb, currentColor 28%, transparent); border-top-color: currentColor; border-radius: 50%; transform-origin: 50% 50%; animation: spin 720ms linear infinite; }
 /* 发送/停止的图标跟桌面 chat 的发送键一致：ArrowUp 是发，实心圆角方块是停。桌面那套是
    40px 的圆按钮配 22px 箭头 / 12px 方块（.chat-send-icon / .chat-stop-icon），这里按钮是

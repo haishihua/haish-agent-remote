@@ -404,6 +404,73 @@ test('a cancelled run that never reached a tool keeps its answer in the body', (
   assert.deepEqual(rows[1].traceTimeline, []);
 });
 
+// 真机上取消那一轮的样子：`answer_text` 是整轮可见文本的拼接（几段之间没有分隔符，实测
+// 一轮 12,820 字），时间线上每段本来就各占一行。逐段字面比较挡不住这个拼接体，于是工具卡
+// 下面又铺了一整串同样的字——只留上面那份，正文清空。
+test('a cancelled run drops the body its timeline already showed', () => {
+  const first = '重要发现：截图全是只有壁纸、没有窗口，先按权限那条走。';
+  const second = '再把录屏参数核一遍，然后决定走哪条路。';
+  const orphan = { task_id: 'task-8', status: 'cancelled', answer_text: `${first}${second}` };
+  const runtime = runtimeTaskFromDetail({
+    task_id: 'task-8',
+    status: 'cancelled',
+    answer_text: `${first}${second}`,
+    events: [
+      rawEvent('e1', 'run_started'),
+      rawEvent('e2', 'llm_answer_delta', { delta: first }),
+      rawEvent('e3', 'tool_call_started', { call_id: 'c1', tool_name: 'exec_command', tool_input: { command: 'ls' } }),
+      rawEvent('e4', 'llm_answer_delta', { delta: second }),
+    ],
+  });
+  const rows = buildChatRows({
+    conversationId: 'convo-1',
+    messages: [{ message_id: 'm1', role: 'user', content: 'stop me', task_id: 'task-8' }],
+    tasksById: new Map([['task-8', orphan]]),
+    runtimeTasks: { 'task-8': runtime },
+    agentOptions: AGENT_OPTIONS,
+    orphanReplyByAnchor: new Map([['m1', orphan]]),
+  });
+
+  assert.equal(rows[1].text, '');
+  assert.deepEqual(
+    rows[1].traceTimeline.map((item) => `${item.kind}:${item.text || item.label}`),
+    [`text:${first}`, 'tool:exec command', `text:${second}`],
+  );
+});
+
+// 时间线上没出现过的那些字（落库了但没折进时间线的半段、失败行拼在正文里的报错）照旧留在
+// 正文里：拼接体是「已显示 + 未显示」粘成一整段，剪掉前一半，剩下的一半得看得见。
+test('a cancelled run keeps the body the timeline never showed', () => {
+  const shown = '这一段时间线上有。';
+  const neverShown = '时间线上没有的那半段。';
+  const orphan = { task_id: 'task-9', status: 'cancelled', answer_text: `${shown}${neverShown}`, error: 'Cancelled by user.' };
+  const runtime = runtimeTaskFromDetail({
+    task_id: 'task-9',
+    status: 'cancelled',
+    answer_text: `${shown}${neverShown}`,
+    error: 'Cancelled by user.',
+    events: [
+      rawEvent('e1', 'run_started'),
+      rawEvent('e2', 'llm_answer_delta', { delta: shown }),
+      rawEvent('e3', 'tool_call_started', { call_id: 'c1', tool_name: 'exec_command', tool_input: { command: 'ls' } }),
+    ],
+  });
+  const rows = buildChatRows({
+    conversationId: 'convo-1',
+    messages: [{ message_id: 'm1', role: 'user', content: 'go', task_id: 'task-9' }],
+    tasksById: new Map([['task-9', orphan]]),
+    runtimeTasks: { 'task-9': runtime },
+    agentOptions: AGENT_OPTIONS,
+    orphanReplyByAnchor: new Map([['m1', orphan]]),
+  });
+
+  assert.equal(rows[1].text, `${neverShown}\n\nCancelled by user.`);
+  assert.deepEqual(
+    rows[1].traceTimeline.map((item) => `${item.kind}:${item.text || item.label}`),
+    [`text:${shown}`, 'tool:exec command'],
+  );
+});
+
 // 执行记录还没到手时（只有摘要）正文得自己磎上，不能因为时间线为空就丢掉。
 test('a cancelled run without a trace still shows its partial answer', () => {
   const orphan = { task_id: 'task-4', status: 'cancelled', answer_text: 'half a sentence' };

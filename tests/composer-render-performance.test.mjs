@@ -33,13 +33,40 @@ test('typing and keyboard changes never measure textarea layout', async () => {
 
 test('the trusted composer tap focuses once and focus expands the isolated overlay', async () => {
   const app = await read('../src/App.jsx');
+  const activate = app.slice(app.indexOf('function activateComposer(event)'), app.indexOf('function collapseComposer'));
 
   assert.match(app, /function activateComposer\(event\)/);
   assert.doesNotMatch(app, /event\?\.type === 'pointerdown'.*event\.preventDefault\(\)/);
   assert.match(app, /event\.currentTarget\.form\?\.classList\.add\('expanded'\)/);
-  assert.doesNotMatch(app, /\.focus\(\{ preventScroll: true \}\)/);
+  // 展开只靠这一层类切换：被信任的点按自己建立第一响应者，这条路径绝不代劳 focus()。
+  // （系统面板回来时那份恢复会 focus()，那是另一条路，见下面那条用例。）
+  assert.doesNotMatch(activate, /\.focus\(/);
   assert.doesNotMatch(app, /onPointerDown=\{activateComposer\}/);
   assert.match(app, /rows=\{2\} disabled=\{busy \|\| composerPending\} onFocus=\{activateComposer\}/);
+});
+
+test('a dismissed photo sheet restores the composer it was opened from', async () => {
+  const app = await read('../src/App.jsx');
+
+  // 图片按钮只在展开态出现，而系统面板会先把键盘收掉：不恢复就是用户看到的「取消上传图片
+  // 之后图标不见了，得关掉输入框再点一次」。
+  assert.match(app, /function rememberComposerSheet\(\)/);
+  assert.match(app, /rememberComposerSheet\(\)[\s\S]*?photoInputRef\.current\?\.click\(\)/);
+  assert.match(app, /async function openPhotoPicker\(\)[\s\S]*?rememberComposerSheet\(\)/);
+  assert.match(app, /pickImagesFromLibrary\([\s\S]*?\} finally \{\s*composerSheetRestore\(\);/);
+  // 原生相册那条等 promise；`<input type="file">`（长按的相机/文件）没有 promise，
+  // 等 Web 视图重新拿到焦点。
+  assert.match(app, /window\.addEventListener\('focus', composerSheetRestore\)/);
+  assert.match(app, /function composerSheetRestore\(\)[\s\S]*?classList\.add\('expanded'\)/);
+});
+
+test('the keyboard return key inserts a newline instead of sending', async () => {
+  const app = await read('../src/App.jsx');
+
+  // Return 不再提交：表单里唯一的发送入口是那颗发送按钮（submit 默认型），键盘只管换行。
+  assert.doesNotMatch(app, /event\.key !== 'Enter'/);
+  assert.doesNotMatch(app, /requestSubmit\(\)/);
+  assert.match(app, /className="send-button composer-send-button"/);
 });
 
 test('a conversation renders its thread before the composer takes input', async () => {

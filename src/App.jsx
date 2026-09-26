@@ -889,6 +889,9 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   const loadedTraceIdsRef = useRef(new Set());
   const hasMessageRef = useRef(false);
   const composerComposingRef = useRef(false);
+  // 「打开系统面板之前输入区是不是开着的」——相册/相机/文件面板回来之后要照原样恢复（见
+  // composerSheetRestore）。
+  const composerRestoreRef = useRef(false);
   // 键盘回调不能再去读这份长线程的 scrollHeight/clientHeight。滚动事件已经有这些几何值，
   // 在这里把“是否跟着最新消息”缓存下来，键盘路径只读一个布尔值。
   const keyboardFollowingRef = useRef(true);
@@ -1007,6 +1010,37 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     messageInputRef.current?.form?.classList.remove('expanded');
     messageInputRef.current?.blur();
   }
+
+  // 系统面板（相册 / 相机 / 文件）与输入区：面板打开前会先把键盘收掉（原生插件里就是先
+  // `endEditing`），而图片按钮只在展开态出现——不恢复的话，用户取消选择之后会看到图片按钮
+  // 凭空消失，得先关掉输入框再点一次才能找回来（真机复现）。开面板前记住「输入区是开着的」，
+  // 回来时照原样恢复。回来的路有两条：原生插件的 promise 落地，以及 Web 视图重新拿到焦点
+  // （`<input type="file">` 那条没有 promise 可等）。
+  function composerSheetRestore() {
+    if (!composerRestoreRef.current) return;
+    composerRestoreRef.current = false;
+    const input = messageInputRef.current;
+    if (!input) return;
+    // 展开态先落回去（两行 + 图片按钮）：图片按钮只在展开态存在，这就是用户看到的「按钮不见了」。
+    input.form?.classList.add('expanded');
+    if (input.disabled || document.activeElement === input) return;
+    // 焦点交给 WebKit：它答不答应是它的事（系统面板回来后的脚本 focus() 未必起键盘），
+    // 真拿到了就一定是 `activateComposer` 那条 focus 事件（标志位与键盘状态不会脱节）。
+    try {
+      input.focus({ preventScroll: true });
+    } catch {
+      input.focus();
+    }
+  }
+
+  useEffect(() => {
+    window.addEventListener('focus', composerSheetRestore);
+    document.addEventListener('visibilitychange', composerSheetRestore);
+    return () => {
+      window.removeEventListener('focus', composerSheetRestore);
+      document.removeEventListener('visibilitychange', composerSheetRestore);
+    };
+  }, []);
 
   useEffect(() => () => {
     composerImagesRef.current.forEach((image) => {
@@ -1329,6 +1363,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     photoLongPressTimerRef.current = window.setTimeout(() => {
       photoLongPressTimerRef.current = 0;
       photoLongPressRef.current = true;
+      rememberComposerSheet();
       photoInputRef.current?.click();
     }, PHOTO_LONG_PRESS_MS);
   }
@@ -1347,8 +1382,14 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     openPhotoPicker();
   }
 
+  function rememberComposerSheet() {
+    composerRestoreRef.current = Boolean(messageInputRef.current?.form?.classList.contains('expanded'));
+  }
+
   async function openPhotoPicker() {
     if (busy || composerImagesRef.current.length >= CHAT_IMAGE_MAX_COUNT) return;
+    // 面板回来之后要把输入区恢复成现在这个样子（见 composerSheetRestore）。
+    rememberComposerSheet();
     if (!hasNativePhotoPicker()) {
       photoInputRef.current?.click();
       return;
@@ -1361,6 +1402,8 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     } catch (nextError) {
       if (isPhotoPickerCancellation(nextError)) return;
       setError(nextError?.message || 'Could not open the photo library.');
+    } finally {
+      composerSheetRestore();
     }
   }
 
@@ -1755,10 +1798,6 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
             if (!images.length) return;
             event.preventDefault();
             attachImages(images);
-          }} onKeyDown={(event) => {
-            if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
-            event.preventDefault();
-            event.currentTarget.form?.requestSubmit();
           }} placeholder={composerPending ? 'Loading conversation…' : (running ? 'Add instructions…' : 'Continue this task…')} />
           <button
             type="button"
@@ -1784,6 +1823,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
           <input ref={photoInputRef} className="composer-file-input" type="file" accept="image/*" multiple tabIndex={-1} aria-hidden="true" disabled={composerImages.length >= CHAT_IMAGE_MAX_COUNT} onChange={(event) => {
             attachImages(event.target.files);
             event.target.value = '';
+            composerSheetRestore();
           }} />
           {runConfig ? <button type="button" className="run-config-icon-button" onClick={() => setShowReasoningPicker(true)} disabled={running} aria-label={`Choose thinking level, currently ${selectedThinking?.label || 'unknown'}`} aria-haspopup="dialog"><svg className="run-config-gauge" style={{ '--gauge-rotation': reasoningGaugeRotation }} viewBox="0 0 24 24" aria-hidden="true"><path className="run-config-gauge-arc" d="M3.34 19a10 10 0 1 1 17.32 0" /><g className="run-config-gauge-needle"><path className="run-config-gauge-pointer" d="M10.9 13.4 12.6 15.1 18.65 7.35Z" /><circle cx="12" cy="14" r="1.8" /></g></svg></button> : null}
           <button type="button" className="send-button stop composer-stop-button" onClick={stop} disabled={busy} aria-label="Stop task">
@@ -1938,6 +1978,17 @@ export default function App() {
     }).catch(() => {
       // The local projection still behaves offline; a later directory refresh merges the server.
     });
+  }, [applySeenAt]);
+
+  // Adapter 那份共享「看过」游标（桌面写、手机也写）：目录 15 秒才拉一次，桌面刚看过的会话
+  // 最多要等 15 秒才熄灯。它只是一个小 map，和状态/审批一样按 5 秒的节奏合并一次。
+  const loadSharedReads = useCallback(async () => {
+    try {
+      const response = await api.conversationReads();
+      applySeenAt(response?.seen_at);
+    } catch {
+      // 拉不到就只留本地那份投影，下一次目录刷新（或下一轮轮询）再合。
+    }
   }, [applySeenAt]);
 
   const loadStatus = useCallback(async () => {
@@ -2112,6 +2163,7 @@ export default function App() {
     if (!status?.paired) return undefined;
     loadTasks();
     loadApprovals();
+    loadSharedReads();
     let sinceDirectory = 0;
     const timer = window.setInterval(() => {
       // A pull (or a keyboard animation) owns the thread while it is on its way: no background
@@ -2119,6 +2171,7 @@ export default function App() {
       if (threadBusy()) return;
       loadStatus().catch((error) => setFatalError(error.message));
       loadApprovals();
+      loadSharedReads();
       sinceDirectory += STATUS_POLL_MS;
       if (sinceDirectory < DIRECTORY_POLL_MS) return;
       sinceDirectory = 0;
@@ -2128,7 +2181,7 @@ export default function App() {
       if (!detailOpenRef.current) loadTasks();
     }, STATUS_POLL_MS);
     return () => window.clearInterval(timer);
-  }, [status?.paired, loadStatus, loadTasks, loadApprovals]);
+  }, [status?.paired, loadStatus, loadTasks, loadApprovals, loadSharedReads]);
 
   useEffect(() => {
     if (!status?.paired || loading || restoredConversationRef.current || selectedId || !conversations.length) return;
