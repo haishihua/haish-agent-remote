@@ -39,7 +39,22 @@ test('the trusted composer tap focuses once and focus expands the isolated overl
   assert.match(app, /event\.currentTarget\.form\?\.classList\.add\('expanded'\)/);
   assert.doesNotMatch(app, /\.focus\(\{ preventScroll: true \}\)/);
   assert.doesNotMatch(app, /onPointerDown=\{activateComposer\}/);
-  assert.match(app, /rows=\{2\} disabled=\{busy\} onFocus=\{activateComposer\}/);
+  assert.match(app, /rows=\{2\} disabled=\{busy \|\| composerPending\} onFocus=\{activateComposer\}/);
+});
+
+test('a conversation renders its thread before the composer takes input', async () => {
+  const [app, css] = await Promise.all([read('../src/App.jsx'), read('../src/styles.css')]);
+
+  // 进会话先落 loading：整条线程（Markdown / 工具卡 / 时间线）渲染完之前，输入框只是占位。
+  assert.match(app, /const \[threadReady, setThreadReady\] = useState\(false\)/);
+  assert.match(app, /if \(!conversationHydrated\) return undefined;/);
+  assert.match(app, /requestIdleCallback\(reveal, \{ timeout: THREAD_READY_IDLE_MS \}\)/);
+  assert.match(app, /setTimeout\(\(\) => setThreadReady\(true\), THREAD_READY_MAX_MS\)/);
+  // 加载期间的输入框：占位文案 + 不接手势。
+  assert.match(app, /const composerPending = !threadReady;/);
+  assert.match(app, /placeholder=\{composerPending \? 'Loading conversation…'/);
+  assert.match(app, /data-blocked=\{busy \|\| composerPending/);
+  assert.match(css, /\.composer\.is-loading \{ pointer-events: none; \}/);
 });
 
 test('IME text toggles only composer DOM state and keeps both action buttons mounted', async () => {

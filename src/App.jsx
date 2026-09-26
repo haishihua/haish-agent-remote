@@ -45,6 +45,9 @@ import { composerInputQuietDelay, isComposerInputActive, markComposerInputActivi
 import { hideKeyboardAccessoryBar, isKeyboardMoving, mountKeyboardInset, registerKeyboardSurface } from './ios-keyboard.js';
 import penguinLogo from './assets/penguin_logo_user.png';
 import { ScrollToBottomButton } from './ScrollToBottomButton.jsx';
+// 长线程的渲染窗口（见 thread-window.js）：iOS 17 的 WebKit 没有 content-visibility，
+// 行数只能自己控。
+import { THREAD_WINDOW_ROWS, THREAD_WINDOW_STEP, extendThreadWindow, rowsToReveal, threadWindowStart } from './thread-window.js';
 // 会话线程直接用桌面的行与时间线（见 chat-view.jsx / chat-runtime.js）。
 import { ChatThread, releaseConversationImageUrls } from './chat-view.jsx';
 // 线程末尾那个审批 / 提问插槽：卡片是桌面的，作用域是手机的（见 approval-slot.jsx）。
@@ -144,6 +147,12 @@ const PHOTO_LONG_PRESS_MS = 450;
 const STATUS_POLL_MS = 5_000;
 const DIRECTORY_POLL_MS = 15_000;
 const CONVERSATION_POLL_MS = 15_000;
+// 进会话的输入框要等到「线程真的画完、浏览器接下来是空的」才交出去（ConversationDetail 的
+// threadReady）：先等两帧让这一帧落地，再等一次空闲回调（`content-visibility` 的行各自还要
+// 布局一次）。空闲迟迟不来时用 timeout 兜底，另外一条硬上限保证输入框永远不会被扣住。
+const THREAD_READY_IDLE_MS = 400;
+const THREAD_READY_FALLBACK_MS = 60;
+const THREAD_READY_MAX_MS = 5_000;
 // One sync for the whole app session: a task that was already streamed keeps its
 // cursor, so leaving and re-entering a conversation resumes with the missing
 // events instead of replaying the whole log.
@@ -834,6 +843,10 @@ function taskIdsOf(conversation) {
 function ConversationDetail({ id, projectName, initialConversation, modelCatalogTasks, onBack, connection, nativeSwipeBack = false }) {
   const [conversation, setConversation] = useState(initialConversation || null);
   const [conversationHydrated, setConversationHydrated] = useState(false);
+  // 这条会话的线程渲染完了没有。没渲染完之前输入框只是一个「Loading conversation…」占位。
+  const [threadReady, setThreadReady] = useState(false);
+  // 这条线程实际挂了多少行（见 thread-window.js）：从最新的一端往回数。
+  const [threadWindow, setThreadWindow] = useState(THREAD_WINDOW_ROWS);
   // 正文和“是否有可发送文字”都留在 composer DOM 里。尤其不能在中文候选词提交时
   // setState：即便只跨一次空/非空边界，也会同步重渲染这条超长对话并阻塞 WebKit 的 marked text。
   const [busy, setBusy] = useState(false);
@@ -1008,6 +1021,12 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     setOptimisticUserMessages([]);
     setConversationHydrated(false);
     loadedTraceIdsRef.current = new Set();
+    // 进这条会话先进 loading，输入框等线程渲染完再交出去（见下面的 ready gate）。
+    setThreadReady(false);
+    setThreadWindow(THREAD_WINDOW_ROWS);
+    // 硬上限：会话一直取不回来（runtime 掉线、请求挂在半路）也不能把输入框扣死。
+    const ceiling = window.setTimeout(() => setThreadReady(true), THREAD_READY_MAX_MS);
+    return () => window.clearTimeout(ceiling);
   }, [id]);
 
   const refresh = useCallback(async ({ keep = false } = {}) => {
@@ -1053,6 +1072,36 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     const timer = window.setInterval(refresh, CONVERSATION_POLL_MS);
     return () => window.clearInterval(timer);
   }, [refresh]);
+
+  // 输入框的 ready gate：会话取回来、并且整条线程（Markdown / 工具卡 / 时间线）真的渲染完
+  // 之前，输入框只是一个不接手势的占位。真机上这件事非常直白——线程越长越卡：一次渲染要几秒，
+  // 这期间点下去，WebKit 只能把 focus 排在这次渲染后面，用户看到的正是「键盘先弹出来、输入区
+  // 半天不动」。等两帧（这一帧真的画出去）再等一次空闲回调，然后把输入框交出去。
+  useEffect(() => {
+    if (!conversationHydrated) return undefined;
+    let cancelled = false;
+    let first = 0;
+    let second = 0;
+    let idle = 0;
+    let timer = 0;
+    const reveal = () => { if (!cancelled) setThreadReady(true); };
+    first = window.requestAnimationFrame(() => {
+      second = window.requestAnimationFrame(() => {
+        if (typeof window.requestIdleCallback === 'function') {
+          idle = window.requestIdleCallback(reveal, { timeout: THREAD_READY_IDLE_MS });
+        } else {
+          timer = window.setTimeout(reveal, THREAD_READY_FALLBACK_MS);
+        }
+      });
+    });
+    return () => {
+      cancelled = true;
+      if (first) window.cancelAnimationFrame(first);
+      if (second) window.cancelAnimationFrame(second);
+      if (idle && typeof window.cancelIdleCallback === 'function') window.cancelIdleCallback(idle);
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [conversationHydrated, id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1511,6 +1560,11 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   // A detail that never loaded is a dead end on its own — a banner over an empty thread.
   // The card below owns the way out, and the pull-to-refresh handler above retries it.
   const detailLoadFailed = !conversationHydrated && Boolean(error || connection) && !liveRun;
+  // 取会话失败时没有「线程渲染完」这回事（错误卡已经占住了线程），别把输入框一起扣着。
+  useEffect(() => {
+    if (detailLoadFailed) setThreadReady(true);
+  }, [detailLoadFailed]);
+  const composerPending = !threadReady;
   // Every state change on this screen re-renders it; the thread below is memoized
   // so typing, the elapsed timer, polls and streamed events only redraw the parts
   // they actually change.
@@ -1545,9 +1599,19 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     orphanReplyByAnchor,
   }), [agents, conversation, id, liveReplyPending, liveRun, orphanReplyByAnchor, running, taskRuntimes, tasksById, visibleMessages, visibleOptimisticMessages]);
 
+  // 长线程只挂最新的一段（见 thread-window.js）：被收起来的那一段在顶部用按钮叫回来。
+  const hiddenRowCount = threadWindowStart(rows.length, threadWindow);
+  const threadRows = hiddenRowCount > 0 ? rows.slice(hiddenRowCount) : rows;
+  const showEarlierMessages = useCallback(
+    () => extendThreadWindow({ scroller: messageScrollRef.current, setSize: setThreadWindow }),
+    [],
+  );
+
   // 引用批注（桌面的「添加注释」）：语义全在桌面那几份里（模型 / 草稿 hook / 引用块 / 快捷键），
   // 这里把它们接到手机的行列表上——行的形状与桌面的 messages 同形（role、messageId、status、
   // annotations），所以模型层一行也不用改。
+  const rowsRef = useRef(rows);
+  useEffect(() => { rowsRef.current = rows; }, [rows]);
   const selectAnnotationMessages = useMemo(() => createAnnotationMessageSelector(), []);
   const annotationMessages = useMemo(() => selectAnnotationMessages(rows, id), [id, rows, selectAnnotationMessages]);
   const { items: annotationSnapshots, update: updateAnnotations, storageError: annotationStorageError } = useAnnotationDraft(id, annotationMessages);
@@ -1563,7 +1627,13 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   const approvalTaskIds = useMemo(() => taskIdsOf(conversation), [conversation]);
   const [annotationNotice, setAnnotationNotice] = useState('');
   const annotationUiRef = useRef(null);
-  const jumpToAnnotation = useCallback((item) => annotationUiRef.current?.jump(item), []);
+  const jumpToAnnotation = useCallback((item) => {
+    // 目标可能落在被收起来的那一段里：先把窗口推到能装下它，下一帧再跳——`findAnnotationRange`
+    // 是在 DOM 里找原文的，行没挂上就只会报「找不到这段引用」。
+    const needed = rowsToReveal(rowsRef.current, String(item?.source_message_id || item?.messageId || ''));
+    if (needed) setThreadWindow((current) => Math.max(current, needed));
+    window.requestAnimationFrame(() => annotationUiRef.current?.jump(item));
+  }, []);
   const editAnnotation = useCallback((item) => annotationUiRef.current?.edit(item), []);
   const previewThreadImage = useCallback((image) => {
     setPreviewImage({ src: image?.src, name: image?.title });
@@ -1601,9 +1671,11 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
         <div className="detail-body" ref={messageBodyRef}>
           <span className="pull-refresh" ref={refreshIndicatorRef} aria-hidden="true"><LoaderCircle size={21} /></span>
           <div className="message-scroll" ref={messageScrollRef}>
+            {/* 历史被窗口收起来了（见 THREAD_WINDOW_ROWS）：这一段由用户自己叫回来。 */}
+            {hiddenRowCount > 0 ? <button type="button" className="thread-more" onClick={showEarlierMessages}>Show {Math.min(THREAD_WINDOW_STEP, hiddenRowCount)} earlier messages</button> : null}
             <ChatThread
               conversationId={id}
-              rows={rows}
+              rows={threadRows}
               loadTaskTrace={loadTaskTrace}
               annotationNumbers={annotationNumbers}
               onAnnotationJump={jumpToAnnotation}
@@ -1632,7 +1704,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
           onSave={saveAnnotation}
           onError={setAnnotationNotice}
         />
-        <form className={`composer ${runConfig ? 'has-config-icon' : ''} ${running ? 'is-running' : ''} ${hasMessageRef.current ? 'has-message' : ''} ${composerImages.some((image) => image.imageId && !image.error) ? 'has-image' : ''} ${(annotationDrafts.length || composerImages.some((image) => image.imageId && !image.error)) ? 'has-other-sendable' : ''}`} onSubmit={submit} onDragOver={(event) => {
+        <form className={`composer ${runConfig ? 'has-config-icon' : ''} ${running ? 'is-running' : ''} ${hasMessageRef.current ? 'has-message' : ''} ${composerImages.some((image) => image.imageId && !image.error) ? 'has-image' : ''} ${(annotationDrafts.length || composerImages.some((image) => image.imageId && !image.error)) ? 'has-other-sendable' : ''} ${composerPending ? 'is-loading' : ''}`} aria-busy={composerPending ? 'true' : undefined} onSubmit={submit} onDragOver={(event) => {
           if (Array.from(event.dataTransfer?.items || []).some((item) => item.kind === 'file')) event.preventDefault();
         }} onDrop={(event) => {
           const images = Array.from(event.dataTransfer?.files || []).filter((file) => file.type.startsWith('image/'));
@@ -1658,7 +1730,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
           ))}</div> : null}
           {composerImages.some((image) => image.error) ? <p className="composer-image-error" role="alert">{composerImages.find((image) => image.error)?.error}</p> : null}
           <label htmlFor="task-message" className="sr-only">Send instructions</label>
-          <textarea ref={messageInputRef} id="task-message" rows={2} disabled={busy} onFocus={activateComposer} onBlur={(event) => {
+          <textarea ref={messageInputRef} id="task-message" rows={2} disabled={busy || composerPending} onFocus={activateComposer} onBlur={(event) => {
             // Programmatic/native resignFirstResponder can arrive without a click on the thread.
             // Keep the DOM shell in sync even if iOS omits one of its keyboard callbacks.
             composerComposingRef.current = false;
@@ -1687,11 +1759,11 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
             if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
             event.preventDefault();
             event.currentTarget.form?.requestSubmit();
-          }} placeholder={running ? 'Add instructions…' : 'Continue this task…'} />
+          }} placeholder={composerPending ? 'Loading conversation…' : (running ? 'Add instructions…' : 'Continue this task…')} />
           <button
             type="button"
             className="composer-photo-button"
-            disabled={busy || composerImages.length >= CHAT_IMAGE_MAX_COUNT}
+            disabled={busy || composerPending || composerImages.length >= CHAT_IMAGE_MAX_COUNT}
             onClick={() => {
               if (photoLongPressRef.current) {
                 photoLongPressRef.current = false;
@@ -1721,11 +1793,11 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
           </button>
           <button
             className="send-button composer-send-button"
-            data-blocked={busy || composerImages.some((image) => image.uploading) || (running && annotationDrafts.length) || (!running && !runConfig) ? 'true' : 'false'}
-            disabled={busy || composerImages.some((image) => image.uploading) || (!hasMessageRef.current && !annotationDrafts.length && !composerImages.some((image) => image.imageId && !image.error)) || (running && annotationDrafts.length) || (!running && !runConfig)}
+            data-blocked={busy || composerPending || composerImages.some((image) => image.uploading) || (running && annotationDrafts.length) || (!running && !runConfig) ? 'true' : 'false'}
+            disabled={busy || composerPending || composerImages.some((image) => image.uploading) || (!hasMessageRef.current && !annotationDrafts.length && !composerImages.some((image) => image.imageId && !image.error)) || (running && annotationDrafts.length) || (!running && !runConfig)}
             aria-label={running ? 'Add instruction' : 'Send'}
           >
-            {busy ? <span className="send-spinner" aria-hidden="true" /> : <ArrowUp className="send-icon" strokeWidth={2.3} aria-hidden="true" />}
+            {busy || composerPending ? <span className="send-spinner" aria-hidden="true" /> : <ArrowUp className="send-icon" strokeWidth={2.3} aria-hidden="true" />}
           </button>
         </form>
       </div>

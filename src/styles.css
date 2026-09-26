@@ -304,6 +304,10 @@ html.detail-closing .app-shell > :not(.detail-screen) * { animation-play-state: 
 /* 行与行之间留桌面那 15px（桌面落在 .chat-message-list 的 gap 上；手机这边线程的行是直接挂在
    滚动窗口下的，所以这一条写在 .message-scroll 上）。 */
 .message-scroll { display: flex; height: 100%; flex-direction: column; overflow-x: hidden; overflow-y: auto; padding: 20px 16px var(--composer-reserve); gap: 15px; contain: layout paint style; overscroll-behavior: contain; scrollbar-width: none; -ms-overflow-style: none; }
+/* 线程窗口（见 App.jsx 的 THREAD_WINDOW_ROWS）：长线程只挂最新的一段，这一段由用户自己
+   叫回来。补齐之后把滚动位置补回去的那一帧在 JS 里（不能让正在读的那一段往下跳）。 */
+.thread-more { align-self: center; flex: 0 0 auto; padding: 9px 16px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--muted); font-size: 13px; font-weight: 600; }
+.thread-more:active { color: var(--text); }
 .message-scroll > * { flex: 0 0 auto; }
 .message-scroll::-webkit-scrollbar { display: none; width: 0; height: 0; }
 /* 气泡吃满行宽：桌面的两条上限（`.chat-bubble` 的 min(680px, 72%)、助手行的 82%）是给
@@ -347,6 +351,11 @@ html.detail-closing .app-shell > :not(.detail-screen) * { animation-play-state: 
 .composer { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 48px; gap: 7px; margin: 8px 10px 0; padding: 6px; border: 1px solid rgba(138, 166, 209, 0.28); border-radius: 18px; background: rgba(13, 16, 24, 0.96); transition: border-color 160ms ease, box-shadow 160ms ease; }
 .composer.has-config-icon { grid-template-columns: minmax(0, 1fr) 44px 48px; }
 .composer textarea { height: 48px; min-height: 48px; max-height: 48px; padding: 13px 11px; overflow-y: auto; border: 0; border-radius: 12px; outline: 0; background: transparent; resize: none; }
+/* 会话线程还没渲染完时的输入框占位（见 App.jsx 的 threadReady）：这时候点下去，WebKit 只能
+   把 focus 排在整条线程的渲染后面，用户看到的就是「键盘先弹出来、输入区半天不动」。所以加载
+   期间这一叠整个不接手势，键盘也就不会在渲染中间被点起来。 */
+.composer.is-loading { pointer-events: none; }
+.composer.is-loading textarea { color: var(--muted); }
 /* Expanded is a stable four-column shell: textarea and every full-width attachment/quote row span
    all columns, while the bottom controls keep their slots. Giving the textarea an explicit row
    prevents the quote draft from being auto-placed into column 1 and squeezed into the tall strip
