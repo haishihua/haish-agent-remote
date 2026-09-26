@@ -87,3 +87,43 @@ test('check:styles 的清单里也有常显这一条', async () => {
     '清单里要比对压缩后的「时间/复制按钮常显」覆盖',
   );
 });
+
+// 发送/停止键不吃那圈环。桌面的彩色环是 metal-fx 的 WebGL 装饰层，只在 running / 有文字 / 有图
+// 时亮；手机上先前拿一层静态 conic-gradient 去顶替它，那圈浅色渐变贴在深色背景上就是一道发白的
+// 框（用户：「这个发送和取消按钮也不需要这个白色框框，就静态样式跟客户端保持一致即可」）。
+// 现在四种状态都落回桌面静止的那颗圆盘：send 用 .chat-send 那条（手机 40px→48px），stop 用桌面
+// .chat-send.stop 那套略亮的描边与底色，只有图标（箭头 / 方块）在变。
+test('手机样式表把发送/停止键钉成桌面的静态圆盘（不再挂彩环）', async () => {
+  const css = await readFile(path.join(repoRoot, 'src', 'styles.css'), 'utf8');
+  assert.ok(
+    css.includes('.send-button.stop { color: #ffffff; border-color: rgba(102, 119, 154, 0.82); background: linear-gradient(180deg, #20293a, #151b27); }'),
+    '停止键应落到桌面 .chat-send.stop 的静态描边与底色',
+  );
+  assert.ok(!/\.send-button[^{}]*\{[^}]*conic-gradient/.test(css), '发送/停止键不应再挂 conic-gradient 彩环');
+});
+
+// 「回到最新」在桌面上按在消息区底边上——也就是输入框正上方；手机这边输入框是覆盖层，按钮留在
+// 消息区里会被压住、只从底下露出一截（用户：「图一中快速拉到最底的 icon 应该放在输入框上面，而不是
+// 藏在输入框下面」）。所以它挂进 composer dock、用 bottom: calc(100% + 10px) 顶着 dock 的上边缘
+// （dock 随键盘与草稿高度一起走）。位置这件事一半在 CSS、一半在 JSX 的挂载点，两处一起钉。
+test('「回到最新」挂在 composer dock 上边缘（输入框上面）', async () => {
+  const css = await readFile(path.join(repoRoot, 'src', 'styles.css'), 'utf8');
+  assert.ok(
+    css.includes('.composer-dock .scroll-to-bottom-button { position: absolute; z-index: 20; bottom: calc(100% + 10px);'),
+    '「回到最新」应相对 composer dock 定位到它的上边缘（选择器多一层 .composer-dock，避让桌面同名类）',
+  );
+  const app = await readFile(path.join(repoRoot, 'src', 'App.jsx'), 'utf8');
+  assert.equal((app.match(/<ScrollToBottomButton/g) || []).length, 1, '「回到最新」只应挂一处');
+  assert.ok(
+    app.indexOf('className="composer-dock"') < app.indexOf('<ScrollToBottomButton'),
+    '「回到最新」要画在 composer dock 里（留在消息区会被输入框覆盖层压住）',
+  );
+});
+
+test('check:styles 的清单里也有「回到最新」这条', async () => {
+  const script = await readFile(path.join(repoRoot, 'scripts', 'verify-bundled-styles.mjs'), 'utf8');
+  assert.ok(
+    script.includes('.composer-dock .scroll-to-bottom-button{bottom:calc(100% + 10px)'),
+    '清单里要比对「回到最新」挂在 dock 上边缘这条覆盖',
+  );
+});

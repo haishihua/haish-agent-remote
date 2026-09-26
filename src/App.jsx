@@ -1734,9 +1734,12 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
             {!conversation && !detailLoadFailed ? <div className="center-state"><LoaderCircle className="spin" /></div> : null}
           </div>
         </div>
-        <ScrollToBottomButton scrollRef={messageScrollRef} resetKey={id} followingRef={keyboardFollowingRef} />
       </div>
       <div className="composer-dock" ref={composerDockRef}>
+        {/* 「回到最新」挂在 dock 里、顶着它的上边缘：桌面上这颗按在消息区底边上（也就是输入框
+            正上方），而手机这边输入框是覆盖层，留在消息区里就会被压住（用户：「应该放在输入框
+            上面，而不是藏在输入框下面」）。dock 跟着键盘与草稿高度走，所以它一直在输入框上面。 */}
+        <ScrollToBottomButton scrollRef={messageScrollRef} resetKey={id} followingRef={keyboardFollowingRef} />
         {/* iOS 的 Add Comment 在系统选区菜单里；编辑器放在 dock 内，和主输入区共用原生键盘位移。
             浏览器/PWA 的后备入口仍由组件 portal 到 body。 */}
         <MessageAnnotations
