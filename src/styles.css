@@ -419,11 +419,12 @@ html.native-app .haish-annotation-editor { width: 100%; }
 .composer-stop-button { display: none; }
 .composer.is-running:not(.has-message):not(.has-image) .composer-stop-button { display: grid; }
 .composer.is-running:not(.has-message):not(.has-image) .composer-send-button { display: none; }
-/* 桌面那颗金属环是 metal-fx 的 WebGL 着色器画的（在跑任务时全亮）。手机不挂着色器：
-   48px 的 canvas 每帧重绘就是这轮一直在躲的开销；改用一层静态 conic-gradient 边框把同一份
-   观感（深色圆盘 + 细彩环）拿回来，空闲时压暗、任务在跑时提亮（对应桌面 is-idle → 全亮）。 */
-.send-button.composer-send-button, .send-button.composer-stop-button { border: 2px solid transparent; background: linear-gradient(180deg, #1b2231, #121722) padding-box, conic-gradient(from 145deg, #46536e, #6f7f9c, #8e9bb8, #5d6b8a, #3f4c66, #46536e) border-box; }
-.composer.is-running .send-button.composer-send-button, .composer.is-running .send-button.composer-stop-button, .composer.has-message .send-button.composer-send-button, .composer.has-image .send-button.composer-send-button { background: linear-gradient(180deg, #1b2231, #121722) padding-box, conic-gradient(from 145deg, #8e97ff, #7fe0c6, #ffdf95, #ff9ed6, #8ccdff, #8e97ff) border-box; }
+/* 桌面那颗金属环是 metal-fx 的 WebGL 着色器画的，而且空闲时桌面会把它整个藏起来，只剩 .chat-send
+   自带的 1px 蓝灰描边（chat.css 的 .chat-send-metal.is-idle → 装饰层 opacity: 0）。手机这边不挂
+   着色器：48px 的 canvas 每帧重绘就是这轮一直在躲的开销；改成一层静态 conic-gradient 边框，并且
+   只在桌面的 is-active 时机亮——ChatComposer 的 sendBeamActive = running || 有文字 || 有图。
+   空闲态就落到上面 .send-button 的深色圆盘 + 1px 描边，跟桌面空闲一模一样。 */
+.composer.is-running .send-button.composer-send-button, .composer.is-running .send-button.composer-stop-button, .composer.has-message .send-button.composer-send-button, .composer.has-image .send-button.composer-send-button { border: 2px solid transparent; background: linear-gradient(180deg, #1b2231, #121722) padding-box, conic-gradient(from 145deg, #8e97ff, #7fe0c6, #ffdf95, #ff9ed6, #8ccdff, #8e97ff) border-box; }
 /* 停止不再用红盘：桌面 chat 里这两颗是同一颗深色圆盘，只有图标不同。 */
 .send-button.stop { padding: 0; border: 2px solid transparent; background: linear-gradient(180deg, #1b2231, #121722) padding-box, conic-gradient(from 145deg, #8e97ff, #7fe0c6, #ffdf95, #ff9ed6, #8ccdff, #8e97ff) border-box; color: #ffffff; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 4px 12px rgba(0, 0, 0, 0.28); }
 .send-spinner { display: block; width: 20px; height: 20px; box-sizing: border-box; border: 2px solid color-mix(in srgb, currentColor 28%, transparent); border-top-color: currentColor; border-radius: 50%; transform-origin: 50% 50%; animation: spin 720ms linear infinite; }
