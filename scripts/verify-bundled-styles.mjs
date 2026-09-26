@@ -38,7 +38,7 @@ const REQUIRED_OVERRIDES = [
   ['.chat-trace-pending{display:none}', '不画桌面那句「Steps load when you scroll up.」'],
   ['.haish-annotation-drafts>.haish-quote-block{width:100%;max-width:100%;margin:0}', '引用批注的草稿在手机上占满一行（桌面是最宽 480px 的并排块）'],
   ['html.native-app.haish-annotation-floating{position:absolute!important', 'iOS 评论编辑器固定在 composer dock 上方，随键盘一起移动'],
-  ['.composer-dock .scroll-to-bottom-button{bottom:calc(100% + 10px)', '「回到最新」挂在 composer dock 的上边缘（输入框上面），压住桌面的 bottom:16px'],
+  ['.composer-dock .scroll-to-bottom-button{position:absolute;z-index:20;bottom:calc(100% + 10px)', '「回到最新」挂在 composer dock 的上边缘（输入框上面），压住桌面的 bottom:16px'],
   ['.chat-message-row.user.haish-sent-annotations.haish-quote-text{-webkit-line-clamp:3', '已发送的长引用在用户气泡里截为三行'],
   ['.composer.expanded>.haish-annotation-drafts', '输入框展开后引用草稿仍占满整行'],
   ['.composer.expandedtextarea{min-width:0;grid-column:1/-1', '输入框展开后 Continue this task 在引用草稿下方另起整行'],

@@ -123,7 +123,7 @@ test('「回到最新」挂在 composer dock 上边缘（输入框上面）', as
 test('check:styles 的清单里也有「回到最新」这条', async () => {
   const script = await readFile(path.join(repoRoot, 'scripts', 'verify-bundled-styles.mjs'), 'utf8');
   assert.ok(
-    script.includes('.composer-dock .scroll-to-bottom-button{bottom:calc(100% + 10px)'),
+    script.includes('.composer-dock .scroll-to-bottom-button{position:absolute;z-index:20;bottom:calc(100% + 10px)'),
     '清单里要比对「回到最新」挂在 dock 上边缘这条覆盖',
   );
 });
