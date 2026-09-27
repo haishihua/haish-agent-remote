@@ -1464,6 +1464,11 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     messageInputRef.current?.blur();
     setBusy(true);
     setError('');
+    // 提交前那一份活行：非 steering 的提交会先把 liveRun 换成一条本地草稿（乐观的「运行中」），
+    // 若这一趟在 runtime 接单前就失败（连接抖动 / 超时），得把草稿退回这一份——否则 `running`
+    // 会一直为真：输入框停在 `Add instructions…` + 停止键，发送键变成「追加指令」，再点发送
+    // 只会按 steering 打到一个不存在的任务号上（真机上踩到过一次）。
+    const liveRunBeforeSend = liveRunRef.current;
     try {
       if (steering) {
         await api.sendInput(activeTaskId, nextMessage, imageAttachments);
@@ -1558,6 +1563,12 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
         setComposerImages(submittedComposerImages);
         if (messageInputRef.current) messageInputRef.current.value = nextMessage;
         syncComposerMessageState(messageInputRef.current, Boolean(nextMessage));
+        // steering 没动过 liveRun（原任务还在跑，照旧交给轮询更新）；非 steering 是自己换成
+        // 草稿的，这里退回发送前那一份，`running`、placeholder 与发送键一起回到原样。
+        if (!steering) {
+          liveRunRef.current = liveRunBeforeSend;
+          flushLiveRun();
+        }
         setError(nextError.message);
         return;
       }
