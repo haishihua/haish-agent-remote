@@ -503,6 +503,17 @@ html.native-app .haish-annotation-editor { width: 100%; }
 .approval-feedback, .approval-actions { grid-column: 1 / -1; }
 .approval-feedback span { margin-top: 2px; }
 .approval-actions { display: flex; justify-content: flex-end; gap: 9px; }
+/* ask_user：每题一个选项组 + 备注框，选项与文字可同时提交（selection + note）。 */
+.approval-questions { display: grid; grid-column: 1 / -1; gap: 16px; }
+.approval-question { display: grid; gap: 9px; }
+.approval-question-prompt { display: grid; gap: 3px; margin: 0; color: var(--text); font-size: 14px; line-height: 1.45; overflow-wrap: anywhere; }
+.approval-question-header { color: var(--accent); font-size: 12px; font-weight: 700; letter-spacing: 0.04em; }
+.approval-options { display: grid; gap: 8px; }
+.approval-option { display: grid; gap: 3px; padding: 11px 13px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); color: var(--text); text-align: left; }
+.approval-option strong { font-size: 14px; font-weight: 650; overflow-wrap: anywhere; }
+.approval-option small { color: var(--muted); font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
+.approval-option.is-selected { border-color: var(--accent); background: rgba(239, 191, 100, 0.14); }
+.approval-answer { min-height: 54px; }
 
 .center-state, .empty-state { color: var(--muted); }
 .center-state { display: flex; min-height: 180px; align-items: center; justify-content: center; gap: 10px; }
