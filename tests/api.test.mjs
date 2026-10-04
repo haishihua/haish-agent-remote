@@ -24,7 +24,7 @@ test('startup status requests time out instead of leaving the app loading foreve
 
   try {
     await assert.rejects(requestWithTimeout('/remote/status', 5), {
-      message: 'Connection timed out. Make sure Haish is running on your computer.',
+      message: /^Connection timed out\. Make sure Haish is running on your computer\. \[GET \/remote\/status · timeout · AbortError/,
     });
   } finally {
     globalThis.fetch = originalFetch;
@@ -38,7 +38,10 @@ test('server errors become reconnecting state when the Haish runtime is offline'
     : new Response('', { status: 500 });
 
   try {
-    await assert.rejects(api.projects(), { message: 'Reconnecting to Haish…', status: 500 });
+    await assert.rejects(api.projects(), {
+      message: /^Reconnecting to Haish… \[GET \/api\/projects · http · Error · HTTP 500/,
+      status: 500,
+    });
   } finally {
     globalThis.fetch = originalFetch;
   }

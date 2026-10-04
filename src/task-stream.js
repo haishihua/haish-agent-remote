@@ -5,6 +5,8 @@
 // 桌面组件渲染。这里只剩两件事：
 //   - readNdjson：流式响应按行解析（api.js 的 startTask 用它）
 //   - 状态/失败判据：目录、停止按钮、失败回复这些地方还在用
+import { streamFailure } from './request-diagnostics.js';
+
 const RUNNING_STATUSES = new Set(['queued', 'running']);
 // A task that ends in one of these states never gets a persisted assistant
 // message, so both the live row and the thread have to render its partial
@@ -25,20 +27,47 @@ export function isCurrentTaskRunning(liveRun, activeTask) {
 
 export async function readNdjson(response, onEvent) {
   if (!response.body) throw new Error('Task stream returned no response body.');
-  const reader = response.body.getReader();
+  let reader;
+  try {
+    reader = response.body.getReader();
+  } catch (error) {
+    throw streamFailure(error, 'stream-open', 0);
+  }
   const decoder = new TextDecoder();
   let buffer = '';
+  let lineNumber = 0;
+  function dispatch(line) {
+    lineNumber += 1;
+    if (!line) return;
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch (error) {
+      throw streamFailure(error, 'stream-parse', lineNumber);
+    }
+    try {
+      onEvent?.(event);
+    } catch (error) {
+      throw streamFailure(error, 'stream-handler', lineNumber);
+    }
+  }
   while (true) {
-    const { value, done } = await reader.read();
+    let chunk;
+    try {
+      chunk = await reader.read();
+    } catch (error) {
+      throw streamFailure(error, 'stream-read', lineNumber + 1);
+    }
+    const { value, done } = chunk;
     buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
     let newline = buffer.indexOf('\n');
     while (newline >= 0) {
       const line = buffer.slice(0, newline).trim();
       buffer = buffer.slice(newline + 1);
-      if (line) onEvent?.(JSON.parse(line));
+      dispatch(line);
       newline = buffer.indexOf('\n');
     }
     if (done) break;
   }
-  if (buffer.trim()) onEvent?.(JSON.parse(buffer.trim()));
+  if (buffer.trim()) dispatch(buffer.trim());
 }

@@ -1,4 +1,5 @@
 import { readNdjson } from './task-stream.js';
+import { diagnoseRequestError } from './request-diagnostics.js';
 import { messageWithImageAttachments } from './chat-images.js';
 import {
   clearNativeConnection,
@@ -43,27 +44,58 @@ async function responseError(response) {
   return error;
 }
 
+const responseContexts = new WeakMap();
+
 async function remoteFetch(path, init = {}, endpoint) {
-  const context = requestContext(path, endpoint);
-  return fetch(context.url, {
-    ...init,
-    credentials: context.credentials,
-    headers: {
-      ...(init.body && !(init.body instanceof FormData) ? { 'Content-Type': 'application/json' } : {}),
-      ...(context.token ? { Authorization: `Bearer ${context.token}` } : {}),
-      ...(init.headers || {}),
-    },
-  });
+  const diagnostic = { path, method: init.method || 'GET', startedAt: Date.now(), stage: 'build-url' };
+  try {
+    const context = requestContext(path, endpoint);
+    diagnostic.stage = 'fetch';
+    const response = await fetch(context.url, {
+      ...init,
+      credentials: context.credentials,
+      headers: {
+        ...(init.body && !(init.body instanceof FormData) ? { 'Content-Type': 'application/json' } : {}),
+        ...(context.token ? { Authorization: `Bearer ${context.token}` } : {}),
+        ...(init.headers || {}),
+      },
+    });
+    responseContexts.set(response, { ...diagnostic, response, signal: init.signal });
+    return response;
+  } catch (error) {
+    if (init.signal?.aborted) diagnostic.stage = 'timeout';
+    throw diagnoseRequestError(error, diagnostic);
+  }
+}
+
+async function consumeResponse(response, stage, consume) {
+  const context = responseContexts.get(response);
+  try {
+    if (!response.ok) {
+      context.stage = 'http';
+      const error = await responseError(response);
+      if (error.status === 401) await clearNativeConnection();
+      throw error;
+    }
+    context.stage = stage;
+    return await consume(context);
+  } catch (error) {
+    if (context.signal?.aborted) context.stage = 'timeout';
+    throw diagnoseRequestError(error, context);
+  }
 }
 
 async function request(path, init = {}, endpoint) {
   const response = await remoteFetch(path, init, endpoint);
-  if (!response.ok) {
-    const error = await responseError(response);
-    if (error.status === 401) await clearNativeConnection();
-    throw error;
-  }
-  return response.status === 204 ? null : response.json();
+  return consumeResponse(response, 'json-read', async (context) => {
+    if (response.status === 204) return null;
+    // Separate body-read failures from JSON syntax errors without retaining any
+    // payload. Empty/HTML/malformed responses are distinguishable by type + size.
+    const text = await response.text();
+    context.responseChars = text.length;
+    context.stage = 'json-parse';
+    return JSON.parse(text);
+  });
 }
 
 export async function requestWithTimeout(path, timeoutMs = 8_000) {
@@ -71,11 +103,6 @@ export async function requestWithTimeout(path, timeoutMs = 8_000) {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await request(path, { signal: controller.signal });
-  } catch (error) {
-    if (!controller.signal.aborted) throw error;
-    const timeoutError = new Error('Connection timed out. Make sure Haish is running on your computer.');
-    timeoutError.status = 0;
-    throw timeoutError;
   } finally {
     clearTimeout(timer);
   }
@@ -157,8 +184,7 @@ export const api = {
   imagePreview: async (conversationId, path) => {
     const previewPath = `/api/conversations/${encodeURIComponent(conversationId)}/messages/images/preview?image_path=${encodeURIComponent(path)}`;
     const response = await remoteFetch(previewPath);
-    if (!response.ok) throw await responseError(response);
-    return response.blob();
+    return consumeResponse(response, 'blob-read', () => response.blob());
   },
   // 引用批注（桌面的「添加注释」）随消息一起走：runtime 把每条 quote 作为「被引用的原文 +
   // 用户的评论」拼进这一轮的上下文（见 core 的 app/annotations.py），所以它属于 task 的
@@ -178,9 +204,12 @@ export const api = {
         },
       }),
     });
-    if (!response.ok) throw await responseError(response);
-    onOpen?.();
-    await readNdjson(response, onEvent);
+    await consumeResponse(response, 'stream-open', async () => {
+      // Acceptance and callbacks keep their existing order; diagnostics must not
+      // change draft recovery or introduce task-start retries.
+      onOpen?.();
+      await readNdjson(response, onEvent);
+    });
   },
   sendInput: (taskId, message, imageAttachments = []) => request(`/api/tasks/${encodeURIComponent(taskId)}/inputs`, {
     method: 'POST',
