@@ -20,7 +20,7 @@ public class TaskNotifications: CAPPlugin, CAPBridgedPlugin, NotificationHandler
         bridge?.notificationRouter.localNotificationHandler = self
     }
 
-    @objc func requestPermissions(_ call: CAPPluginCall) {
+    @objc public override func requestPermissions(_ call: CAPPluginCall) {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
             if let error { call.reject("Could not request notification permission", nil, error); return }
             call.resolve(["granted": granted])
