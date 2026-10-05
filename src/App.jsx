@@ -100,9 +100,10 @@ import {
   resolveRunConfig,
   taskOptionsForRunConfig,
 } from './run-config.js';
-import { isCurrentTaskRunning, isFailureStatus } from './task-stream.js';
+import { isCurrentTaskRunning, isFailureStatus, isTaskRunning } from './task-stream.js';
 import { createTaskRuntimeSync } from './task-sync.js';
 import { waitForPersistedAssistant } from './task-settlement.js';
+import { interruptedStreamNotice, reconcileInterruptedRun } from './stream-recovery.js';
 import { impactReasoningStep } from './reasoning-haptics.js';
 import { conversationSignature, statusSignature } from './poll-signature.js';
 // 会话名：桌面那套占位名 + 第一条消息的一句话摘要（判据与 API 都在 conversation-title.js）。
@@ -882,6 +883,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   const composerImagesRef = useRef([]);
   const optimisticUserMessagesRef = useRef([]);
   const localStreamRef = useRef(false);
+  const interruptedRunRef = useRef(null);
   const liveRunRef = useRef(null);
   const liveRunFrameRef = useRef(0);
   const liveRunQuietTimerRef = useRef(0);
@@ -1049,6 +1051,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   }, [id]);
 
   useEffect(() => {
+    interruptedRunRef.current = null;
     setTaskRuntimes({});
     releaseConversationImageUrls(id);
     optimisticUserMessagesRef.current = [];
@@ -1070,6 +1073,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     if (!keep && threadBusy()) return null;
     try {
       const nextConversation = await api.conversation(id);
+      if (localStreamRef.current) return null;
       // A poll that resolves while a gesture owns the thread would rebuild the message list
       // under the finger; drop it here. The next interval catches up after the gesture.
       // `keep` is the pull-to-refresh call itself, which is the point of the gesture.
@@ -1081,13 +1085,24 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
         setConversation(nextConversation);
       }
       setConversationHydrated(true);
-      setError('');
+      const interrupted = interruptedRunRef.current;
+      if (interrupted) {
+        const recovery = reconcileInterruptedRun(interrupted.run, nextConversation);
+        interrupted.run = recovery.run;
+        liveRunRef.current = recovery.run;
+        flushLiveRun();
+        if (recovery.resolved) interruptedRunRef.current = null;
+        setError(recovery.resolved ? '' : interrupted.notice);
+      } else {
+        setError('');
+      }
       return nextConversation;
     } catch (nextError) {
-      setError(nextError.message);
+      const notice = interruptedRunRef.current?.notice;
+      setError(notice ? `${notice} Status check: ${nextError.message}` : nextError.message);
       return null;
     }
-  }, [id]);
+  }, [id, flushLiveRun]);
 
   // Same control as the directory, and the only way out of a detail that failed to load:
   // pulling the thread down retries the fetch that fills it.
@@ -1235,6 +1250,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
       const cancelledAt = Date.now();
       const cancelledRun = liveRunRef.current ? { ...liveRunRef.current, status: 'cancelled', completedAt: cancelledAt } : null;
       liveRunRef.current = cancelledRun;
+      if (interruptedRunRef.current) interruptedRunRef.current.run = cancelledRun;
       flushLiveRun();
       const cancelledTaskId = activeTaskId || cancelledRun?.taskId;
       if (cancelledTaskId) {
@@ -1254,7 +1270,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   }, [activeTaskId, conversation, refresh, running]);
 
   useEffect(() => {
-    const taskId = activeTask?.task_id;
+    const taskId = interruptedRunRef.current?.run?.taskId || activeTask?.task_id;
     if (!taskId) {
       // Keep a completed stream visible until the conversation snapshot contains its durable
       // assistant message. Failures also stay local because the runtime does not persist them.
@@ -1264,15 +1280,32 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     let cancelled = false;
     // Repaint a task we already streamed this session before the next poll.
     const cached = localStreamRef.current ? null : taskRuntime.cache.state(taskId);
-    if (cached) setLiveRun(cached);
+    if (cached && !interruptedRunRef.current) setLiveRun(cached);
 
     async function hydrateActiveTask() {
       if (localStreamRef.current || threadBusy()) return;
       try {
         const state = await taskRuntime.refresh(taskId);
-        if (!cancelled && state && !threadBusy()) setLiveRun(state);
+        if (!cancelled && state && !localStreamRef.current && !threadBusy()) {
+          const interrupted = interruptedRunRef.current;
+          if (interrupted?.run?.taskId === taskId) {
+            const recovery = reconcileInterruptedRun(interrupted.run, null, state);
+            interrupted.run = recovery.run;
+            liveRunRef.current = recovery.run;
+            flushLiveRun();
+            if (recovery.resolved) interruptedRunRef.current = null;
+            setError(recovery.resolved ? '' : interrupted.notice);
+          } else if (!interrupted) {
+            const current = liveRunRef.current;
+            if (current?.taskId === taskId && !isTaskRunning(current.status) && isTaskRunning(state.status)) return;
+            setLiveRun(state);
+          }
+        }
       } catch (nextError) {
-        if (!cancelled) setError(nextError.message);
+        if (!cancelled) {
+          const notice = interruptedRunRef.current?.notice;
+          setError(notice ? `${notice} Status check: ${nextError.message}` : nextError.message);
+        }
       }
     }
 
@@ -1286,7 +1319,9 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     tick();
     const timer = window.setInterval(tick, 2000);
     const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible') tick();
+      if (document.visibilityState !== 'visible') return;
+      tick();
+      if (interruptedRunRef.current) refresh();
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
     return () => {
@@ -1294,7 +1329,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
       window.clearInterval(timer);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [activeTask?.task_id]);
+  }, [activeTask?.task_id, liveRun?.taskId, flushLiveRun, refresh]);
 
   useEffect(() => {
     if (running) return;
@@ -1478,6 +1513,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
         return;
       }
 
+      interruptedRunRef.current = null;
       localStreamRef.current = true;
       // 第一条消息给会话起名：`New Chat` 这种占位名 + 还没跑过任务时，换成 `titleFromTaskText` 的
       // 一句话摘要（桌面在提交那一趟里做的是同一件事：`startDeploy` 算名字 + 客户端 PATCH）。
@@ -1572,22 +1608,17 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
         setError(nextError.message);
         return;
       }
-      // The run was accepted and then the stream broke: keep the work that did
-      // arrive and report the failure underneath it.
-      const failedAt = Date.now();
-      const previousRun = liveRunRef.current || {};
-      const failedRun = {
-        ...previousRun,
-        status: 'failed',
-        answerText: textContent(previousRun.answerText || ''),
-        error: nextError.message,
-        createdAt: previousRun.createdAt || failedAt,
-        completedAt: failedAt,
-      };
-      liveRunRef.current = failedRun;
+      // The run was accepted and then the stream broke: this is a transport
+      // diagnostic, NOT a server task failure. Unlock refresh before querying;
+      // keep checking on ordinary conversation/task polls and foreground return.
+      localStreamRef.current = false;
+      const previousRun = liveRunRef.current;
+      const notice = interruptedStreamNotice(nextError);
+      interruptedRunRef.current = { run: previousRun, notice };
       flushLiveRun();
       releaseSubmittedImages();
-      setError(nextError.message);
+      setError(notice);
+      await refresh({ keep: true });
     } finally {
       localStreamRef.current = false;
       setBusy(false);
