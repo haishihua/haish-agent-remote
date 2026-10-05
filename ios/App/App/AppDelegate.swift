@@ -11,6 +11,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // stripping cannot see, so keep the app-local plugins linked in.
         _ = PhotoPicker.self
         _ = ReasoningHaptics.self
+        _ = TaskNotifications.self
         // Keyboard-frame forwarding lives in HaishBridgeViewController, which can evaluate on its
         // WKWebView immediately in UIKit's will-change callback. Keeping it out of AppDelegate also
         // avoids an extra Capacitor bridge hop before the composer starts moving.

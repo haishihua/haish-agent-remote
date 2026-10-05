@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import { api, runtimeConnectionState } from './api.js';
 import ConnectionScreen from './ConnectionScreen.jsx';
+import { observeNotificationConversation, observeNotificationTask, startTaskNotifications } from './task-notifications.js';
 import { conversationHasSentMessage } from './agent-binding.js';
 import {
   CHAT_IMAGE_MAX_COUNT,
@@ -70,6 +71,7 @@ import { publishApprovalState, waitingRequestConversation } from './haish-bridge
 import {
   buildChatRows,
   draftRuntimeTask,
+  runtimeTaskFromSummary,
   runtimeTaskWithEvent,
 } from './chat-runtime.js';
 import {
@@ -1043,6 +1045,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     if (!keep && threadBusy()) return null;
     try {
       const nextConversation = await api.conversation(id);
+      observeNotificationConversation(nextConversation);
       if (localStreamRef.current) return null;
       // A poll that resolves while a gesture owns the thread would rebuild the message list
       // under the finger; drop it here. The next interval catches up after the gesture.
@@ -1256,6 +1259,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
       if (localStreamRef.current || threadBusy()) return;
       try {
         const state = await taskRuntime.refresh(taskId);
+        if (!cancelled && state) observeNotificationTask(state, { conversation_id: id, title: conversation?.title });
         if (!cancelled && state && !localStreamRef.current && !threadBusy()) {
           const interrupted = interruptedRunRef.current;
           if (interrupted?.run?.taskId === taskId) {
@@ -1299,7 +1303,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
       window.clearInterval(timer);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [activeTask?.task_id, liveRun?.taskId, flushLiveRun, refresh]);
+  }, [activeTask?.task_id, liveRun?.taskId, conversation?.title, flushLiveRun, refresh]);
 
   useEffect(() => {
     if (running) return;
@@ -1459,8 +1463,11 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
         if (image.previewUrl) URL.revokeObjectURL(image.previewUrl);
       });
     };
-    optimisticUserMessagesRef.current = [...optimisticUserMessagesRef.current, optimisticMessage];
-    setOptimisticUserMessages(optimisticUserMessagesRef.current);
+    // Match desktop: corrections are acknowledged task events, never standalone bubbles.
+    if (!steering) {
+      optimisticUserMessagesRef.current = [...optimisticUserMessagesRef.current, optimisticMessage];
+      setOptimisticUserMessages(optimisticUserMessagesRef.current);
+    }
     composerImagesRef.current = [];
     setComposerImages([]);
     if (messageInputRef.current) messageInputRef.current.value = '';
@@ -1476,10 +1483,25 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     const liveRunBeforeSend = liveRunRef.current;
     try {
       if (steering) {
-        await api.sendInput(activeTaskId, nextMessage, imageAttachments);
+        const result = await api.sendInput(activeTaskId, nextMessage, imageAttachments);
         accepted = true;
         releaseSubmittedImages();
-        await refresh();
+        const currentRun = liveRunRef.current;
+        const seed = currentRun?.taskId === activeTaskId ? currentRun
+          : taskRuntime.cache.state(activeTaskId) || runtimeTaskFromSummary(activeTask);
+        const queuedRun = taskRuntime.cache.queueInput(activeTaskId, result, {
+          message: nextMessage,
+          imageAttachments,
+        }, seed);
+        if (queuedRun) {
+          setTaskRuntimes((current) => ({ ...current, [activeTaskId]: queuedRun }));
+          if (!currentRun || currentRun.taskId === activeTaskId) {
+            liveRunRef.current = queuedRun;
+            flushLiveRun();
+          }
+        }
+        // Queued events aren't streamed; paint the HTTP acknowledgement immediately.
+        // Ordinary task polling reconciles it with the durable log.
         return;
       }
 
@@ -1510,7 +1532,11 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
         taskOptionsForRunConfig(runConfig, providers),
         (streamEvent) => {
           // 每个 token 一条事件：折进 ref，每帧最多往 React 递一次（见 `scheduleLiveRun`）。
-          scheduleLiveRun(runtimeTaskWithEvent(liveRunRef.current, streamEvent));
+          const nextRun = runtimeTaskWithEvent(liveRunRef.current, streamEvent);
+          // The stream identifies the accepted run; only later authoritative snapshots
+          // may declare it completed/failed (transport errors must not notify).
+          if (!liveRunRef.current?.taskId && nextRun?.taskId) observeNotificationTask(nextRun, conversation);
+          scheduleLiveRun(nextRun);
         },
         () => {
           accepted = true;
@@ -1520,15 +1546,29 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
         annotationDrafts,
       );
       localStreamRef.current = false;
-      const streamedRun = liveRunRef.current || {};
+      let streamedRun = liveRunRef.current || {};
       const streamedTaskId = streamedRun.taskId;
+      if (streamedTaskId) {
+        taskRuntime.cache.retainStream(streamedRun);
+        setTaskRuntimes((current) => ({ ...current, [streamedTaskId]: streamedRun }));
+      }
       const nextConversation = await waitForPersistedAssistant({
         taskId: streamedTaskId,
         refresh,
       });
+      // A correction response may arrive during persistence polling. Keep its newer
+      // transcript rather than restoring the snapshot taken when the stream closed.
+      const latestRun = liveRunRef.current?.taskId === streamedTaskId
+        ? liveRunRef.current : taskRuntime.cache.state(streamedTaskId);
+      if (latestRun) streamedRun = latestRun;
       const streamedTask = nextConversation?.tasks?.find((task) => task.task_id === streamedTaskId);
       const outcome = String(isFailureStatus(streamedRun.status)
         ? streamedRun.status : streamedTask?.status || streamedRun.status || 'done').toLowerCase();
+      if (streamedTaskId) {
+        const settledTrace = { ...streamedRun, status: outcome, completedAt: streamedRun.completedAt || Date.now() };
+        taskRuntime.cache.retainStream(settledTrace);
+        setTaskRuntimes((current) => ({ ...current, [streamedTaskId]: settledTrace }));
+      }
       if (isFailureStatus(outcome)) {
         const failedRun = {
           ...streamedRun,
@@ -1590,7 +1630,8 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
       setError(notice);
       await refresh({ keep: true });
     } finally {
-      localStreamRef.current = false;
+      // A correction has its own request; it must not release the original task stream lock.
+      if (!steering) localStreamRef.current = false;
       setBusy(false);
     }
   }
@@ -2059,10 +2100,11 @@ export default function App() {
       const nextModelCatalogTasks = Array.isArray(projectsResponse.model_catalog_tasks)
         ? projectsResponse.model_catalog_tasks
         : nextProjects.flatMap((project) => project.conversations || []).flatMap((item) => item.tasks || []);
+      const nextConversations = nextProjects.flatMap((project) => project.conversations || []);
+      nextConversations.forEach(observeNotificationConversation);
       const signature = JSON.stringify([nextProjects, nextModelCatalogTasks]);
       if (signature === directorySignatureRef.current) return;
       directorySignatureRef.current = signature;
-      const nextConversations = nextProjects.flatMap((project) => project.conversations || []);
       // 第一次在手机上见到的会话以现在为基线：装上手机之前跑完的任务不补灯。
       const seeded = seedConversationSeenAt(seenAtRef.current, nextConversations.map((item) => item.conversation_id), Date.now());
       if (seeded !== seenAtRef.current) {
@@ -2195,8 +2237,15 @@ export default function App() {
       // while the user reads or types. The list refreshes as it comes back into view.
       if (!detailOpenRef.current) loadTasks();
     }, STATUS_POLL_MS);
-    return () => window.clearInterval(timer);
-  }, [status?.paired, loadStatus, loadTasks, loadApprovals, loadSharedReads]);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refreshDirectory();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [status?.paired, loadStatus, loadTasks, loadApprovals, loadSharedReads, refreshDirectory]);
 
   useEffect(() => {
     if (!status?.paired || loading || restoredConversationRef.current || selectedId || !conversations.length) return;
@@ -2223,6 +2272,15 @@ export default function App() {
     detailOpenRef.current = true;
     setSelectedId(conversationId);
   }, [markSeen]);
+
+  useEffect(() => {
+    if (!status?.paired) return undefined;
+    return startTaskNotifications(status.device?.device_id, (conversationId) => {
+      setTab('tasks');
+      if (api.isNative) replaceConversationHistory(window.history, '', window.location.href);
+      showConversation(conversationId);
+    });
+  }, [status?.paired, status?.device?.device_id, showConversation]);
 
   // 传给 `ConversationList` 的几个回调必须是稳定的：它套了 memo，回调每次新建就等于没套。
   const createConversation = useCallback((projectId) => {

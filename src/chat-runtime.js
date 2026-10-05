@@ -57,6 +57,34 @@ export function runtimeEventIdentity(rawEvent) {
   };
 }
 
+/** Acknowledged corrections belong to the assistant transcript, not conversation bubbles. */
+export function runtimeTaskWithQueuedInput(task, result, { message = '', imageAttachments = [] } = {}) {
+  if (!task || result?.event?.type !== 'task_input_queued') return task;
+  const raw = result.event;
+  const payload = raw.payload || {};
+  const entry = runtimeLogEntry({
+    ...raw,
+    task_id: task.taskId || raw.task_id,
+    conversation_id: task.conversationId || raw.conversation_id,
+    payload: {
+      ...payload,
+      input_id: payload.input_id || result.input_id,
+      message: message || payload.message || '',
+      image_attachments: imageAttachments.length ? imageAttachments : payload.image_attachments || [],
+    },
+  }, task);
+  if (!entry?.inputId) return task;
+  const log = task.eventLog || [];
+  // The applied stream event can beat the HTTP response; never regress it to pending.
+  if (log.some((event) => (event.type === 'task_input_queued' && event.inputId === entry.inputId)
+    || (event.type === 'task_input_applied' && event.inputs?.some((input) => (input.input_id || input.inputId) === entry.inputId)))) return task;
+  const at = timeMs(entry.timestamp);
+  const later = log.findIndex((event) => at && timeMs(event.timestamp) > at);
+  const eventLog = later < 0 ? appendStreamEvent(log, entry)
+    : [...log.slice(0, later), entry, ...log.slice(later)];
+  return { ...task, eventLog, runtimeHydrated: true };
+}
+
 /**
  * NDJSON 流每来一条事件往上折一次。taskId / conversationId 从事件里补上
  * （任务号在事件里先到，`api.startTask` 的 promise 才结束）。
@@ -71,7 +99,9 @@ export function runtimeTaskWithEvent(task, rawEvent) {
     taskId: task.taskId || identity.taskId,
     conversationId: task.conversationId || identity.conversationId,
     loopIndex: Math.max(Number(task.loopIndex || 0), eventLoopIndex(rawEvent)),
-    eventLog: appendStreamEvent(task.eventLog || [], entry),
+    eventLog: entry.type === 'task_input_queued'
+      ? runtimeTaskWithQueuedInput(task, { event: rawEvent }).eventLog
+      : appendStreamEvent(task.eventLog || [], entry),
   };
 }
 
@@ -106,7 +136,9 @@ export function runtimeTaskFromDetail(task, previous = null) {
     let eventLog = previous.eventLog || [];
     for (const raw of events) {
       const entry = runtimeLogEntry(raw, previous);
-      if (entry) eventLog = appendStreamEvent(eventLog, entry);
+      if (entry) eventLog = entry.type === 'task_input_queued'
+        ? runtimeTaskWithQueuedInput({ ...base, eventLog }, { event: raw }).eventLog
+        : appendStreamEvent(eventLog, entry);
     }
     return {
       ...base,

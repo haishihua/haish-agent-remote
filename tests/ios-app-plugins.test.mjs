@@ -13,6 +13,7 @@ import {
 } from '../scripts/sync-ios-app-plugins.mjs';
 import { NATIVE_PHOTO_PICKER } from '../src/photo-picker.js';
 import { NATIVE_REASONING_HAPTICS } from '../src/reasoning-haptics.js';
+import { NATIVE_TASK_NOTIFICATIONS } from '../src/task-notifications.js';
 
 const REPO_ROOT = new URL('..', import.meta.url).pathname;
 
@@ -28,7 +29,7 @@ function fixtureRoot({ swiftFiles = {}, config = { packageClassList: ['SecureSto
 
 test('only Swift files that bridge to JavaScript are registered', () => {
   const classes = findAppLocalPluginClasses(join(REPO_ROOT, APP_TARGET_DIR));
-  assert.deepEqual(classes, [NATIVE_PHOTO_PICKER, NATIVE_REASONING_HAPTICS]);
+  assert.deepEqual(classes, [NATIVE_PHOTO_PICKER, NATIVE_REASONING_HAPTICS, NATIVE_TASK_NOTIFICATIONS]);
 });
 
 test('@objc names of files without CAPBridgedPlugin are ignored', () => {

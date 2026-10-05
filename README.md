@@ -52,6 +52,23 @@ entry point. The workflow performs the complete sequence in CI:
 5. builds the unsigned iOS app on the GitHub-hosted macOS runner;
 6. packages and uploads `Haish-unsigned.ipa` as a workflow artifact.
 
+### iOS task notifications
+
+After pairing, the iOS app requests permission for local notifications. When an
+observed task reaches `done`/`completed` or `failed`/`error`, it presents a banner
+with sound and the conversation title. iOS automatically uses the current app's
+AppIcon. Tapping the notification opens that conversation on the paired computer.
+Cancelled tasks and network/stream errors do not produce failure notifications.
+Historical completed tasks are not replayed; native delivery history also prevents
+repeat notifications across polling, navigation, and app restarts.
+
+This is **local notification delivery, not APNs push**. Notifications can only be
+scheduled when the app receives an authoritative task status. iOS may suspend the
+WebView in the background or after locking the phone; delivery while suspended or
+terminated is not guaranteed. Returning to the app refreshes task states. If
+permission was denied, enable notifications for Haish in iOS Settings. This feature
+requires no push entitlement and remains compatible with the SideStore build path.
+
 ### Standard IPA release procedure
 
 1. Commit all mobile source and documentation changes.
@@ -139,6 +156,20 @@ depends on.
 - `HAISH_REMOTE_TUNNEL_TOKEN`: frps auth token; kept in a 0600 `frpc.toml` inside the data directory.
 - `HAISH_REMOTE_TUNNEL_REMOTE_PORT`: public port frps exposes for this computer.
 - `HAISH_REMOTE_FRPC`: path to the frpc binary shipped by the desktop client.
+
+## Mid-run corrections (steering)
+
+Corrections use the desktop client's task-input contract: plain `message` plus
+structured `image_attachments`. A successful response's `task_input_queued` event
+appears inline in the current assistant transcript (pending), not as a standalone
+user bubble. `task_input_applied` updates the same input ID to applied. Repeated
+text with different input IDs remains separate. Failed submissions restore the
+text and attachment drafts without adding a transcript entry.
+
+The transcript is retained when the task finishes, and historical task-event reads
+restore corrections after reopening a conversation. Completed transcripts use the
+same collapsed execution-history interaction as the desktop client. The adapter
+continues to proxy inputs; the core runtime owns durable event persistence.
 
 ## Checks
 

@@ -16,10 +16,12 @@ import React from 'react';
 import './desktop-theme.css';
 import { ChatMessageRow } from '../../haish-agent/app-web/src/features/chat/components/ChatMessageRow.jsx';
 import { api } from './api.js';
+import { resolveTranscriptImages, transcriptImageRefs } from './transcript-images.js';
 
 const IMAGE_URLS = new Map(); // `${conversationId}\u0000${path}` → object URL
 const IMAGE_FAILURES = new Set();
 const IMAGE_REQUESTS = new Map();
+const RESOLVED_IMAGES = new WeakMap();
 
 function imageUrlKey(conversationId, path) {
   return `${conversationId}\u0000${path}`;
@@ -63,16 +65,22 @@ function resolveImage(conversationId, image) {
   if (!path) return null;
   const url = IMAGE_URLS.get(imageUrlKey(conversationId, path));
   if (!url) return null;
-  return { ...image, previewUrl: url };
+  const previous = RESOLVED_IMAGES.get(image);
+  if (previous?.previewUrl === url) return previous;
+  const resolved = { ...image, previewUrl: url };
+  RESOLVED_IMAGES.set(image, resolved);
+  return resolved;
 }
 
 // 图片还没到位时整张图先不出现（行只认 previewUrl）。
 function applyImageUrls(row, conversationId) {
   const images = Array.isArray(row.images) ? row.images : [];
-  if (!images.length) return row;
-  const resolved = images.map((image) => resolveImage(conversationId, image)).filter(Boolean);
-  if (resolved.length === images.length && resolved.every((image, index) => image === images[index])) return row;
-  return { ...row, images: resolved };
+  const resolve = (image) => resolveImage(conversationId, image);
+  const resolved = images.map(resolve).filter(Boolean);
+  const traceTimeline = resolveTranscriptImages(row.traceTimeline, resolve);
+  if (traceTimeline === row.traceTimeline && resolved.length === images.length
+    && resolved.every((image, index) => image === images[index])) return row;
+  return { ...row, images: resolved, traceTimeline };
 }
 
 const ROW_KEYS = [
@@ -156,7 +164,7 @@ function ChatThreadComponent({ conversationId = '', rows = [], loadTaskTrace, an
   // 图片按需取：先扫一遍要哪几张，effect 里发起（render 阶段不碰网络）。
   const pendingImages = [];
   for (const row of baseRows) {
-    for (const image of row.images || []) {
+    for (const image of [...(row.images || []), ...transcriptImageRefs(row)]) {
       const path = String(image?.path || '');
       if (!path) continue;
       const key = imageUrlKey(conversationId, path);

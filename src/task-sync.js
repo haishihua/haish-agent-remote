@@ -1,5 +1,5 @@
 import { api } from './api.js';
-import { runtimeTaskFromDetail } from './chat-runtime.js';
+import { runtimeTaskFromDetail, runtimeTaskWithQueuedInput } from './chat-runtime.js';
 
 // Cursor-based runtime task reads. The runtime exposes `after_event_id` plus an
 // `events_delta` flag (the desktop client already reads tasks that way); this
@@ -50,6 +50,27 @@ export function createTaskRuntimeCache({ limit = TASK_CACHE_LIMIT } = {}) {
     state(taskId) {
       return entries.get(String(taskId || ''))?.snapshot || null;
     },
+    // Keep local stream/HTTP acknowledgements without advancing the poll cursor:
+    // queued input responses may arrive ahead of earlier, unseen task events.
+    retainStream(snapshot) {
+      if (!snapshot?.taskId) return null;
+      const previous = entries.get(snapshot.taskId);
+      entries.set(snapshot.taskId, { ...previous, snapshot, record: null, lastEventId: null });
+      evict();
+      return snapshot;
+    },
+    queueInput(taskId, result, options, seed = null) {
+      const previous = entries.get(taskId);
+      const base = seed || previous?.snapshot;
+      if (!base) return null;
+      const snapshot = runtimeTaskWithQueuedInput(base, result, options);
+      const queuedInputs = new Map(previous?.queuedInputs || []);
+      const inputId = result?.event?.payload?.input_id || result?.input_id;
+      if (result?.event?.type === 'task_input_queued' && inputId) queuedInputs.set(inputId, { result, options });
+      entries.set(taskId, { ...previous, snapshot, queuedInputs });
+      evict();
+      return snapshot;
+    },
     // Appends the payload to the cached log only when the runtime confirmed
     // our cursor (`events_delta: true`); every other answer is a full replay
     // that replaces the entry.
@@ -64,11 +85,18 @@ export function createTaskRuntimeCache({ limit = TASK_CACHE_LIMIT } = {}) {
         // Idle poll: hand back the same object so React can skip the repaint.
         return previous.snapshot;
       }
-      const snapshot = runtimeTaskFromDetail(task, previous?.snapshot || null);
+      let snapshot = runtimeTaskFromDetail(task, previous?.snapshot || null);
+      const queuedInputs = new Map(previous?.queuedInputs || []);
+      for (const [inputId, queued] of queuedInputs) {
+        const confirmed = events.some((event) => (event.type === 'task_input_queued' && event.payload?.input_id === inputId)
+          || (event.type === 'task_input_applied' && event.payload?.inputs?.some((input) => input.input_id === inputId)));
+        if (confirmed) queuedInputs.delete(inputId);
+        else snapshot = runtimeTaskWithQueuedInput(snapshot, queued.result, queued.options);
+      }
       const lastEventId = events.length
         ? String(events[events.length - 1]?.event_id || '') || (append ? previous.lastEventId : null)
         : (append ? previous.lastEventId : null);
-      const entry = { snapshot, record, lastEventId };
+      const entry = { snapshot, record, lastEventId, queuedInputs };
       entries.delete(taskId);
       entries.set(taskId, entry);
       evict();

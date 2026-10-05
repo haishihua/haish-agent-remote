@@ -124,19 +124,22 @@ test('image uploads and task starts use the desktop image attachment protocol', 
   }
 });
 
-test('running task input carries uploaded image paths', async () => {
+test('running task input uses the desktop structured attachment protocol and returns its queued event', async () => {
   const originalFetch = globalThis.fetch;
   let requestBody;
   globalThis.fetch = async (_path, init = {}) => {
     requestBody = JSON.parse(init.body);
-    return new Response(JSON.stringify({ ok: true }), { headers: { 'Content-Type': 'application/json' } });
+    return new Response(JSON.stringify({ input_id: 'i1', event: { type: 'task_input_queued', payload: { input_id: 'i1' } } }), { headers: { 'Content-Type': 'application/json' } });
   };
 
   try {
-    await api.sendInput('task-1', 'Inspect this', [{ path: '/tmp/shot.png' }]);
-    assert.equal(requestBody.mode, 'steering');
-    assert.match(requestBody.message, /^Inspect this/);
-    assert.match(requestBody.message, /\[user attached image #1: \/tmp\/shot\.png\]/);
+    const response = await api.sendInput('task-1', 'Inspect this', [{ image_id: 'image-1', path: '/tmp/shot.png' }]);
+    assert.deepEqual(requestBody, {
+      message: 'Inspect this',
+      image_attachments: [{ image_id: 'image-1', path: '/tmp/shot.png', mime: null }],
+    });
+    assert.equal(response.event.type, 'task_input_queued');
+    assert.equal(response.input_id, 'i1');
   } finally {
     globalThis.fetch = originalFetch;
   }
