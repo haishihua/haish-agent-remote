@@ -27,6 +27,7 @@ import {
   X,
 } from 'lucide-react';
 import { api, runtimeConnectionState } from './api.js';
+import ConnectionScreen from './ConnectionScreen.jsx';
 import { conversationHasSentMessage } from './agent-binding.js';
 import {
   CHAT_IMAGE_MAX_COUNT,
@@ -305,37 +306,6 @@ function PairingScreen({ runtimeOnline, onPaired }) {
         </div>}
         <p className="security-note"><ShieldCheck size={14} /> Only paired clients can access this Haish Runtime.</p>
       </section>
-    </main>
-  );
-}
-
-function ConnectionScreen({ error, retrying, onRetry }) {
-  const failed = Boolean(error);
-  return (
-    <main className={`connection-screen ${failed ? 'failed' : ''}`}>
-      <div className="connection-brand">
-        <img src={penguinLogo} alt="" draggable="false" />
-        <span>Haish Agent</span>
-      </div>
-      <section className="connection-panel" aria-live="polite" aria-busy={!failed || retrying}>
-        <div className="connection-visual" aria-hidden="true">
-          <span className="connection-device"><Laptop size={30} /></span>
-          <span className="connection-route"><i /><b>{failed ? <CircleAlert size={18} /> : <Link2 size={18} />}</b><i /></span>
-          <span className="connection-device phone"><Smartphone size={30} /></span>
-        </div>
-        <div className="connection-state-label">
-          <span />{failed ? (retrying ? 'Retrying' : 'Connection paused') : 'Secure connection'}
-        </div>
-        <h1>{failed ? 'Can’t reach your Mac' : 'Connecting to Haish'}</h1>
-        <p>{failed
-          ? 'Keep Haish open on your computer and check that this device has internet access.'
-          : 'Waking your remote workspace and syncing your tasks.'}</p>
-        {failed ? <button type="button" className="connection-retry" onClick={onRetry} disabled={retrying}>
-          <RefreshCw className={retrying ? 'spin' : ''} size={19} aria-hidden="true" />
-          {retrying ? 'Trying again…' : 'Try again'}
-        </button> : <div className="connection-progress" role="status"><span /><span /><span /></div>}
-      </section>
-      <p className="connection-security"><ShieldCheck size={15} aria-hidden="true" /> End-to-end access to your paired computer</p>
     </main>
   );
 }
