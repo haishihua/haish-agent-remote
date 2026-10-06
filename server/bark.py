@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from pathlib import Path
 import re
 import time
 from urllib.parse import quote, urlsplit
@@ -14,6 +15,9 @@ from uuid import uuid4
 
 import httpx
 
+
+# Package-relative even when app.py is frozen as the top-level entry point.
+NOTIFICATION_ICON = Path(__file__).resolve().parent / 'assets' / 'haish-notification-icon.png'
 
 KEY = re.compile(r"^[A-Za-z0-9_-]{8,200}$")
 SCHEMA = """

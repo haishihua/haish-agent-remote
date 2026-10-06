@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field, model_validator
 import uvicorn
 import websockets
 
-from server.bark import BarkService
+from server.bark import BarkService, NOTIFICATION_ICON
 from server.tunnel import (
     TunnelConfigError,
     TunnelSettings,
@@ -941,7 +941,7 @@ def create_app(*, data_dir: Path | None = None, dist_dir: Path | None = None) ->
     @app.get("/remote/notification-icon.png", include_in_schema=False)
     async def notification_icon() -> FileResponse:
         # Public, credential-free asset: the Bark extension fetches this while Haish is asleep.
-        icon = Path(__file__).resolve().parent / 'assets' / 'haish-notification-icon.png'
+        icon = NOTIFICATION_ICON
         return FileResponse(icon, media_type='image/png', headers={'Cache-Control': 'public, max-age=86400'})
 
     @app.post("/remote/pairing/start")
