@@ -305,6 +305,63 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.manager.session)
         self.assertGreater(self.backend.releases, 0)
 
+    async def test_cancelled_stop_keeps_peer_cleanup_alive(self):
+        class Peer:
+            def __init__(self):
+                self.started = asyncio.Event()
+                self.finish = asyncio.Event()
+                self.calls = 0
+                self.cancelled = False
+
+            async def close(self):
+                self.calls += 1
+                self.started.set()
+                try:
+                    await self.finish.wait()
+                except asyncio.CancelledError:
+                    self.cancelled = True
+                    raise
+
+        peer = Peer()
+        s = DesktopSession(self.manager, self.device['device_id'], peer)
+        self.manager.session = s
+        stop = asyncio.create_task(self.manager.stop())
+        await peer.started.wait()
+        stop.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await stop
+        self.assertTrue(s.closed)
+        self.assertFalse(peer.cancelled)
+        self.assertIs(self.manager.session, s)  # no overlap while cleanup runs
+        another_stop = asyncio.create_task(self.manager.stop())
+        peer.finish.set()
+        await asyncio.wait_for(another_stop, 1)
+        self.assertEqual(peer.calls, 1)
+        self.assertIsNone(self.manager.session)
+
+    async def test_disable_joins_watchdog_cleanup_without_cancelling_peer(self):
+        peer = Mock(close=AsyncMock())
+        entered = asyncio.Event()
+        finish = asyncio.Event()
+
+        async def close():
+            entered.set()
+            await finish.wait()
+
+        peer.close.side_effect = close
+        s = DesktopSession(self.manager, self.device['device_id'], peer)
+        self.manager.session = s
+        s.watchdog = asyncio.create_task(self.manager.stop(session=s))
+        await entered.wait()
+        disable = asyncio.create_task(self.manager.set_enabled(False))
+        await asyncio.sleep(0)
+        finish.set()
+        await asyncio.wait_for(disable, 1)
+        await s.watchdog
+        peer.close.assert_awaited_once()
+        self.assertIsNone(self.manager.session)
+        self.assertFalse(self.manager.enabled)
+
     async def test_permission_loss_stops_active_session(self):
         class Peer:
             async def close(self):

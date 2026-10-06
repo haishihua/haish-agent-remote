@@ -172,14 +172,25 @@ class DesktopManager:
         current = self.session
         if current is None or (device_id and current.device_id != device_id) or (session and session is not current):
             return
-        # Mark closed before any await so buffered callbacks cannot inject input.
-        current.closed = True
-        current.suspend()
-        if current.watchdog and current.watchdog is not asyncio.current_task():
-            current.watchdog.cancel()
-        await current.pc.close()
-        if self.session is current:
-            self.session = None
+        # One session-owned cleanup task: HTTP cancellation must not cancel
+        # aiortc.close(), which otherwise leaves its internal close Future pending
+        # forever. Concurrent disable/watchdog/connection callbacks join the same
+        # task rather than trying to close the peer again.
+        if current.close_task is None:
+            current.closed = True
+            current.suspend()
+            if current.watchdog and current.watchdog is not asyncio.current_task():
+                current.watchdog.cancel()
+
+            async def cleanup():
+                try:
+                    await current.pc.close()
+                finally:
+                    if self.session is current:
+                        self.session = None
+
+            current.close_task = asyncio.create_task(cleanup())
+        await asyncio.shield(current.close_task)
 
 
 class DesktopSession:
@@ -189,6 +200,7 @@ class DesktopSession:
         self.epoch = secrets.token_urlsafe(16)
         self.channel = None
         self.watchdog = None
+        self.close_task = None
         self.closed = False
         self.last_ping = None
         self.generation = -1
