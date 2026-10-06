@@ -79,13 +79,6 @@ test('missing pieces never throw and never collapse two different conversations'
   assert.equal(conversationSignature({ conversation_id: 'a', messages: [], tasks: [] }), empty);
 });
 
-test('Bark enablement changes the status signature without delivery-counter churn', () => {
-  const local = statusSignature({ paired: true, notifications: { enabled: false } });
-  const bark = statusSignature({ paired: true, notifications: { enabled: true } });
-  assert.notEqual(local, bark);
-  assert.equal(bark, statusSignature({ paired: true, notifications: { enabled: true, delivery_counts: { sent: 10 } } }));
-});
-
 test('the status signature ignores the field the server bumps on every request', () => {
   const device = { device_id: 'd1', name: 'iPhone', last_seen_at: 1_789_000_000 };
   const first = statusSignature({ paired: true, runtime_online: true, computer_model: 'MacBook Air', device });

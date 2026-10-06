@@ -188,29 +188,6 @@ test('permission denial and sign-out during the prompt never schedule notificati
   }
 });
 
-test('Bark mode suppresses native scheduling and keeps scoped cold-start navigation', async () => {
-  const handlers = {};
-  const opened = [];
-  let cleared = 0;
-  const native = {
-    requestPermissions: () => assert.fail('Bark mode must not request Haish notification permission'),
-    schedule: () => assert.fail('Bark mode must not duplicate server notifications'),
-    clearLocalNotifications: async () => { cleared += 1; },
-    addListener: async (name, callback) => { handlers[name] = callback; return { remove() {} }; },
-  };
-  const cleanup = startTaskNotifications('device-a', (id) => opened.push(id), { native, barkEnabled: true });
-  observeNotificationTask(task('running'), conversation);
-  observeNotificationTask(task('done'), conversation);
-  await flush();
-  assert.equal(cleared, 1);
-  handlers.barkNotificationAction({ scope: 'wrong', conversationId: 'c2' });
-  handlers.barkNotificationAction({ scope: 'device-a', conversationId: 'c1' });
-  assert.deepEqual(opened, ['c1']);
-  cleanup();
-  handlers.barkNotificationAction({ scope: 'device-a', conversationId: 'late' });
-  assert.deepEqual(opened, ['c1']);
-});
-
 test('native notifications are linked, routed, use AppIcon and retain cold-start taps', () => {
   const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
   const swift = read('ios/App/App/TaskNotificationsPlugin.swift');
@@ -219,10 +196,6 @@ test('native notifications are linked, routed, use AppIcon and retain cold-start
   assert.match(swift, /retainUntilConsumed: true/);
   assert.match(swift, /UserDefaults\.standard\.set/);
   assert.match(swift, /SHA256\.hash/);
-  assert.match(swift, /capacitorOpenURL/);
-  assert.match(swift, /ApplicationDelegateProxy\.shared\.lastURL/);
-  assert.match(swift, /barkNotificationAction/);
-  assert.match(read('ios/App/App/Info.plist'), /CFBundleURLSchemes[\s\S]*<string>haish<\/string>/);
   assert.match(swift, /content\.title = status == "done" \? "Task completed" : "Task failed"/);
   assert.doesNotMatch(swift, /任务完成|任务失败/);
   assert.doesNotMatch(swift, /UNNotificationAttachment|registerForRemoteNotifications/);

@@ -6,7 +6,7 @@
 
 **iOS IPA 只通过 GitHub Actions 构建。** 开发 Mac 不承担 Xcode 编译、归档、导出或 IPA 打包职责；本地只允许做 Web 构建和 Capacitor 资源同步检查。GitHub Actions 的 macOS Runner 内部会使用 Apple 的 `xcodebuild` 完成真正的 iOS 编译，这是云端流水线实现细节，不是本地发布链路。
 
-第一阶段由 GitHub Actions 在 macOS Runner 上构建未签名 IPA，再由 iPhone 上的 SideStore 使用个人 Apple 账号签名安装。Haish 自身的 App Store、TestFlight、原生 APNs 和多用户服务不在本阶段范围内；后台任务通知使用官方 App Store Bark 客户端。
+第一阶段由 GitHub Actions 在 macOS Runner 上构建未签名 IPA，再由 iPhone 上的 SideStore 使用个人 Apple 账号签名安装。App Store、TestFlight、推送通知和多用户服务不在本阶段范围内。
 
 ## 偶发请求异常的诊断信息
 
@@ -381,20 +381,7 @@ WKWebView 里的输入框获得焦点时，iOS 会在键盘上方压一条系统
 
 三处都只动本仓库：`src/composer-height.js`、`src/poll-signature.js`、`src/App.jsx`（轮询节奏与守卫在调用点，不改桌面仓）。限速测量（Chromium + 4 倍 CPU）里这三笔分别对应每键约 85ms、空闲每 5 秒一次 97–110ms 的长任务、流式期间每 token 一次重渲染；真机手感仍由用户复验。
 
-### Bark 后台任务通知
-
-采用官方 App Store Bark 承接 APNs，不要求 Haish 的免费侧载包具备推送 entitlement，也不要求付费开发者账号。
-
-- 手机 Haish 设置页粘贴 Bark 的 device key（官方 `api.day.app` URL 域名后的一段，不含 URL），启用前明确提示：任务发起请求的最多 160 字预览会经过 Bark 与 Apple，本实现未启用内容加密。只支持官方 HTTPS 服务；不接受任意推送 URL，避免 SSRF。
-- adapter 生命周期内独立每 5 秒直接读取 runtime `/api/projects?execution_mode=chat&summary_only=false`，不经过手机用的 `_compact_project_listing`，覆盖同一会话两次轮询之间结束的多个任务以及桌面/手机发起的任务。启用时间之前的历史结束任务静默；运行/等待输入任务转结束会通知。电脑、runtime 与 adapter 必须在线。
-- 标题 `Task completed` / `Task failed`，正文优先 `display_text`、其次任务请求 `title`；不使用会话标题、回复或原始错误，剥离图片注入标记/路径。取消与链路异常不冒充任务失败。
-- 大图标是 Haish AppIcon，公开的 `/remote/notification-icon.png` 无需 token；图标作为 adapter 资源打包，冻结构建同样携带。小角标、应用身份和通知权限仍属 Bark。
-- 点击链接 `haish://conversation/{id}?device={device_id}` 无凭据，原生注册 `haish` scheme 并保留冷启动事件，JS 核验配对设备作用域，再通过常规鉴权 API 打开会话。这要求更新安装的 IPA；旧安装包不具备新 scheme。
-- SQLite 按设备/任务持久化去重，队列可跨重启，临时错误指数退避最多 8 次；永久拒绝停止。Bark 无发送幂等保证，超时或发送后崩溃重试仍可能重复；API 接受不能等同真机收到。
-- 替换 key、关闭、登出、撤销设备取消待发送项并移除配置；已在途/已被 provider 接受的通知无法撤回。启用后同设备停用本地调度避免双重提醒；关闭后本地提醒只在 App 执行时有效。
-- key 不回显、不写 URL、不记异常正文；保存在权限 `0600` 的 adapter SQLite 中，需保护电脑和备份。待发送预览在成功/最终失败/取消后清除，去重元数据保留。
-
-实现与本地构建不等于部署、IPA 安装或真机验收。发布需更新 adapter 与 IPA，再在设置中启用 Bark；随后分别从电脑与手机发任务，锁屏验收通知文案、图标和点击/冷启动跳转。此次没有真实推送或远端部署。
+推送通知需要 APNs 设备注册和服务端推送链路，等前台闭环通过后单独实现。
 
 ## 公网服务器与 Mac 端
 

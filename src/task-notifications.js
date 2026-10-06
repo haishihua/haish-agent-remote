@@ -11,10 +11,9 @@ function nativePlugin() {
   return plugin;
 }
 
-export function startTaskNotifications(scope, onOpen, { native = nativePlugin(), barkEnabled = false } = {}) {
+export function startTaskNotifications(scope, onOpen, { native = nativePlugin() } = {}) {
   if (!native || !scope) return () => {};
-  const permission = barkEnabled ? Promise.resolve({ granted: false }) : native.requestPermissions().catch(() => ({ granted: false }));
-  if (barkEnabled) native.clearLocalNotifications?.().catch(() => {});
+  const permission = native.requestPermissions().catch(() => ({ granted: false }));
   const tracker = createTaskNotificationTracker({
     notify: async (notification) => {
       const { granted } = await permission;
@@ -28,11 +27,7 @@ export function startTaskNotifications(scope, onOpen, { native = nativePlugin(),
   const listener = native.addListener('taskNotificationAction', (event) => {
     if (session === tracker && event.scope === scope && event.conversationId) onOpen(event.conversationId);
   }).catch(() => null);
-  const barkListener = native.addListener('barkNotificationAction', (event) => {
-    if (session === tracker && event.scope === scope && event.conversationId) onOpen(event.conversationId);
-  }).catch(() => null);
   return () => {
-    barkListener.then((handle) => handle?.remove()).catch(() => {});
     tracker.dispose();
     if (session === tracker) session = null;
     listener.then((handle) => handle?.remove()).catch(() => {});

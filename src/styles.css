@@ -553,12 +553,6 @@ button.pending-banner svg:last-child { margin-left: auto; opacity: 0.7; }
 
 .settings-card, .device-row { display: flex; min-height: 72px; align-items: center; gap: 12px; }
 .settings-screen { display: flex; min-height: inherit; flex-direction: column; }
-.bark-settings { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--border); border-radius: 18px; background: var(--surface); }
-.bark-settings p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
-.bark-settings label { font-size: 13px; }
-.bark-settings input { width: 100%; min-width: 0; padding: 12px; border: 1px solid var(--border); border-radius: 10px; color: inherit; background: transparent; font: inherit; font-size: 16px; }
-.bark-settings-actions { display: flex; flex-wrap: wrap; gap: 16px; }
-.bark-settings button:disabled { opacity: .45; }
 .settings-card { padding: 15px; border: 1px solid var(--border); border-radius: 18px; background: var(--surface); }
 .settings-icon, .device-icon { display: grid; width: 42px; height: 42px; flex: 0 0 42px; place-items: center; }
 .settings-icon { border-radius: 13px; background: var(--surface-raised); color: var(--accent); }

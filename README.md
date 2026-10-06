@@ -54,45 +54,32 @@ entry point. The workflow performs the complete sequence in CI:
 
 ### iOS task notifications
 
-**Bark is the selected background delivery provider.** Install the official Bark
-App Store app, allow its notifications, then open Haish Settings → Task notifications
-and enter the device key from Bark's `api.day.app` URL (not the whole URL). This
-version supports only the official HTTPS provider, not arbitrary/self-hosted URLs.
-No Apple Developer membership or Haish APNs credentials are required.
+After pairing, the iOS app requests permission for local notifications. When an
+observed task reaches `done`/`completed` or `failed`/`error`, it presents a banner
+with sound, an English title (`Task completed` / `Task failed`), and a preview of
+that task's initiating user message—not the conversation name or assistant output.
+The preview prefers `display_text`, then the matching user message, then the task's
+request title; attachment paths are stripped. Directory polling observes desktop-
+initiated tasks too, without requiring that conversation to be open, while the app
+is executing. iOS automatically uses the current app's AppIcon. Tapping the
+notification opens that conversation on the paired computer.
+Cancelled tasks and network/stream errors do not produce failure notifications.
+Historical completed tasks are not replayed; native delivery history also prevents
+repeat notifications across polling, navigation, and app restarts.
 
-The adapter independently checks the runtime's **complete, non-compacted chat task
-list** every five seconds. Both desktop- and phone-initiated tasks are covered even
-when Haish on the phone is suspended or closed. The computer, runtime, adapter and
-public HTTPS icon endpoint must remain online. Bark and Apple handle delivery;
-Focus/notification permissions and connectivity can delay or suppress alerts.
+This is **local notification delivery, not APNs push**. Notifications can only be
+scheduled when the app receives an authoritative task status. iOS may suspend the
+WebView in the background or after locking the phone; delivery while suspended or
+terminated is not guaranteed. Returning to the app refreshes task states. If
+permission was denied, enable notifications for Haish in iOS Settings. This feature
+requires no push entitlement and remains compatible with the SideStore build path.
 
-Titles are `Task completed` / `Task failed`. The body is a maximum 160-character
-preview of the initiating request (`display_text`, then the task request title),
-never the conversation name, assistant response or raw error. Attachment augmentation
-is stripped. The large icon is Haish; the small badge and notification identity are
-Bark. The public `/remote/notification-icon.png` asset is bundled with the adapter.
-A credential-free `haish://conversation/...` link opens the paired conversation;
-new URL handling requires an updated installed IPA.
-
-SQLite records deduplicate task/device deliveries across polls and adapter restarts.
-Historical terminal tasks are silent. Transient transport/provider errors use
-exponential retries (up to eight attempts); permanent rejections stop. **Bark has no
-send-idempotency contract:** a timeout or crash after provider acceptance can still
-cause a duplicate on retry. HTTP acceptance is not proof of phone delivery. Changing
-a key, disabling Bark, signing out or revoking a device cancels its queued work;
-an already in-flight/accepted push cannot be recalled.
-
-Enabling Bark disables Haish's local scheduling for that device to avoid double
-alerts. Without Bark, existing local notifications remain available only while the
-app is executing and can observe task status; they are not background push.
-
-Privacy: enabling shares request previews with the official Bark service and Apple.
-This integration does **not** encrypt push content. The key is stored on the adapter
-in its owner-only SQLite file, never returned to the phone, logged, or put in URLs;
-protect the computer/data directory and backups. Pending previews are persisted for
-retry, then cleared after success/final failure/cancellation. Delivery metadata is
-retained for deduplication. Source/build tests do not replace lock-screen, icon,
-cold-start navigation and desktop/mobile task acceptance tests on an installed app.
+Reliable background delivery for tasks started on either desktop or mobile requires
+a server-side task observer and APNs remote alerts, plus a paid Apple Developer
+team's push-enabled App ID/provisioning profile and APNs credentials. A free-account
+sideload cannot provide that push entitlement. No APNs integration is currently
+implemented; background polling, background fetch, or a local timer must not be
+represented as reliable completion notifications while iOS suspends the app.
 
 ### Standard IPA release procedure
 

@@ -4,7 +4,7 @@ import argparse
 import asyncio
 import atexit
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager
 import hashlib
 from importlib.metadata import PackageNotFoundError, version as _distribution_version
 import json
@@ -29,7 +29,6 @@ from pydantic import BaseModel, Field, model_validator
 import uvicorn
 import websockets
 
-from server.bark import BarkService, NOTIFICATION_ICON
 from server.tunnel import (
     TunnelConfigError,
     TunnelSettings,
@@ -209,15 +208,10 @@ class DeviceStore:
                 """
             )
 
-    @contextmanager
-    def _connect(self):
+    def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=5)
         connection.row_factory = sqlite3.Row
-        try:
-            with connection:
-                yield connection
-        finally:
-            connection.close()
+        return connection
 
     def issue_pairing_code(self) -> str:
         code = f"{secrets.randbelow(100_000_000):08d}"
@@ -849,17 +843,9 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     uvicorn re-raises the terminating signal right after the lifespan shutdown,
     so this is the last place where the tunnel can be stopped on SIGTERM/SIGINT.
     """
-    worker = asyncio.create_task(_app.state.bark.run())
-    try:
-        yield
-    finally:
-        worker.cancel()
-        try:
-            await worker
-        except asyncio.CancelledError:
-            pass
-        for callback in _shutdown_callbacks:
-            callback()
+    yield
+    for callback in _shutdown_callbacks:
+        callback()
 
 
 def _tunnel_snapshot(request: Request) -> dict[str, Any]:
@@ -882,8 +868,6 @@ def create_app(*, data_dir: Path | None = None, dist_dir: Path | None = None) ->
         allow_headers=["Accept", "Authorization", "Content-Type"],
     )
     app.state.device_store = store
-    bark = BarkService(store, discover_upstream, _public_endpoint)
-    app.state.bark = bark
 
     async def current_device(request: Request) -> dict[str, Any]:
         device = store.authenticate(_token_from_request(request))
@@ -911,38 +895,10 @@ def create_app(*, data_dir: Path | None = None, dist_dir: Path | None = None) ->
             "version": ADAPTER_VERSION,
             "paired": device is not None,
             "device": device,
-            "notifications": bark.status(device['device_id']) if device else {"enabled": False},
             "runtime_online": await runtime_online(),
             "computer_model": computer_model,
             "tunnel": _tunnel_snapshot(request),
         })
-
-    @app.get("/remote/notifications/bark")
-    async def bark_status(device: dict[str, Any] = Depends(current_device)) -> JSONResponse:
-        return JSONResponse(bark.status(device['device_id']))
-
-    @app.put("/remote/notifications/bark")
-    async def bark_configure(request: Request, device: dict[str, Any] = Depends(current_device)) -> JSONResponse:
-        # Parse manually: validation errors must not echo a submitted provider secret.
-        try:
-            if len(await request.body()) > 1024:
-                raise ValueError('Notification configuration is too large.')
-            payload = await request.json()
-            bark.configure(device['device_id'], payload.get('device_key') if isinstance(payload, dict) else None)
-        except (ValueError, UnicodeDecodeError):
-            raise HTTPException(status_code=422, detail='Enter a valid Bark device key, not a full URL.') from None
-        return JSONResponse(bark.status(device['device_id']))
-
-    @app.delete("/remote/notifications/bark")
-    async def bark_disable(device: dict[str, Any] = Depends(current_device)) -> JSONResponse:
-        bark.disable(device['device_id'])
-        return JSONResponse(bark.status(device['device_id']))
-
-    @app.get("/remote/notification-icon.png", include_in_schema=False)
-    async def notification_icon() -> FileResponse:
-        # Public, credential-free asset: the Bark extension fetches this while Haish is asleep.
-        icon = NOTIFICATION_ICON
-        return FileResponse(icon, media_type='image/png', headers={'Cache-Control': 'public, max-age=86400'})
 
     @app.post("/remote/pairing/start")
     async def start_pairing(request: Request) -> JSONResponse:
@@ -1006,13 +962,11 @@ def create_app(*, data_dir: Path | None = None, dist_dir: Path | None = None) ->
     async def revoke_device(device_id: str, _: dict[str, Any] = Depends(desktop_or_current_device)) -> JSONResponse:
         if not store.revoke(device_id):
             raise HTTPException(status_code=404, detail="Device not found.")
-        bark.disable(device_id)
         return JSONResponse({"ok": True})
 
     @app.post("/remote/logout")
     async def logout(request: Request, device: dict[str, Any] = Depends(current_device)) -> JSONResponse:
         store.revoke(device["device_id"])
-        bark.disable(device['device_id'])
         response = JSONResponse({"ok": True})
         response.delete_cookie(COOKIE_NAME, path="/")
         return response
