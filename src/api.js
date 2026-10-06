@@ -174,11 +174,11 @@ export const api = {
     method: 'PATCH',
     body: JSON.stringify(patch),
   }),
-  uploadImage: (conversationId, file) => {
+  uploadImage: (conversationId, file, { signal } = {}) => {
     const body = new FormData();
     body.append('conversation_id', conversationId);
     body.append('file', file);
-    return request('/api/messages/images', { method: 'POST', body });
+    return request('/api/messages/images', { method: 'POST', body, signal });
   },
   imagePreview: async (conversationId, path) => {
     const previewPath = `/api/conversations/${encodeURIComponent(conversationId)}/messages/images/preview?image_path=${encodeURIComponent(path)}`;

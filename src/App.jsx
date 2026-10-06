@@ -30,6 +30,7 @@ import { api, runtimeConnectionState } from './api.js';
 import ConnectionScreen from './ConnectionScreen.jsx';
 import { observeNotificationConversation, observeNotificationTask, startTaskNotifications } from './task-notifications.js';
 import { conversationHasSentMessage } from './agent-binding.js';
+import { createImageUploader, hasBlockedImageUploads } from './image-upload.js';
 import {
   CHAT_IMAGE_MAX_COUNT,
   chatMessageText,
@@ -854,6 +855,15 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   const onBackRef = useRef(onBack);
   const composerImagesRef = useRef([]);
   const optimisticUserMessagesRef = useRef([]);
+  const imageUploader = useMemo(() => createImageUploader({
+    getImages: () => composerImagesRef.current,
+    setImages: (images) => {
+      composerImagesRef.current = images;
+      setComposerImages(images);
+    },
+    uploadFile: (file, options) => api.uploadImage(id, file, options),
+  }), [id]);
+  useEffect(() => () => imageUploader.cancelAll(), [imageUploader]);
   const localStreamRef = useRef(false);
   const interruptedRunRef = useRef(null);
   const liveRunRef = useRef(null);
@@ -1329,6 +1339,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   }, [busy, running, stop]);
 
   async function attachImages(files) {
+    if (busy || composerPending) return;
     const available = Math.max(0, CHAT_IMAGE_MAX_COUNT - composerImagesRef.current.length);
     const drafts = Array.from(files || []).slice(0, available).map((file) => {
       const validationError = chatImageValidationError(file);
@@ -1338,28 +1349,14 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
         previewUrl: validationError ? '' : URL.createObjectURL(file),
         uploading: !validationError,
         error: validationError,
+        retryable: false,
       };
     });
     if (!drafts.length) return;
     const nextImages = [...composerImagesRef.current, ...drafts];
     composerImagesRef.current = nextImages;
     setComposerImages(nextImages);
-    await Promise.all(drafts.filter((image) => !image.error).map(async (image) => {
-      try {
-        const uploaded = await api.uploadImage(id, image.file);
-        setComposerImages((current) => current.map((item) => item.id === image.id ? {
-          ...item,
-          uploading: false,
-          imageId: uploaded.image_id,
-          path: uploaded.path,
-          mime: uploaded.mime,
-        } : item));
-      } catch (nextError) {
-        setComposerImages((current) => current.map((item) => item.id === image.id
-          ? { ...item, uploading: false, error: nextError.message }
-          : item));
-      }
-    }));
+    await Promise.all(drafts.filter((image) => !image.error).map((image) => imageUploader.upload(image.id)));
   }
 
   function beginPhotoLongPress(event) {
@@ -1417,6 +1414,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   }
 
   function removeComposerImage(imageId) {
+    imageUploader.cancel(imageId);
     const image = composerImagesRef.current.find((item) => item.id === imageId);
     if (image?.previewUrl) URL.revokeObjectURL(image.previewUrl);
     const nextImages = composerImagesRef.current.filter((item) => item.id !== imageId);
@@ -1426,8 +1424,10 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
 
   async function submit(event) {
     event.preventDefault();
+    // Guard the handler as well as the button/IME path; never filter failed attachments out of a send.
+    if (busy || composerPending || hasBlockedImageUploads(composerImagesRef.current)) return;
     const nextMessage = String(messageInputRef.current?.value || '').trim();
-    const imageAttachments = composerImages.filter((image) => image.imageId && !image.error).map((image) => ({
+    const imageAttachments = composerImagesRef.current.map((image) => ({
       image_id: image.imageId,
       path: image.path,
       mime: image.mime,
@@ -1824,7 +1824,9 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
             <div className={`composer-image ${image.uploading ? 'uploading' : ''} ${image.error ? 'error' : ''}`} key={image.id} title={image.error || image.file.name}>
               {image.previewUrl ? <button type="button" onClick={() => setPreviewImage({ src: image.previewUrl, name: image.file.name })} aria-label={`Preview ${image.file.name}`}><img src={image.previewUrl} alt="" /></button> : <span aria-hidden="true">!</span>}
               {image.uploading ? <LoaderCircle className="spin" size={20} aria-label="Uploading image" /> : null}
-              <button type="button" className="composer-image-remove" onClick={() => removeComposerImage(image.id)} aria-label={`Remove ${image.file.name}`}><X size={13} /></button>
+              {image.error && image.retryable ? <button type="button" className="composer-image-retry" disabled={busy || composerPending}
+                onClick={() => imageUploader.upload(image.id)} aria-label={`Retry uploading ${image.file.name}`}><RefreshCw size={15} />Retry</button> : null}
+              <button type="button" disabled={busy} className="composer-image-remove" onClick={() => removeComposerImage(image.id)} aria-label={`Remove ${image.file.name}`}><X size={13} /></button>
             </div>
           ))}</div> : null}
           {composerImages.some((image) => image.error) ? <p className="composer-image-error" role="alert">{composerImages.find((image) => image.error)?.error}</p> : null}
@@ -1889,8 +1891,8 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
           </button>
           <button
             className="send-button composer-send-button"
-            data-blocked={busy || composerPending || composerImages.some((image) => image.uploading) || (running && annotationDrafts.length) || (!running && !runConfig) ? 'true' : 'false'}
-            disabled={busy || composerPending || composerImages.some((image) => image.uploading) || (!hasMessageRef.current && !annotationDrafts.length && !composerImages.some((image) => image.imageId && !image.error)) || (running && annotationDrafts.length) || (!running && !runConfig)}
+            data-blocked={busy || composerPending || hasBlockedImageUploads(composerImages) || (running && annotationDrafts.length) || (!running && !runConfig) ? 'true' : 'false'}
+            disabled={busy || composerPending || hasBlockedImageUploads(composerImages) || (!hasMessageRef.current && !annotationDrafts.length && !composerImages.some((image) => image.imageId && !image.error)) || (running && annotationDrafts.length) || (!running && !runConfig)}
             aria-label={running ? 'Add instruction' : 'Send'}
           >
             {busy || composerPending ? <span className="send-spinner" aria-hidden="true" /> : <ArrowUp className="send-icon" strokeWidth={2.3} aria-hidden="true" />}

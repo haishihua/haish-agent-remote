@@ -171,6 +171,16 @@ restore corrections after reopening a conversation. Completed transcripts use th
 same collapsed execution-history interaction as the desktop client. The adapter
 continues to proxy inputs; the core runtime owns durable event persistence.
 
+## Image upload recovery
+
+Selected images remain in the composer after upload failure. Use **Retry** on the
+failed thumbnail without reselecting the photo, or remove it explicitly. Sending
+is blocked until every selected image has uploaded successfully or been removed,
+including when the message contains text or is a mid-run correction. Invalid file
+types/sizes must be removed rather than retried. Uploads have a 60-second timeout;
+removing a draft or leaving the conversation cancels its pending requests. The UI
+shows concise errors; detailed request diagnostics remain in the diagnostic cache.
+
 ## Checks
 
 ```bash
