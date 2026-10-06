@@ -69,7 +69,7 @@ jobs:
             --workpath build/pyinstaller \
             --specpath build/pyinstaller \
             --collect-submodules uvicorn \
-            --add-data "server/assets:server/assets" \
+            --add-data "$GITHUB_WORKSPACE/server/assets:server/assets" \
             --copy-metadata haish-agent-remote \
             server/app.py
           mv build/adapter/haish-remote-adapter build/adapter/haish-remote-adapter-macos-arm64
@@ -114,6 +114,9 @@ jobs:
           assert payload["tunnel"]["enabled"] is False, payload
           print("frozen adapter:", payload)
           PY
+
+          curl -fsS http://127.0.0.1:19766/remote/notification-icon.png \
+            | python -c "import sys; assert sys.stdin.buffer.read().startswith(b'\\x89PNG'), 'notification icon missing from frozen adapter'"
 
           kill "$adapter_pid"
           wait "$adapter_pid" 2>/dev/null || true
