@@ -33,6 +33,13 @@ def ice_servers(env=None, now=None, subject='device'):
     return [{'urls': urls, 'username': username, 'credential': password}], True
 
 
+def load_media():
+    # Frozen native imports can take seconds on a cold launch. Never perform
+    # them on the signaling event loop (status and lease watchdog must run).
+    from aiortc import RTCPeerConnection, RTCConfiguration, RTCIceServer, RTCSessionDescription, VideoStreamTrack
+    return RTCPeerConnection, RTCConfiguration, RTCIceServer, RTCSessionDescription, VideoStreamTrack
+
+
 def validate_input(m):
     if not isinstance(m, dict):
         return False
@@ -107,10 +114,13 @@ class DesktopManager:
             if self.session:
                 raise HTTPException(409, 'This Mac is busy with another desktop session. End it before reconnecting.')
             try:
-                from aiortc import RTCPeerConnection, RTCConfiguration, RTCIceServer, RTCSessionDescription
-                from aiortc import VideoStreamTrack
+                RTCPeerConnection, RTCConfiguration, RTCIceServer, RTCSessionDescription, VideoStreamTrack = (
+                    await asyncio.wait_for(asyncio.to_thread(load_media), NEGOTIATION_SECONDS))
             except ImportError:
                 raise HTTPException(503, 'Desktop media dependencies are unavailable.') from None
+            except TimeoutError:
+                raise HTTPException(503, 'Desktop media initialization timed out. Retry after initialization completes.') from None
+            self.ready()  # local disable/permission changes may occur during import
             servers, configured = ice_servers(subject=device_id)
             pc = RTCPeerConnection(RTCConfiguration(iceServers=[RTCIceServer(**s) for s in servers]))
             session = DesktopSession(self, device_id, pc)

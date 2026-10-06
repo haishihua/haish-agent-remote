@@ -307,6 +307,35 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.manager.session)
         self.assertGreater(self.backend.releases, 0)
 
+    async def test_cold_media_import_does_not_block_disable(self):
+        import threading
+        started = threading.Event()
+        finish = threading.Event()
+
+        def cold_import():
+            started.set()
+            finish.wait(2)
+            return (Mock(),) * 5
+
+        with patch('server.desktop.load_media', side_effect=cold_import):
+            offer = asyncio.create_task(self.manager.offer(self.device['device_id'], 'cold'))
+            try:
+                for _ in range(100):
+                    if started.is_set():
+                        break
+                    await asyncio.sleep(.001)
+                self.assertTrue(started.is_set())
+                await asyncio.wait_for(self.manager.set_enabled(False), .5)
+                self.assertIsNone(self.manager.session)
+                finish.set()
+                with self.assertRaises(HTTPException) as error:
+                    await asyncio.wait_for(offer, 1)
+                self.assertEqual(error.exception.status_code, 409)
+            finally:
+                finish.set()
+                if not offer.done():
+                    offer.cancel()
+
     async def test_remote_description_timeout_releases_slot(self):
         entered = asyncio.Event()
         peer = Mock()
