@@ -15,6 +15,7 @@ import re
 import secrets
 import sqlite3
 import subprocess
+import sys
 import time
 import tomllib
 from typing import Any
@@ -29,7 +30,7 @@ from pydantic import BaseModel, Field, model_validator
 import uvicorn
 import websockets
 
-from server.desktop import DesktopManager, ice_servers
+from server.desktop import DesktopManager, ice_servers, load_media
 from server.desktop_management import create_management_app
 
 from server.tunnel import (
@@ -1203,6 +1204,15 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Pairing code: {code[:4]} {code[4:]}")
         print("Expires in 5 minutes.")
         return
+    if getattr(sys, 'frozen', False):
+        # Onefile media dylibs can hold the GIL during cold initialization, even
+        # in a worker thread. Finish that work before advertising a ready tunnel
+        # or listener, rather than starving status/offer requests on first use.
+        # Import only: no capture, CGEvents, permission prompts or enable change.
+        try:
+            load_media()
+        except ImportError:
+            print('[haish-remote] desktop media dependencies unavailable', flush=True)
     # The adapter owns its public presence: keep the bundled frpc alive while we
     # serve. A misconfigured tunnel fails the start instead of going silent.
     try:

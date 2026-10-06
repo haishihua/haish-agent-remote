@@ -91,6 +91,55 @@ class DesktopTests(unittest.TestCase):
             self.assertIsNone(self.manager.session)
             peer.close.assert_awaited_once()
 
+    def test_frozen_media_warmup_precedes_tunnel_and_listener(self):
+        import importlib
+        module = importlib.import_module('server.app')
+        events = []
+        with patch.object(module.sys, 'frozen', True, create=True), \
+             patch.object(module, 'load_media', side_effect=lambda: events.append('media')), \
+             patch.object(module.TunnelSettings, 'from_env', side_effect=lambda *a, **k: events.append('tunnel')), \
+             patch.object(module.uvicorn, 'run', side_effect=lambda *a, **k: events.append('listener')):
+            module.main(['serve'])
+        self.assertEqual(events, ['media', 'tunnel', 'listener'])
+
+    def test_unavailable_frozen_media_does_not_disable_core_runtime(self):
+        import importlib
+        module = importlib.import_module('server.app')
+        with patch.object(module.sys, 'frozen', True, create=True), \
+             patch.object(module, 'load_media', side_effect=ImportError('private detail')), \
+             patch.object(module.TunnelSettings, 'from_env', return_value=None), \
+             patch.object(module.uvicorn, 'run') as run, patch('builtins.print') as output:
+            module.main(['serve'])
+        run.assert_called_once()
+        self.assertNotIn('private detail', str(output.call_args))
+
+    def test_version_does_not_warm_media(self):
+        import importlib
+        module = importlib.import_module('server.app')
+        with patch.object(module.sys, 'frozen', True, create=True), \
+             patch.object(module, 'load_media') as media, patch('builtins.print'):
+            with self.assertRaises(SystemExit) as exit:
+                module.main(['--version'])
+        self.assertEqual(exit.exception.code, 0)
+        media.assert_not_called()
+
+    def test_diagnostics_are_local_only_and_contain_counts_not_input(self):
+        peer = Mock(close=AsyncMock())
+        session = DesktopSession(self.manager, self.device['device_id'], peer)
+        session.channel = Mock()
+        self.manager.session = session
+        self.manager.enabled = True
+        fields = handshake(session)
+        session.message(json.dumps({**fields, 'type': 'text', 'text': 'private-test-content', 'seq': 1}))
+        client = TestClient(create_management_app(self.manager), base_url='http://127.0.0.1:8767')
+        result = client.get('/diagnostics')
+        self.assertEqual(result.json()['input']['accepted'], 1)
+        self.assertNotIn('private-test-content', result.text)
+        self.assertNotIn(fields['ticket'], result.text)
+        self.assertEqual(client.get('/diagnostics', headers={'x-forwarded-for': '127.0.0.1'}).status_code, 403)
+        remote = self.client.get('/remote/desktop/diagnostics', headers=self.auth)
+        self.assertNotIn('native_errors', remote.text)
+
     def test_turn_short_lived(self):
         env = {'HAISH_DESKTOP_TURN_URLS': 'turn:relay.test:3478,turns:relay.test:5349', 'HAISH_DESKTOP_TURN_SECRET': 'test-only-secret'}
         servers, configured = ice_servers(env, now=100, subject='paired')
