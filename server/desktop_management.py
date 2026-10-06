@@ -66,6 +66,12 @@ call('/status');
     async def status():
         return manager.status()
 
+    @app.get('/diagnostics')
+    async def diagnostics():
+        session = manager.session
+        return {'input': dict(session.input_diagnostics) if session else None,
+                'active': bool(session and session.active())}
+
     @app.post('/enabled')
     async def enabled(payload: EnableRequest):
         await manager.set_enabled(payload.enabled)

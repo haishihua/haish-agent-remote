@@ -227,6 +227,7 @@ class DesktopSession:
         self.last_seq = -1
         self.next_frame = self.started
         self.width, self.height, self.fps = 1920, 1080, 30
+        self.input_diagnostics = {'received': 0, 'accepted': 0, 'rejected': 0, 'native_errors': 0}
         self.bucket = 0
         self.bucket_start = self.started
 
@@ -313,10 +314,13 @@ class DesktopSession:
                     'probe': m['probe'], 'epoch': self.epoch, 'ticket': m['ticket'],
                     'validForMs': int(max(0, self.tickets[m['ticket']] - now) * 1000)}))
                 return
+            self.input_diagnostics['received'] += 1
             if not self.active() or not valid_ticket:
+                self.input_diagnostics['rejected'] += 1
                 return
             seq = m.get('seq')
             if type(seq) is not int or seq <= self.last_seq:
+                self.input_diagnostics['rejected'] += 1
                 return
             self.last_seq = seq
             if now - self.bucket_start >= 1:
@@ -325,7 +329,12 @@ class DesktopSession:
             if self.bucket > 240:
                 self.suspend()
                 return
-            self.manager.backend.input(m)
+            try:
+                self.manager.backend.input(m)
+            except Exception:
+                self.input_diagnostics['native_errors'] += 1
+                raise
+            self.input_diagnostics['accepted'] += 1
             if m['type'] == 'key':
                 (self.held_keys.add if m['down'] else self.held_keys.discard)(m['key'])
             elif m['type'] == 'button':
