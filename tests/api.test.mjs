@@ -63,6 +63,25 @@ test('pairing submits only the code because the server identifies the remote dev
   }
 });
 
+test('Bark configuration uses authenticated adapter routes, keeping the key out of URLs', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (path, init = {}) => {
+    calls.push([path, init.method || 'GET', init.body ? JSON.parse(init.body) : null]);
+    return new Response(JSON.stringify({ enabled: init.method !== 'DELETE' }), { headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    await api.barkNotifications();
+    await api.saveBarkNotifications('test-device-key');
+    await api.disableBarkNotifications();
+    assert.deepEqual(calls, [
+      ['/remote/notifications/bark', 'GET', null],
+      ['/remote/notifications/bark', 'PUT', { device_key: 'test-device-key' }],
+      ['/remote/notifications/bark', 'DELETE', null],
+    ]);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test('conversation reads use the adapter canonical read-marker endpoints', async () => {
   const originalFetch = globalThis.fetch;
   const calls = [];

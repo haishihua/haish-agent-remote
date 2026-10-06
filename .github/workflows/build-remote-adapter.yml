@@ -69,6 +69,7 @@ jobs:
             --workpath build/pyinstaller \
             --specpath build/pyinstaller \
             --collect-submodules uvicorn \
+            --add-data "server/assets:server/assets" \
             --copy-metadata haish-agent-remote \
             server/app.py
           mv build/adapter/haish-remote-adapter build/adapter/haish-remote-adapter-macos-arm64

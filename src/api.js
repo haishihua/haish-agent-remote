@@ -112,6 +112,11 @@ export const api = {
   initialize: initializeNativeConnection,
   scanPairingCode,
   status: () => requestWithTimeout('/remote/status'),
+  barkNotifications: () => request('/remote/notifications/bark'),
+  saveBarkNotifications: (deviceKey) => request('/remote/notifications/bark', {
+    method: 'PUT', body: JSON.stringify({ device_key: deviceKey }),
+  }),
+  disableBarkNotifications: () => request('/remote/notifications/bark', { method: 'DELETE' }),
   pair: async (code, endpoint) => {
     const result = await request('/remote/pairing/exchange', {
       method: 'POST',

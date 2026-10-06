@@ -79,6 +79,7 @@ export function statusSignature(status) {
     status?.runtime_online ? 'online' : 'offline',
     status?.computer_model || '',
     status?.version || '',
+    status?.notifications?.enabled ? 'bark' : 'local',
     device ? `${device.device_id || ''}:${device.name || ''}` : '',
   ].join('|');
 }

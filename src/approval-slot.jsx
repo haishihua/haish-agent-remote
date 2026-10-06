@@ -18,11 +18,11 @@
 // 于是「时间线里能看到就不重复、看不到才落到末尾」这条规矩在手机上一样成立。
 import React from 'react';
 import { approvalStore, isBrowserRuntimeRequest, isWorkflowApprovalRequest } from '../../haish-agent/app-web/src/features/approvals/model/approval-store.js';
-import {
-  BrowserRuntimeCard,
-  ToolApprovalCard,
-  WorkflowApprovalInline,
-} from '../../haish-agent/app-web/src/features/approvals/components/ApprovalOverlay.jsx';
+import * as DesktopApprovalCards from '../../haish-agent/app-web/src/features/approvals/components/ApprovalOverlay.jsx';
+// CI pins the earlier BrowserRuntimeCard export; current desktop renamed it.
+// Namespace lookup keeps both source revisions buildable without changing either renderer.
+const { ToolApprovalCard, WorkflowApprovalInline } = DesktopApprovalCards;
+const BrowserRuntimeCard = DesktopApprovalCards['RuntimeApprovalCard'] || DesktopApprovalCards['BrowserRuntimeCard'];
 import { scopedPendingRequests } from './haish-bridge.js';
 
 function usePendingApprovals() {

@@ -213,6 +213,9 @@ class DeviceStoreTest(unittest.TestCase):
                             "task_id": "task-3",
                             "status": "done",
                             "completed_at": "2026-09-04T10:00:00Z",
+                            "title": "Fix this task, not the conversation name",
+                            "display_text": "Visible user request " + "x" * 1000,
+                            "answer_text": "Do not expose assistant output",
                             "provider_key": "openai",
                             "model": "gpt-5.5",
                             "request_provider": "llm-profile-openai-oauth",
@@ -234,6 +237,10 @@ class DeviceStoreTest(unittest.TestCase):
         self.assertEqual(tasks[1]["request_model_id"], "gpt-5.5")
         self.assertEqual(tasks[1]["request_options"]["model_id"], "gpt-5.5")
         self.assertNotIn("error", tasks[1])
+        self.assertNotIn("answer_text", tasks[1])
+        self.assertEqual(tasks[1]["title"], "Fix this task, not the conversation name")
+        self.assertTrue(tasks[1]["display_text"].startswith("Visible user request "))
+        self.assertEqual(len(tasks[1]["display_text"]), 512)
         catalog = compacted["model_catalog_tasks"]
         self.assertEqual([task["model"] for task in catalog], ["gpt-5.4", "gpt-5.5"])
         self.assertTrue(all("task_id" not in task and "error" not in task for task in catalog))

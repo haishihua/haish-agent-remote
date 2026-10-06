@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
-import { createTaskNotificationTracker, taskNotificationStatus } from '../src/task-notification-policy.js';
+import { createTaskNotificationTracker, taskNotificationBody, taskNotificationStatus } from '../src/task-notification-policy.js';
 import { observeNotificationTask, startTaskNotifications } from '../src/task-notifications.js';
 
 const conversation = { conversation_id: 'c1', title: '修复登录流程' };
-const task = (status, extra = {}) => ({ task_id: 't1', status, ...extra });
+const task = (status, extra = {}) => ({ task_id: 't1', title: '修复第二次上传失败', status, ...extra });
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 function fixture(notify) {
@@ -32,7 +32,7 @@ test('historical terminal rows are silent, active-to-terminal transitions notify
   await flush();
   tracker.observe(task('done', { task_id: 't2' }), conversation);
   await flush();
-  assert.deepEqual(calls, [{ taskId: 't2', conversationId: 'c1', status: 'done', title: '任务完成', body: conversation.title }]);
+  assert.deepEqual(calls, [{ taskId: 't2', conversationId: 'c1', status: 'done', title: 'Task completed', body: task('done').title }]);
 });
 
 test('fresh tasks finishing between polls notify; first-seen undated history does not', async () => {
@@ -41,7 +41,7 @@ test('fresh tasks finishing between polls notify; first-seen undated history doe
   tracker.observe(task('failed', { task_id: 'old' }), conversation);
   await flush();
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].title, '任务失败');
+  assert.equal(calls[0].title, 'Task failed');
   assert.ok(!JSON.stringify(calls).includes('secret-token'));
 });
 
@@ -63,6 +63,45 @@ test('camelCase task details, multiple sources and pending requests share dedupl
   tracker.observe(task('failed'), conversation);
   await flush();
   assert.equal(calls.length, 1);
+});
+
+test('notifications in the same conversation describe each task request, including desktop tasks', async () => {
+  const { calls, tracker } = fixture();
+  tracker.observe(task('done', { task_id: 'desktop-1', completed_at: 1001, title: 'Fix uploads' }), conversation);
+  tracker.observe(task('done', { task_id: 'desktop-2', completed_at: 1002, title: 'Review diff rendering' }), conversation);
+  await flush();
+  assert.deepEqual(calls.map((item) => item.body), ['Fix uploads', 'Review diff rendering']);
+  assert.ok(calls.every((item) => item.body !== conversation.title));
+});
+
+test('body resolves the triggering user message, not assistant output or steering', () => {
+  const detail = { ...conversation, messages: [
+    { role: 'user', message_id: 'unrelated', task_id: 'old', content: 'Old request' },
+    { role: 'assistant', message_id: 'answer', task_id: 't1', content: 'Private answer' },
+    { role: 'user', message_id: 'original', task_id: 't1', content: [{ type: 'text', text: 'Original request' }] },
+    { role: 'user', message_id: 'steer', task_id: 't1', content: 'Later steering' },
+  ] };
+  assert.equal(taskNotificationBody(task('done', { user_message_id: 'original' }), detail), 'Original request');
+  assert.equal(taskNotificationBody(task('done'), detail), 'Original request');
+  assert.equal(taskNotificationBody(task('done', { display_text: 'Visible comment', user_message_id: 'original' }), detail), 'Visible comment');
+  assert.equal(taskNotificationBody(task('done', { title: undefined }), conversation), 'Task request');
+});
+
+test('body hides attachment augmentation, handles image-only input and bounds previews', () => {
+  const attachment = '[user attached image #1: /private/image.png]\nThe user attached the image(s) above. Inspect the image files before answering;';
+  assert.equal(taskNotificationBody(task('done', { title: `Check this\n${attachment}` })), 'Check this');
+  assert.equal(taskNotificationBody(task('done', { title: attachment })), 'Task request');
+  assert.equal(taskNotificationBody(task('done', { title: 'Check\n[user attached image #1: /private/cu' })), 'Check');
+  assert.equal(taskNotificationBody(task('done', { display_text: '', title: 'Quoted feedback secret' })), 'Task request');
+  assert.equal(taskNotificationBody(task('done', { title: 'x'.repeat(1000) })).length, 160);
+});
+
+test('sparse completion snapshots retain the higher-quality submitted request', async () => {
+  const { calls, tracker } = fixture();
+  tracker.observe(task('running', { displayText: 'Submitted user message' }), conversation);
+  tracker.observe(task('done', { title: 'Lower-quality task preview' }), conversation);
+  await flush();
+  assert.equal(calls[0].body, 'Submitted user message');
 });
 
 test('scheduling failures can retry without throwing into task handling', async () => {
@@ -149,6 +188,29 @@ test('permission denial and sign-out during the prompt never schedule notificati
   }
 });
 
+test('Bark mode suppresses native scheduling and keeps scoped cold-start navigation', async () => {
+  const handlers = {};
+  const opened = [];
+  let cleared = 0;
+  const native = {
+    requestPermissions: () => assert.fail('Bark mode must not request Haish notification permission'),
+    schedule: () => assert.fail('Bark mode must not duplicate server notifications'),
+    clearLocalNotifications: async () => { cleared += 1; },
+    addListener: async (name, callback) => { handlers[name] = callback; return { remove() {} }; },
+  };
+  const cleanup = startTaskNotifications('device-a', (id) => opened.push(id), { native, barkEnabled: true });
+  observeNotificationTask(task('running'), conversation);
+  observeNotificationTask(task('done'), conversation);
+  await flush();
+  assert.equal(cleared, 1);
+  handlers.barkNotificationAction({ scope: 'wrong', conversationId: 'c2' });
+  handlers.barkNotificationAction({ scope: 'device-a', conversationId: 'c1' });
+  assert.deepEqual(opened, ['c1']);
+  cleanup();
+  handlers.barkNotificationAction({ scope: 'device-a', conversationId: 'late' });
+  assert.deepEqual(opened, ['c1']);
+});
+
 test('native notifications are linked, routed, use AppIcon and retain cold-start taps', () => {
   const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
   const swift = read('ios/App/App/TaskNotificationsPlugin.swift');
@@ -157,6 +219,12 @@ test('native notifications are linked, routed, use AppIcon and retain cold-start
   assert.match(swift, /retainUntilConsumed: true/);
   assert.match(swift, /UserDefaults\.standard\.set/);
   assert.match(swift, /SHA256\.hash/);
+  assert.match(swift, /capacitorOpenURL/);
+  assert.match(swift, /ApplicationDelegateProxy\.shared\.lastURL/);
+  assert.match(swift, /barkNotificationAction/);
+  assert.match(read('ios/App/App/Info.plist'), /CFBundleURLSchemes[\s\S]*<string>haish<\/string>/);
+  assert.match(swift, /content\.title = status == "done" \? "Task completed" : "Task failed"/);
+  assert.doesNotMatch(swift, /任务完成|任务失败/);
   assert.doesNotMatch(swift, /UNNotificationAttachment|registerForRemoteNotifications/);
   assert.match(read('ios/App/App/AppDelegate.swift'), /_ = TaskNotifications\.self/);
   assert.match(read('ios/App/App.xcodeproj/project.pbxproj'), /TaskNotificationsPlugin\.swift in Sources/);

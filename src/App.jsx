@@ -1535,7 +1535,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
           const nextRun = runtimeTaskWithEvent(liveRunRef.current, streamEvent);
           // The stream identifies the accepted run; only later authoritative snapshots
           // may declare it completed/failed (transport errors must not notify).
-          if (!liveRunRef.current?.taskId && nextRun?.taskId) observeNotificationTask(nextRun, conversation);
+          if (!liveRunRef.current?.taskId && nextRun?.taskId) observeNotificationTask({ ...nextRun, displayText: nextMessage }, conversation);
           scheduleLiveRun(nextRun);
         },
         () => {
@@ -1932,8 +1932,34 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   );
 }
 
-function SettingsScreen({ status, onLogout, onBack }) {
+function SettingsScreen({ status, onLogout, onBack, onNotificationsChanged }) {
   const [devices, setDevices] = useState([]);
+  const [barkKey, setBarkKey] = useState('');
+  const [barkBusy, setBarkBusy] = useState(false);
+  const [barkMessage, setBarkMessage] = useState('');
+
+  async function saveBark(event) {
+    event.preventDefault();
+    setBarkBusy(true);
+    setBarkMessage('');
+    try {
+      await api.saveBarkNotifications(barkKey.trim());
+      setBarkKey('');
+      await onNotificationsChanged();
+      setBarkMessage('Bark enabled. New task results will be sent by your computer.');
+    } catch (nextError) { setBarkMessage(nextError.message); }
+    finally { setBarkBusy(false); }
+  }
+
+  async function disableBark() {
+    setBarkBusy(true);
+    try {
+      await api.disableBarkNotifications();
+      await onNotificationsChanged();
+      setBarkMessage('Bark disabled. Local notifications are available while Haish is running.');
+    } catch (nextError) { setBarkMessage(nextError.message); }
+    finally { setBarkBusy(false); }
+  }
   const [error, setError] = useState('');
 
   const load = useCallback(async () => {
@@ -1967,6 +1993,19 @@ function SettingsScreen({ status, onLogout, onBack }) {
         <div className="device-copy"><strong>Computer</strong><span>{status.computer_model || 'Computer'}</span></div>
         <span className={`connection-badge ${status.runtime_online ? 'online' : ''}`}>{status.runtime_online ? 'Online' : 'Offline'}</span>
       </section>
+      <h2 className="section-title">Task notifications · Bark</h2>
+      <form className="bark-settings" onSubmit={saveBark}>
+        <p>Install Bark from the App Store and allow its notifications. Paste the device key from its api.day.app URL (the part after the domain), not the whole URL.</p>
+        <p>Large icon: Haish. Small badge and notification permission: Bark. Your computer must stay online; Haish on your phone can be locked or closed.</p>
+        <p>Enabling sends a 160-character preview of each task’s initiating request through Bark and Apple. This integration does not encrypt that preview. No assistant response is sent.</p>
+        <label htmlFor="bark-device-key">Bark device key</label>
+        <input id="bark-device-key" type="password" autoComplete="off" autoCapitalize="none" spellCheck={false} value={barkKey} onChange={(event) => setBarkKey(event.target.value)} placeholder={status.notifications?.enabled ? 'Configured · key is never shown' : 'Paste device key'} maxLength={200} />
+        <div className="bark-settings-actions">
+          <button className="text-button" disabled={barkBusy || !barkKey.trim()} type="submit">{barkBusy ? 'Saving…' : status.notifications?.enabled ? 'Replace key & enable' : 'Enable Bark notifications'}</button>
+          {status.notifications?.enabled ? <button className="text-button danger-text" type="button" disabled={barkBusy} onClick={disableBark}>Disable Bark</button> : null}
+        </div>
+        {barkMessage ? <p role="status">{barkMessage}</p> : null}
+      </form>
       <h2 className="section-title">Paired devices</h2>
       <section className="device-list">
         {devices.map((device) => (
@@ -2281,8 +2320,8 @@ export default function App() {
       setTab('tasks');
       if (api.isNative) replaceConversationHistory(window.history, '', window.location.href);
       showConversation(conversationId);
-    });
-  }, [status?.paired, status?.device?.device_id, showConversation]);
+    }, { barkEnabled: Boolean(status.notifications?.enabled) });
+  }, [status?.paired, status?.device?.device_id, status?.notifications?.enabled, showConversation]);
 
   // 传给 `ConversationList` 的几个回调必须是稳定的：它套了 memo，回调每次新建就等于没套。
   const createConversation = useCallback((projectId) => {
@@ -2410,7 +2449,7 @@ export default function App() {
           {approvalCount ? <button type="button" className="pending-banner" onClick={openWaitingConversation} disabled={!waitingConversationId}><ShieldCheck size={18} /><span>{approvalCount} {approvalCount === 1 ? 'action' : 'actions'} waiting</span>{waitingConversationId ? <ChevronRight size={17} aria-hidden="true" /> : null}</button> : null}
           <ConversationList projects={projects} conversations={conversations} tasks={tasks} status={status} approvals={approvals} loading={loading} error={fatalError} seenAt={seenAt} onRefresh={refreshDirectory} onOpen={openConversation} onNew={createConversation} onSettings={showSettings} />
         </>
-      ) : <SettingsScreen status={status} onLogout={logout} onBack={() => setTab('tasks')} />}
+      ) : <SettingsScreen onNotificationsChanged={loadStatus} status={status} onLogout={logout} onBack={() => setTab('tasks')} />}
       {detail}
     </div>
   );
