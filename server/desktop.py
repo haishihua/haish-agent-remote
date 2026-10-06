@@ -17,6 +17,7 @@ from server.macos_desktop import KEYS, MacDesktop
 # A ticket expires from SERVER issuance, not receipt. A delayed heartbeat cannot
 # extend an older command's validity; neither side needs synchronized wall clocks.
 INPUT_LEASE_SECONDS = 1.0
+NEGOTIATION_SECONDS = 12
 
 
 def ice_servers(env=None, now=None, subject='device'):
@@ -157,8 +158,11 @@ class DesktopManager:
 
             session.watchdog = asyncio.create_task(session.watch())
             try:
-                await pc.setRemoteDescription(RTCSessionDescription(sdp=sdp, type='offer'))
-                await asyncio.wait_for(pc.setLocalDescription(await pc.createAnswer()), 12)
+                # mDNS candidate resolution in setRemoteDescription can block
+                # too; bound the entire negotiation, not only ICE gathering.
+                async with asyncio.timeout(NEGOTIATION_SECONDS):
+                    await pc.setRemoteDescription(RTCSessionDescription(sdp=sdp, type='offer'))
+                    await pc.setLocalDescription(await pc.createAnswer())
                 return {'session_id': session.id, 'sdp': pc.localDescription.sdp,
                         'type': 'answer', 'turn_configured': configured}
             except asyncio.CancelledError:

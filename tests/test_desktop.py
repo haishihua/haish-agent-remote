@@ -307,6 +307,24 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.manager.session)
         self.assertGreater(self.backend.releases, 0)
 
+    async def test_remote_description_timeout_releases_slot(self):
+        entered = asyncio.Event()
+        peer = Mock()
+        peer.close = AsyncMock()
+
+        async def blocked_remote_description(_):
+            entered.set()
+            await asyncio.Event().wait()
+
+        peer.setRemoteDescription = blocked_remote_description
+        with patch('aiortc.RTCPeerConnection', return_value=peer), patch('server.desktop.NEGOTIATION_SECONDS', .05):
+            with self.assertRaises(HTTPException) as error:
+                await asyncio.wait_for(self.manager.offer(self.device['device_id'], 'blocked-mdns'), 1)
+        self.assertTrue(entered.is_set())
+        self.assertEqual(error.exception.status_code, 503)
+        self.assertIsNone(self.manager.session)
+        peer.close.assert_awaited_once()
+
     async def test_cancelled_stop_keeps_peer_cleanup_alive(self):
         class Peer:
             def __init__(self):
