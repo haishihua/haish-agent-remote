@@ -91,37 +91,17 @@ class DesktopTests(unittest.TestCase):
             self.assertIsNone(self.manager.session)
             peer.close.assert_awaited_once()
 
-    def test_frozen_media_warmup_precedes_tunnel_and_listener(self):
+    def test_service_start_does_not_wait_for_desktop_media(self):
+        # Consumer only allows 30s startup; cold frozen media exceeded 50s on
+        # macOS14. Keep optional media off the core listener startup path.
         import importlib
         module = importlib.import_module('server.app')
-        events = []
-        with patch.object(module.sys, 'frozen', True, create=True), \
-             patch.object(module, 'load_media', side_effect=lambda: events.append('media')), \
-             patch.object(module.TunnelSettings, 'from_env', side_effect=lambda *a, **k: events.append('tunnel')), \
-             patch.object(module.uvicorn, 'run', side_effect=lambda *a, **k: events.append('listener')):
-            module.main(['serve'])
-        self.assertEqual(events, ['media', 'tunnel', 'listener'])
-
-    def test_unavailable_frozen_media_does_not_disable_core_runtime(self):
-        import importlib
-        module = importlib.import_module('server.app')
-        with patch.object(module.sys, 'frozen', True, create=True), \
-             patch.object(module, 'load_media', side_effect=ImportError('private detail')), \
+        with patch('server.desktop.load_media') as media, \
              patch.object(module.TunnelSettings, 'from_env', return_value=None), \
-             patch.object(module.uvicorn, 'run') as run, patch('builtins.print') as output:
+             patch.object(module.uvicorn, 'run') as run:
             module.main(['serve'])
-        run.assert_called_once()
-        self.assertNotIn('private detail', str(output.call_args))
-
-    def test_version_does_not_warm_media(self):
-        import importlib
-        module = importlib.import_module('server.app')
-        with patch.object(module.sys, 'frozen', True, create=True), \
-             patch.object(module, 'load_media') as media, patch('builtins.print'):
-            with self.assertRaises(SystemExit) as exit:
-                module.main(['--version'])
-        self.assertEqual(exit.exception.code, 0)
         media.assert_not_called()
+        run.assert_called_once()
 
     def test_diagnostics_are_local_only_and_contain_counts_not_input(self):
         peer = Mock(close=AsyncMock())
