@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import RemoteDesktop from './remote-desktop.jsx';
 import {
   ArrowLeft,
   ArrowRight,
@@ -1932,7 +1933,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   );
 }
 
-function SettingsScreen({ status, onLogout, onBack }) {
+function SettingsScreen({ status, onLogout, onBack, onDesktop }) {
   const [devices, setDevices] = useState([]);
   const [error, setError] = useState('');
 
@@ -1967,6 +1968,7 @@ function SettingsScreen({ status, onLogout, onBack }) {
         <div className="device-copy"><strong>Computer</strong><span>{status.computer_model || 'Computer'}</span></div>
         <span className={`connection-badge ${status.runtime_online ? 'online' : ''}`}>{status.runtime_online ? 'Online' : 'Offline'}</span>
       </section>
+      <button className="logout-button" onClick={onDesktop}><Laptop size={19} />Remote desktop</button>
       <h2 className="section-title">Paired devices</h2>
       <section className="device-list">
         {devices.map((device) => (
@@ -2410,7 +2412,7 @@ export default function App() {
           {approvalCount ? <button type="button" className="pending-banner" onClick={openWaitingConversation} disabled={!waitingConversationId}><ShieldCheck size={18} /><span>{approvalCount} {approvalCount === 1 ? 'action' : 'actions'} waiting</span>{waitingConversationId ? <ChevronRight size={17} aria-hidden="true" /> : null}</button> : null}
           <ConversationList projects={projects} conversations={conversations} tasks={tasks} status={status} approvals={approvals} loading={loading} error={fatalError} seenAt={seenAt} onRefresh={refreshDirectory} onOpen={openConversation} onNew={createConversation} onSettings={showSettings} />
         </>
-      ) : <SettingsScreen status={status} onLogout={logout} onBack={() => setTab('tasks')} />}
+      ) : tab === 'desktop' ? <RemoteDesktop onBack={() => setTab('settings')} /> : <SettingsScreen status={status} onLogout={logout} onBack={() => setTab('tasks')} onDesktop={() => setTab('desktop')} />}
       {detail}
     </div>
   );

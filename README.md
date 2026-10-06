@@ -11,6 +11,15 @@ iOS/Android app -> public HTTPS + FRP -> Haish Remote adapter -> 127.0.0.1 Haish
 The adapter owns device pairing, session authentication, a strict API allowlist,
 runtime discovery, and draining task streams after a phone disconnects.
 
+## Remote desktop (implementation; real-device acceptance pending)
+
+Setting → Remote desktop connects a paired iPhone to an unlocked Apple Silicon Mac
+(macOS 14.8.9+). Access defaults off; enable it only on the Mac at
+`http://127.0.0.1:8767`, grant Screen Recording and Accessibility, then connect.
+The local management port must never be tunneled. See [setup, protocol, TURN and
+verification limits](docs/remote-desktop.md). Existing tasks are independent of
+desktop sessions. Lock-screen unlock, audio, clipboard and files are not included.
+
 ## Development
 
 Start the Haish desktop app first. Its runtime writes `runtime.pid`; the adapter

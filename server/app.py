@@ -4,7 +4,7 @@ import argparse
 import asyncio
 import atexit
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 import hashlib
 from importlib.metadata import PackageNotFoundError, version as _distribution_version
 import json
@@ -28,6 +28,9 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 import uvicorn
 import websockets
+
+from server.desktop import DesktopManager, ice_servers
+from server.desktop_management import create_management_app
 
 from server.tunnel import (
     TunnelConfigError,
@@ -208,10 +211,15 @@ class DeviceStore:
                 """
             )
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self):
         connection = sqlite3.connect(self.path, timeout=5)
         connection.row_factory = sqlite3.Row
-        return connection
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def issue_pairing_code(self) -> str:
         code = f"{secrets.randbelow(100_000_000):08d}"
@@ -843,9 +851,32 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     uvicorn re-raises the terminating signal right after the lifespan shutdown,
     so this is the last place where the tunnel can be stopped on SIGTERM/SIGINT.
     """
-    yield
-    for callback in _shutdown_callbacks:
-        callback()
+    management = None
+    management_task = None
+    port = getattr(_app.state, 'desktop_management_port', None)
+    if port:
+        class LocalServer(uvicorn.Server):
+            @contextmanager
+            def capture_signals(self):
+                yield
+        management = LocalServer(uvicorn.Config(
+            create_management_app(_app.state.desktop, port), host='127.0.0.1',
+            port=port, log_level='warning', access_log=False, proxy_headers=False))
+        management_task = asyncio.create_task(management.serve())
+        while not management.started:
+            if management_task.done():
+                await management_task
+                raise RuntimeError('Local desktop management listener failed to start.')
+            await asyncio.sleep(.01)
+    try:
+        yield
+    finally:
+        await _app.state.desktop.stop()
+        if management:
+            management.should_exit = True
+            await management_task
+        for callback in _shutdown_callbacks:
+            callback()
 
 
 def _tunnel_snapshot(request: Request) -> dict[str, Any]:
@@ -868,6 +899,8 @@ def create_app(*, data_dir: Path | None = None, dist_dir: Path | None = None) ->
         allow_headers=["Accept", "Authorization", "Content-Type"],
     )
     app.state.device_store = store
+    desktop = DesktopManager(data_dir or DEFAULT_DATA_DIR, store)
+    app.state.desktop = desktop
 
     async def current_device(request: Request) -> dict[str, Any]:
         device = store.authenticate(_token_from_request(request))
@@ -899,6 +932,45 @@ def create_app(*, data_dir: Path | None = None, dist_dir: Path | None = None) ->
             "computer_model": computer_model,
             "tunnel": _tunnel_snapshot(request),
         })
+
+    @app.get('/remote/desktop/status')
+    async def desktop_status(_: dict[str, Any] = Depends(current_device)):
+        return JSONResponse(desktop.status(), headers={'cache-control': 'no-store'})
+
+    @app.get('/remote/desktop/ice')
+    async def desktop_ice(device: dict[str, Any] = Depends(current_device)):
+        desktop.ready()
+        servers, configured = ice_servers(subject=device['device_id'])
+        return JSONResponse({'iceServers': servers, 'turn_configured': configured, 'expires_in': 600},
+                            headers={'cache-control': 'no-store'})
+
+    @app.post('/remote/desktop/offer')
+    async def desktop_offer(request: Request, device: dict[str, Any] = Depends(current_device)):
+        try:
+            length = int(request.headers.get('content-length', '0'))
+        except ValueError:
+            raise HTTPException(422, 'Invalid desktop offer length.') from None
+        if length > 131072:
+            raise HTTPException(413, 'Desktop offer too large.')
+        raw = bytearray()
+        async for chunk in request.stream():
+            raw.extend(chunk)
+            if len(raw) > 131072:
+                raise HTTPException(413, 'Desktop offer too large.')
+        try:
+            payload = json.loads(raw)
+            if payload.get('type') != 'offer' or not isinstance(payload.get('sdp'), str) or len(payload['sdp']) > 100000:
+                raise ValueError
+        except (ValueError, AttributeError):
+            raise HTTPException(422, 'Invalid desktop offer.') from None
+        return JSONResponse(await desktop.offer(device['device_id'], payload['sdp']), headers={'cache-control': 'no-store'})
+
+    @app.delete('/remote/desktop/sessions/{session_id}')
+    async def end_desktop(session_id: str, device: dict[str, Any] = Depends(current_device)):
+        session = desktop.session
+        if session and session.id == session_id and session.device_id == device['device_id']:
+            await desktop.stop(session=session)
+        return {'ok': True}
 
     @app.post("/remote/pairing/start")
     async def start_pairing(request: Request) -> JSONResponse:
@@ -962,11 +1034,13 @@ def create_app(*, data_dir: Path | None = None, dist_dir: Path | None = None) ->
     async def revoke_device(device_id: str, _: dict[str, Any] = Depends(desktop_or_current_device)) -> JSONResponse:
         if not store.revoke(device_id):
             raise HTTPException(status_code=404, detail="Device not found.")
+        await desktop.stop(device_id=device_id)
         return JSONResponse({"ok": True})
 
     @app.post("/remote/logout")
     async def logout(request: Request, device: dict[str, Any] = Depends(current_device)) -> JSONResponse:
         store.revoke(device["device_id"])
+        await desktop.stop(device_id=device['device_id'])
         response = JSONResponse({"ok": True})
         response.delete_cookie(COOKIE_NAME, path="/")
         return response
@@ -1154,6 +1228,7 @@ def main(argv: list[str] | None = None) -> None:
         )
     # Serve this module's app object directly: frozen builds execute the module as
     # __main__, and importing "server.app" by name would build a second instance.
+    app.state.desktop_management_port = int(os.getenv('HAISH_DESKTOP_MANAGEMENT_PORT', '8767'))
     uvicorn.run(app, host=args.host, port=args.port, reload=False)
 
 

@@ -57,6 +57,12 @@
 - 手机端契约：`haish://pair?v=1&endpoint=…&code=…` 配对 URI，`/remote/*` 与 allowlist 内的 `/api/*` 转发；
 - adapter 不安装、不启动 core runtime；runtime 由桌面客户端负责拉起。
 
+## 远程桌面扩展（实现，待真机验收）
+
+保持上述单可执行文件消费契约；PyObjC/Quartz/ApplicationServices、PyAV、aiortc 均冻结在 adapter 内，不新增需桌面 App 托管的 helper。CI 显式收集这些模块，设置 `MACOSX_DEPLOYMENT_TARGET=14.0`；目标运行机仍为 macOS 14.8.9 / arm64，不能因 runner 为 15 就宣称下限为 15。
+
+adapter 同进程另开 `127.0.0.1:8767` 本机管理页（`HAISH_DESKTOP_MANAGEMENT_PORT` 可覆盖），不能加入 FRP/Nginx 转发。手机只使用 8766 上已鉴权的 `/remote/desktop/*` 信令；开关不在该监听上。可选新增环境变量 `HAISH_DESKTOP_TURN_URLS` 与 `HAISH_DESKTOP_TURN_SECRET` 供自托管 coturn 短期凭据签发。操作、TURN 配置及验收限制见 [远程桌面实现说明](remote-desktop.md)。冻结产物权限主体/升级保留和最终 CI 产物在 14.8.9 上运行仍须验收。
+
 ## 开发路径
 
 源码运行方式不变（见 README 的 Development 一节）。本地要复现冻结产物时，照抄 workflow 里的 PyInstaller 命令即可；不要把它当作发布入口。

@@ -12,6 +12,12 @@ dependencies = [
     "httpx",
     "uvicorn",
     "websockets>=15,<17",
+    "aiortc==1.14.0",
+    "av==16.1.0",
+    "pyobjc-core==11.1; sys_platform == 'darwin'",
+    "pyobjc-framework-Cocoa==11.1; sys_platform == 'darwin'",
+    "pyobjc-framework-Quartz==11.1; sys_platform == 'darwin'",
+    "pyobjc-framework-ApplicationServices==11.1; sys_platform == 'darwin'",
 ]
 
 [tool.pytest.ini_options]

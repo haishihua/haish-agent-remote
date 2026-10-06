@@ -16,6 +16,7 @@ jobs:
     permissions:
       contents: write
     env:
+      MACOSX_DEPLOYMENT_TARGET: '14.0'
       FRP_VERSION: '0.71.0'
       FRP_SHA256: '45be02b186860d375ed49a8941ae9569628a54bf14e67fc36b29c98c99dabcc6'
 
@@ -69,6 +70,11 @@ jobs:
             --workpath build/pyinstaller \
             --specpath build/pyinstaller \
             --collect-submodules uvicorn \
+            --collect-all aiortc \
+            --collect-all av \
+            --collect-submodules Quartz \
+            --collect-submodules Cocoa \
+            --collect-submodules ApplicationServices \
             --copy-metadata haish-agent-remote \
             server/app.py
           mv build/adapter/haish-remote-adapter build/adapter/haish-remote-adapter-macos-arm64

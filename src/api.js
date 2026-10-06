@@ -107,11 +107,26 @@ export async function requestWithTimeout(path, timeoutMs = 8_000) {
   }
 }
 
+async function desktopRequest(path, init, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try { return await request(path, { ...init, signal: controller.signal }); }
+  finally { clearTimeout(timer); }
+}
+
 export const api = {
   isNative: isNativeApp,
   initialize: initializeNativeConnection,
   scanPairingCode,
   status: () => requestWithTimeout('/remote/status'),
+  desktopStatus: () => requestWithTimeout('/remote/desktop/status'),
+  desktopIce: () => requestWithTimeout('/remote/desktop/ice'),
+  desktopOffer: (offer) => desktopRequest('/remote/desktop/offer', {
+    method: 'POST', body: JSON.stringify(offer),
+  }, 20_000),
+  desktopEnd: (id) => desktopRequest(`/remote/desktop/sessions/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  }, 5_000),
   pair: async (code, endpoint) => {
     const result = await request('/remote/pairing/exchange', {
       method: 'POST',

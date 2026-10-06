@@ -1,0 +1,12 @@
+.remote-desktop { overflow-y: auto; padding-bottom: max(24px, env(safe-area-inset-bottom)); }
+.remote-desktop h1 { font-size: 20px; }
+.remote-desktop button { min-height: 44px; padding: 8px 12px; border-radius: 10px; border: 1px solid #777; background: #222; color: #fff; }
+.remote-desktop button:disabled { opacity: .45; }
+.remote-desktop button[aria-pressed="true"] { background: #34664e; }
+.desktop-video-viewport { width: 100%; max-height: 52vh; overflow: auto; background: #000; border-radius: 12px; }
+.desktop-video-viewport video { display: block; min-height: 120px; object-fit: contain; }
+.desktop-trackpad { touch-action: none; user-select: none; height: 130px; border: 1px solid #777; border-radius: 12px; display: grid; place-items: center; margin: 10px 0; font-size: 13px; background: #292929; color: #eee; }
+.desktop-connect, .desktop-controls { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; align-items: center; }
+.desktop-text { display: flex; gap: 8px; margin: 12px 0; }
+.desktop-text textarea { min-width: 0; flex: 1; font-size: 16px; border-radius: 10px; padding: 8px; }
+@media (orientation: landscape) { .desktop-video-viewport { max-height: 65vh; } .desktop-trackpad { height: 90px; } }
