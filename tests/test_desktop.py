@@ -242,6 +242,8 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
         self.assertTrue(s.closed)
         self.assertGreater(self.backend.releases, 0)
+        # Closing is a shielded session-owned task, not necessarily one loop turn.
+        await asyncio.wait_for(self.manager.stop(session=s), 1)
         self.assertIsNone(self.manager.session)
 
     async def test_real_webrtc_fake_video_busy_and_cleanup(self):
