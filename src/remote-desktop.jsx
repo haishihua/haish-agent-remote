@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api } from './api.js';
+import { Keyboard } from '@capacitor/keyboard';
+import { KEYBOARD_FRAME_EVENT, keyboardInset } from './ios-keyboard.js';
 import { DesktopSession } from './desktop-session.js';
 import './remote-desktop.css';
 
@@ -15,6 +17,7 @@ export default function RemoteDesktop({ onBack }) {
   const [text, setText] = useState('');
   const [zoom, setZoom] = useState(1);
   const [relay, setRelay] = useState(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
   const active = state === 'connected';
 
   function send(command) { return session.current?.send(command); }
@@ -31,6 +34,8 @@ export default function RemoteDesktop({ onBack }) {
   useEffect(() => {
     const hidden = () => { if (document.hidden) stop('App left the foreground. Reconnect manually.'); };
     const left = () => stop();
+    const keyboardFrame = (e) => setKeyboardHeight(e.detail?.dismissal ? 0 : keyboardInset(e.detail?.height));
+    window.addEventListener(KEYBOARD_FRAME_EVENT, keyboardFrame);
     document.addEventListener('visibilitychange', hidden);
     window.addEventListener('pagehide', left);
     // Native container emits this on resigning active / backgrounding.
@@ -39,6 +44,7 @@ export default function RemoteDesktop({ onBack }) {
     window.addEventListener('haish:app-state', native);
     return () => {
       session.current?.close();
+      window.removeEventListener(KEYBOARD_FRAME_EVENT, keyboardFrame);
       document.removeEventListener('visibilitychange', hidden);
       window.removeEventListener('pagehide', left);
       window.removeEventListener('haish:app-state', native);
@@ -124,7 +130,7 @@ export default function RemoteDesktop({ onBack }) {
     <div className="desktop-controls"><button disabled={!active} onClick={() => send({ type: 'click', button: 'right', count: 1 })}>Right click</button><button disabled={!active} aria-pressed={drag} onClick={() => { if (send({ type: 'button', button: 'left', down: !drag })) setDrag(!drag); }}>{drag ? 'Release drag' : 'Begin drag'}</button><button disabled={!active} onClick={() => { send({ type: 'release' }); setModifiers([]); setDrag(false); }}>Release all</button></div>
     <div className="desktop-controls">{['Cmd', 'Ctrl', 'Option', 'Shift'].map((m) => <button key={m} disabled={!active} aria-pressed={modifiers.includes(m)} onClick={() => toggleModifier(m)}>{m}</button>)}{['Esc', 'Tab', 'Enter', 'Backspace', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].map((k) => <button key={k} disabled={!active} onClick={() => key(k)}>{k}</button>)}</div>
     <div className="desktop-controls"><button disabled={!active} onClick={() => key('ArrowLeft', 'Ctrl')}>Space ←</button><button disabled={!active} onClick={() => key('ArrowRight', 'Ctrl')}>Space →</button><button disabled={!active} onClick={() => key('Tab', 'Cmd')}>Cmd + Tab</button></div>
-    <form className="desktop-text" onSubmit={(e) => { e.preventDefault(); if (send({ type: 'text', text })) setText(''); }}><textarea aria-label="English or Chinese text to type on Mac" maxLength={1024} value={text} onChange={(e) => setText(e.target.value)} placeholder="Type English / 中文, then send" /><button disabled={!active || !text}>Send text</button></form>
+    <form className={`desktop-text${keyboardHeight ? ' keyboard-open' : ''}`} style={{ '--desktop-keyboard-height': `${keyboardHeight}px` }} onSubmit={(e) => { e.preventDefault(); if (send({ type: 'text', text })) setText(''); }}><textarea aria-label="English or Chinese text to type on Mac" maxLength={1024} value={text} onChange={(e) => setText(e.target.value)} placeholder="Type English / 中文, then send" /><button disabled={!active || !text}>Send text</button>{keyboardHeight > 0 ? <button type="button" onClick={() => { document.activeElement?.blur(); Keyboard.hide().catch(() => {}); }}>Hide keyboard</button> : null}</form>
     <small>Keyboard shortcuts follow macOS settings. No audio, clipboard or files. Leaving this page ends control, not your Haish tasks.</small>
   </main>;
 }
