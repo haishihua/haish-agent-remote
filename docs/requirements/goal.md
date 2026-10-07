@@ -2,7 +2,7 @@
 
 ## 状态
 
-需求范围与共同理解已确认，实施审批已通过。已有远程桌面实现及输入过期修复；当前状态 **CONTINUE，非最终验收**。已取得 Actions IPA/adapter 和连接的真实 iPhone，并在冻结 adapter 上验证普通 TextEdit 完整中英文输入；仍有可复现的冻结媒体冷加载首连超时，不能把全部剩余工作称为访问条件缺失。完整手势/快捷键、生命周期/TCC、授权 TURN/网络、iOS 15 运行及性能证据尚未齐备。最新实现/诊断与撤回的启动预热实验见 [Worker 4](../verification/remote-desktop-worker-4.md)，历史真机失败及实际授权见 [Worker 3](../verification/remote-desktop-worker-3.md)。最终验收由独立 Verifier 执行。
+需求范围与共同理解已确认，实施审批已通过。已有远程桌面实现及输入过期修复；当前状态 **CONTINUE，非最终验收**。已取得 Actions IPA/adapter 和连接的真实 iPhone，并在冻结 adapter 上验证普通 TextEdit 完整中英文输入；仍有可复现的冻结媒体冷加载首连超时，不能把全部剩余工作称为访问条件缺失。完整手势/快捷键、生命周期/TCC、授权 TURN/网络、iOS 15 运行及性能证据尚未齐备。最新 GIL-safe 冻结加载修复、本机真实帧/中英文 emoji 输入与当前热点真机连接失败见 [Worker 5](../verification/remote-desktop-worker-5.md)；修复只改善加载期间响应性，冷首连仍不稳定。撤回的启动预热实验见 [Worker 4](../verification/remote-desktop-worker-4.md)，历史真机失败及实际授权见 [Worker 3](../verification/remote-desktop-worker-3.md)。用户本轮明确先不做 TURN 测试、优先当前 iOS 17.5.1 手机；未将其当作已通过 TURN 或 iOS 15 运行验证。最终验收由独立 Verifier 执行。
 
 ### 当前实现与验证证据
 
