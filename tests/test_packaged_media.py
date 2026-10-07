@@ -37,7 +37,8 @@ class PackagedMediaTests(unittest.TestCase):
             threads = [threading.Thread(target=media.install_packaged_media) for _ in range(10)]
             for t in threads: t.start()
             for t in threads: t.join()
-        self.assertEqual(sum(isinstance(f, media._NativeFinder) for f in sys.meta_path), 1)
+        previous = sum(isinstance(f, media._NativeFinder) for f in self.path)
+        self.assertEqual(sum(isinstance(f, media._NativeFinder) for f in sys.meta_path), previous + 1)
         finder = sys.meta_path[0]
         self.assertIsNone(finder.find_spec('server.app'))
         self.assertIsNone(finder.find_spec('av.unknown'))
