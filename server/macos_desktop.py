@@ -51,7 +51,10 @@ class MacDesktop:
             raise RuntimeError('capture_unavailable')
         w, h = q.CGImageGetWidth(image), q.CGImageGetHeight(image)
         stride = q.CGImageGetBytesPerRow(image)
-        data = bytes(q.CGDataProviderCopyData(q.CGImageGetDataProvider(image)))
+        # NSData.__bytes__ in PyObjC 11.1 leaks a native copy on each frame.
+        # The buffer protocol copies the same bytes without that conversion.
+        copied = q.CGDataProviderCopyData(q.CGImageGetDataProvider(image))
+        data = memoryview(copied).tobytes()
         frame = VideoFrame(w, h, 'bgra')
         plane = frame.planes[0]
         if stride == plane.line_size:
