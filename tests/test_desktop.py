@@ -365,6 +365,21 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
                 if not offer.done():
                     offer.cancel()
 
+    async def test_frozen_enabled_lifespan_does_not_join_warmup(self):
+        import importlib
+        module=importlib.import_module('server.app')
+        app=create_app(data_dir=Path(self.temp.name))
+        app.state.desktop.backend=self.backend
+        app.state.desktop.enabled=True
+        with patch.object(module.sys,'frozen',True,create=True), patch.object(app.state.desktop,'warm_media') as warm:
+            async with asyncio.timeout(.2):
+                async with module._lifespan(app):
+                    warm.assert_called_once()
+                    self.assertIsNone(app.state.desktop.session)
+        app.state.desktop.enabled=False
+        with patch.object(module.sys,'frozen',True,create=True), patch.object(app.state.desktop,'warm_media') as warm:
+            async with module._lifespan(app):warm.assert_not_called()
+
     async def test_media_timeout_preserves_shared_warmup(self):
         import threading
         started, finish = threading.Event(), threading.Event()

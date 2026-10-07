@@ -15,6 +15,7 @@ import re
 import secrets
 import sqlite3
 import subprocess
+import sys
 import time
 import tomllib
 from typing import Any
