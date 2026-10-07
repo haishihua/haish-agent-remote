@@ -365,6 +365,31 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
                 if not offer.done():
                     offer.cancel()
 
+    async def test_media_timeout_preserves_shared_warmup(self):
+        import threading
+        started, finish = threading.Event(), threading.Event()
+        def cold():
+            started.set()
+            finish.wait(2)
+            return (Mock(),) * 5
+        with patch('server.desktop.load_media', side_effect=cold) as media, patch('server.desktop.NEGOTIATION_SECONDS', .03):
+            try:
+                await self.manager.set_enabled(True)
+                task = self.manager.media_task
+                with self.assertRaises(HTTPException) as error:
+                    await self.manager.offer(self.device['device_id'], 'cold')
+                self.assertEqual(error.exception.status_code,503)
+                self.assertFalse(task.done())
+                self.assertIs(self.manager.warm_media(),task)
+                await self.manager.set_enabled(False)
+                self.assertIsNone(self.manager.session)
+                finish.set()
+                await asyncio.wait_for(task,1)
+                media.assert_called_once()
+                self.assertEqual(self.backend.inputs,[])
+            finally:
+                finish.set()
+
     async def test_remote_description_timeout_releases_slot(self):
         entered = asyncio.Event()
         peer = Mock()

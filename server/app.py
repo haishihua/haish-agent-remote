@@ -868,6 +868,10 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
                 await management_task
                 raise RuntimeError('Local desktop management listener failed to start.')
             await asyncio.sleep(.01)
+    # GIL-safe import runs in the background only when desktop was locally
+    # enabled. Listener startup does not join optional native initialization.
+    if getattr(sys, 'frozen', False) and _app.state.desktop.enabled:
+        _app.state.desktop.warm_media()
     try:
         yield
     finally:

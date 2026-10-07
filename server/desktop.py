@@ -78,6 +78,16 @@ class DesktopManager:
             self.enabled = False
         self.session = None
         self.lock = asyncio.Lock()
+        self.media_task = None
+
+    def warm_media(self):
+        # A shared background import, never awaited by listener startup. A
+        # timed-out offer must not cancel it or launch another native import.
+        if self.media_task is None or (self.media_task.done() and
+                                     (self.media_task.cancelled() or self.media_task.exception())):
+            self.media_task = asyncio.create_task(asyncio.to_thread(load_media))
+            self.media_task.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
+        return self.media_task
 
     def status(self):
         return {**self.backend.status(), 'enabled': self.enabled, 'busy': self.session is not None,
@@ -103,7 +113,9 @@ class DesktopManager:
         temp.chmod(0o600)
         temp.replace(self.path)
         self.enabled = enabled
-        if not enabled:
+        if enabled:
+            self.warm_media()
+        else:
             await self.stop()
 
     def authorized(self, session):
@@ -116,7 +128,7 @@ class DesktopManager:
                 raise HTTPException(409, 'This Mac is busy with another desktop session. End it before reconnecting.')
             try:
                 RTCPeerConnection, RTCConfiguration, RTCIceServer, RTCSessionDescription, VideoStreamTrack = (
-                    await asyncio.wait_for(asyncio.to_thread(load_media), NEGOTIATION_SECONDS))
+                    await asyncio.wait_for(asyncio.shield(self.warm_media()), NEGOTIATION_SECONDS))
             except ImportError:
                 raise HTTPException(503, 'Desktop media dependencies are unavailable.') from None
             except TimeoutError:
@@ -172,6 +184,8 @@ class DesktopManager:
                 # mDNS candidate resolution in setRemoteDescription can block
                 # too; bound the entire negotiation, not only ICE gathering.
                 async with asyncio.timeout(NEGOTIATION_SECONDS):
+                    from server.desktop_mdns import resolve_local_candidates
+                    sdp = await resolve_local_candidates(sdp)
                     await pc.setRemoteDescription(RTCSessionDescription(sdp=sdp, type='offer'))
                     await pc.setLocalDescription(await pc.createAnswer())
                 return {'session_id': session.id, 'sdp': pc.localDescription.sdp,
