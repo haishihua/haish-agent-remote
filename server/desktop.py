@@ -36,8 +36,15 @@ def ice_servers(env=None, now=None, subject='device'):
 def load_media():
     # Native dlopen otherwise holds the GIL even in a worker thread on macOS.
     from server.frozen_media import install_gil_safe_loader
-    install_gil_safe_loader()
-    from aiortc import RTCPeerConnection, RTCConfiguration, RTCIceServer, RTCSessionDescription, VideoStreamTrack
+    from server.media_diagnostics import media_stage
+    with media_stage('loader_setup'):
+        from server.packaged_media import install_packaged_media
+        install_packaged_media()
+        install_gil_safe_loader()
+    with media_stage('av_import'):
+        import av  # aiortc imports this same pinned dependency; isolate its cost
+    with media_stage('aiortc_import'):
+        from aiortc import RTCPeerConnection, RTCConfiguration, RTCIceServer, RTCSessionDescription, VideoStreamTrack
     return RTCPeerConnection, RTCConfiguration, RTCIceServer, RTCSessionDescription, VideoStreamTrack
 
 
@@ -79,13 +86,28 @@ class DesktopManager:
         self.session = None
         self.lock = asyncio.Lock()
         self.media_task = None
+        from server.media_diagnostics import MediaDiagnostics
+        self.media_diagnostics = MediaDiagnostics()
+
+    def _load_media(self):
+        from server.media_diagnostics import observe_native_loads
+        diagnostics = self.media_diagnostics
+        diagnostics.begin()
+        success = False
+        try:
+            with observe_native_loads(diagnostics):
+                result = load_media()
+            success = True
+            return result
+        finally:
+            diagnostics.end(success)
 
     def warm_media(self):
         # A shared background import, never awaited by listener startup. A
         # timed-out offer must not cancel it or launch another native import.
         if self.media_task is None or (self.media_task.done() and
                                      (self.media_task.cancelled() or self.media_task.exception())):
-            self.media_task = asyncio.create_task(asyncio.to_thread(load_media))
+            self.media_task = asyncio.create_task(asyncio.to_thread(self._load_media))
             self.media_task.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
         return self.media_task
 

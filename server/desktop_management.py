@@ -70,7 +70,8 @@ call('/status');
     async def diagnostics():
         session = manager.session
         return {'input': dict(session.input_diagnostics) if session else None,
-                'active': bool(session and session.active())}
+                'active': bool(session and session.active()),
+                'media': manager.media_diagnostics.snapshot()}
 
     @app.post('/enabled')
     async def enabled(payload: EnableRequest):

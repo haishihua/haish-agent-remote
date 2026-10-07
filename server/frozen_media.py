@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import sys
 import threading
+import time
 
 _install_lock = threading.Lock()
 _installed = False
@@ -41,6 +42,7 @@ def install_gil_safe_loader():
             path = Path(spec.origin).resolve() if spec.origin else None
             if path is None or not path.is_relative_to(root):
                 return original(loader, spec)
+            started = time.monotonic()
             handle = dlopen(os.fsencode(path), sys.getdlopenflags())
             try:
                 return original(loader, spec)
@@ -49,6 +51,8 @@ def install_gil_safe_loader():
                 # creation. Balance ours on success AND initialization failure.
                 if handle:
                     dlclose(handle)
+                from server.media_diagnostics import record_native_load
+                record_native_load(getattr(spec, 'name', ''), time.monotonic() - started)
 
         ExtensionFileLoader.create_module = create_module
         _installed = True

@@ -11,7 +11,8 @@
 | `server/`（FastAPI adapter：配对、鉴权、runtime 转发、隧道看护） | ✅ 唯一一项 | 冻结为单个可执行文件 |
 | `frpc`（fatedier/frp 官方客户端二进制，随 Release 提供） | ✅ | adapter 用它建立公网隧道 |
 | `dist/`（本机网页版静态文件） | ❌ | 缺它只让 `/` 返回 503，`/remote/*` 不受影响 |
-| `src/`、`package.json`、`capacitor.config.ts`、`scripts/`、`ios/` | ❌ | 手机 IPA 管线 |
+| `src/`、`package.json`、`capacitor.config.ts`、`ios/` | ❌ | 手机 IPA 管线 |
+| `scripts/` | ❌ | 构建工具不随运行时分发；adapter 构建入口见下文 |
 | `tests/` | ❌ | 开发期测试 |
 | 桌面仓库的 pinned checkout `6f07dc16…` | ❌ | 只服务网页层构建；adapter 侧对它零引用 |
 
@@ -65,4 +66,12 @@ adapter 同进程另开 `127.0.0.1:8767` 本机管理页（`HAISH_DESKTOP_MANAGE
 
 ## 开发路径
 
-源码运行方式不变（见 README 的 Development 一节）。本地要复现冻结产物时，照抄 workflow 里的 PyInstaller 命令即可；不要把它当作发布入口。
+源码运行方式不变（见 README 的 Development 一节）。本地复现冻结产物使用 workflow 的固定构建工具、`python scripts/build-packaged-media.py` 和 `pyinstaller scripts/remote-adapter.spec`；不要把本地冻结包当作发布入口。可用 `--work-dir` 指定隔离目录，`--archives` 指向已下载的固定源码归档；`HAISH_PACKAGED_MEDIA` 为 spec 指定其 `package` 子目录。
+
+### 合并 PyAV 原生映像
+
+经用户授权采用构建期合并方案：固定 PyAV 16.1.0、Cython 3.1.4 与 FFmpeg 8.0 **头文件**，源码归档 SHA256 由构建脚本校验、安全解压。FFmpeg 不重新编译、不使用本机 Homebrew 库；沿用原 PyAV wheel 的 `.dylibs`，校验主要 ABI，并输出各库哈希。49 个 Cython 扩展分别编译，只有导出的初始化符号改为唯一名，然后链接为一个 `_native.so`；模块全名和类型/C API 名保持原样。部署目标 14.0，重写自身依赖到包内相对路径后正常 ad-hoc 签名/校验；PyInstaller 再按原流程签名，未关闭系统安全检查。
+
+`server/packaged_media.py` 只在 macOS 冻结媒体工作线程中注册包内映像的加载器，以同一 dlopen flags/GIL-safe 方式加载，初始化成功或失败均平衡自己的句柄；原 CPython 错误保留。源码使用上游 wheel，无 manifest 的旧冻结包保持原加载路径。spec 排除原 wheel 的扩展，收集合并包、原 FFmpeg、元数据和许可证。构建输出 `native-build.json` 与 `PyAV-LICENSE.txt` 为随包审计资料；单可执行文件的桌面消费契约不变。不得将模块导入计时或本地实验首帧当作最终 Actions/手机验收。
+
+此方案增加原生构建与私有 CPython 导入 API 的维护成本。升级 Python/PyAV/Cython/FFmpeg 必须重新固定来源和 ABI、导出符号/模块清单、导入失败/并发测试、编码解码及冻结实际首帧回归，不能直接改版本复用旧映像。冷加载预算仍以需求为准，不提高协商/启动超时。
