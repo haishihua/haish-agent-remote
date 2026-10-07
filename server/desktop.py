@@ -34,8 +34,9 @@ def ice_servers(env=None, now=None, subject='device'):
 
 
 def load_media():
-    # Frozen native imports can take seconds on a cold launch. Never perform
-    # them on the signaling event loop (status and lease watchdog must run).
+    # Native dlopen otherwise holds the GIL even in a worker thread on macOS.
+    from server.frozen_media import install_gil_safe_loader
+    install_gil_safe_loader()
     from aiortc import RTCPeerConnection, RTCConfiguration, RTCIceServer, RTCSessionDescription, VideoStreamTrack
     return RTCPeerConnection, RTCConfiguration, RTCIceServer, RTCSessionDescription, VideoStreamTrack
 
