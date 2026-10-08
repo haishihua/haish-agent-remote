@@ -2,6 +2,20 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DesktopGestures } from '../src/desktop-gestures.js';
 
+test('default browser timers retain the Window receiver', () => {
+  const originalSet = globalThis.setTimeout, originalClear = globalThis.clearTimeout;
+  let scheduled = 0, cancelled = 0;
+  globalThis.setTimeout = function () { assert.equal(this, globalThis); scheduled++; return 1; };
+  globalThis.clearTimeout = function () { assert.equal(this, globalThis); cancelled++; };
+  try {
+    const gestures = new DesktopGestures({ send: () => true });
+    gestures.down(1, 0, 0);
+    gestures.reset(true);
+    assert.equal(scheduled, 1);
+    assert.ok(cancelled >= 2);
+  } finally { globalThis.setTimeout = originalSet; globalThis.clearTimeout = originalClear; }
+});
+
 function setup({ accepted = true } = {}) {
   let time = 0;
   let nextId = 0;

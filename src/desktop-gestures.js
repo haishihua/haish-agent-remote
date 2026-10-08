@@ -1,6 +1,6 @@
 // UI-only gesture recognition. Control authorization remains in DesktopSession.
 export class DesktopGestures {
-  constructor({ send, onZoom, onDrag, now = () => Date.now(), schedule = setTimeout, cancel = clearTimeout }) {
+  constructor({ send, onZoom, onDrag, now = () => Date.now(), schedule = (callback, delay) => globalThis.setTimeout(callback, delay), cancel = (timer) => globalThis.clearTimeout(timer) }) {
     Object.assign(this, { send, onZoom, onDrag, now, schedule, cancel });
     this.points = new Map();
     this.lastTap = null;
