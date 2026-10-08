@@ -1,0 +1,120 @@
+/* Settings-only styles; typography inherits the app's LXGW WenKai font. */
+.settings-page {
+  display: flex;
+  min-height: 100dvh;
+  flex-direction: column;
+  padding: calc(16px + var(--safe-top)) 22px calc(24px + var(--safe-bottom));
+  background: #080c16;
+  color: #edf1fa;
+}
+.settings-page > * { flex-shrink: 0; }
+.settings-page button { font-family: inherit; }
+.settings-page button:disabled { cursor: default; opacity: 0.45; }
+.settings-page button:focus-visible { outline: 3px solid #8bb6ff; outline-offset: 3px; }
+.settings-page-header { display: grid; grid-template-columns: 44px minmax(0, 1fr) 44px; align-items: center; margin-bottom: 25px; }
+.settings-page-header h1 { margin: 0; text-align: center; font: inherit; font-size: 25px; font-weight: 700; }
+.settings-back { display: grid; width: 44px; height: 44px; place-items: center; border: 0; border-radius: 14px; background: transparent; color: #dce5f7; }
+.settings-back:hover { background: #151e30; }
+.settings-computer-card { padding: 16px; border: 1px solid #263047; border-radius: 28px; background: linear-gradient(135deg, #172237, #111929); text-align: left; box-shadow: inset 0 1px 0 #ffffff06, 0 12px 30px #00000020; }
+.settings-computer-summary { display: grid; grid-template-columns: 84px minmax(0, 1fr); align-items: center; gap: 14px; }
+.settings-computer-copy { min-width: 0; }
+.settings-overline { margin: 0; color: #99a8c3; font-size: 10px; font-weight: 600; letter-spacing: 0.1em; line-height: 1.4; text-transform: uppercase; }
+.settings-computer-card h2 { margin: 4px 0; overflow-wrap: anywhere; font-size: 22px; font-weight: 700; line-height: 1.2; }
+.settings-computer-status { display: inline-flex; margin: 0; align-items: center; gap: 7px; color: #a5adc0; font-size: 13px; }
+.settings-computer-status > span { width: 7px; height: 7px; border-radius: 50%; background: #7a8499; }
+.settings-computer-status.is-online { color: #68e2ad; }
+.settings-computer-status.is-online > span { background: #4ed79c; box-shadow: 0 0 0 4px #4ed79c0c; }
+.settings-computer-subtitle { margin: 4px 0 0; color: #99a8c3; font-size: 11px; line-height: 1.4; }
+.settings-computer-actions { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 10px; margin-top: 14px; }
+.settings-computer-actions button { display: flex; min-width: 0; min-height: 48px; padding: 10px 12px; align-items: center; justify-content: center; gap: 7px; border: 1px solid transparent; border-radius: 20px; font-size: 14px; font-weight: 700; }
+.settings-computer-actions button > svg:last-child { margin-left: auto; }
+.settings-computer-actions svg { flex-shrink: 0; }
+.settings-open-remote { background: linear-gradient(135deg, #559bff, #306ee8); color: #fff; box-shadow: 0 4px 14px #2469e52b; }
+.settings-open-remote:not(:disabled):hover { background: linear-gradient(135deg, #6ba8ff, #3b7af2); }
+.settings-manage { background: #202b40; border-color: #2d3a53; color: #dbe5f8; }
+.settings-manage:not(:disabled):hover { background: #2a3851; }
+.settings-remote-note { margin: 9px 4px 0; color: #8898b4; font-size: 11px; line-height: 1.5; text-align: center; }
+
+.settings-computer-visual { position: relative; width: 84px; height: 84px; border: 1px solid #29374f; border-radius: 20px; background: linear-gradient(145deg, #0c1424, #1a2940); isolation: isolate; }
+.settings-laptop-display { position: absolute; z-index: 2; top: 20px; right: 15px; left: 15px; height: 35px; padding: 3px; border: 1px solid #72809a; border-radius: 4px 4px 2px 2px; background: linear-gradient(130deg, #697892, #263348 50%, #8290a9); transform: perspective(180px) rotateX(-5deg); box-shadow: 0 5px 12px #00000045; }
+.settings-laptop-camera { position: absolute; top: 1px; left: calc(50% - 0.5px); width: 1px; height: 1px; border-radius: 50%; background: #131b28; }
+.settings-laptop-wallpaper { position: relative; height: 100%; overflow: hidden; border: 2px solid #091020; border-radius: 3px; background: radial-gradient(ellipse at 70% 10%, #80c6ee, #3068ca 40%, #17306d 78%); }
+.settings-laptop-wallpaper span { position: absolute; width: 160%; height: 120%; top: 45%; left: -40%; border-radius: 50%; background: linear-gradient(160deg, #83bdfa, #284aa5 65%); transform: rotate(-30deg); }
+.settings-laptop-wallpaper i { position: absolute; width: 150%; height: 110%; top: 37%; left: 28%; border-radius: 50%; background: linear-gradient(150deg, #6f8cf4 10%, #26346f 70%); transform: rotate(-45deg); }
+.settings-laptop-wallpaper b { position: absolute; width: 90%; height: 90%; top: 68%; left: -35%; border-radius: 50%; background: linear-gradient(140deg, #baacf7, #5d73c5); transform: rotate(-25deg); }
+.settings-laptop-base { position: absolute; z-index: 3; top: 54px; left: 8px; right: 8px; height: 5px; border-radius: 2px 2px 50% 50% / 2px 2px 8px 8px; background: linear-gradient(#a5afbf, #5d6a7c 60%, #2b364b); box-shadow: 0 2px 2px #060c16; }
+.settings-laptop-base > span { position: absolute; top: 0; left: 39%; width: 22%; height: 2px; border-radius: 0 0 5px 5px; background: #536179; }
+.settings-laptop-shadow { position: absolute; z-index: 0; bottom: 19px; left: 10%; width: 80%; height: 7px; border-radius: 50%; background: #00000070; filter: blur(4px); }
+
+.settings-paired-section { margin-top: 29px; }
+.settings-paired-heading, .settings-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.settings-paired-heading { margin: 0 3px 12px; }
+.settings-paired-heading h2 { margin: 0; color: #8999b7; font-size: 11px; font-weight: 700; letter-spacing: 0.13em; text-transform: uppercase; }
+.settings-paired-tools { display: flex; align-items: center; gap: 2px; }
+.settings-device-count { color: #8999b7; font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; white-space: nowrap; }
+.settings-paired-heading button, .settings-panel-heading button { display: grid; width: 36px; height: 36px; flex-shrink: 0; place-items: center; border: 0; border-radius: 10px; background: transparent; color: #9baccc; }
+.settings-paired-heading button:hover, .settings-panel-heading button:hover { background: #202b40; }
+.settings-devices { overflow: hidden; border: 1px solid #222c40; border-radius: 22px; background: #111929; }
+.settings-devices:empty { display: none; }
+.settings-device { display: flex; min-height: 94px; padding: 17px 14px; align-items: center; gap: 12px; }
+.settings-device + .settings-device { border-top: 1px solid #222c40; }
+.settings-device-glyph { display: grid; width: 42px; height: 46px; flex: 0 0 42px; place-items: center; border-radius: 12px; background: #1b263a; color: #a8b8d4; }
+.settings-device-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; align-items: flex-start; gap: 4px; }
+.settings-device-copy strong { max-width: 100%; overflow-wrap: anywhere; font-size: 15px; font-weight: 600; line-height: 1.35; }
+.settings-device-copy small { color: #94a3bf; font-size: 11px; line-height: 1.5; }
+.settings-current-device { padding: 2px 6px; border-radius: 5px; background: #263754; color: #b7c9e9; font-size: 10px; line-height: 1.2; }
+.settings-revoke { display: flex; min-height: 44px; flex: 0 0 auto; padding: 8px 10px; align-items: center; justify-content: center; gap: 4px; border: 1px solid #ff7f8c18; border-radius: 20px; background: #ff7f8c0c; color: #ff7f8c; font-size: 12px; font-weight: 600; }
+.settings-revoke svg { flex-shrink: 0; }
+.settings-revoke:not(:disabled):hover { background: #ff7f8c1a; }
+.settings-loading, .settings-empty { display: flex; margin: 0; padding: 24px 16px; align-items: center; justify-content: center; gap: 9px; color: #a7b5cd; font-size: 13px; }
+.settings-loading svg, .settings-error svg, .settings-notice svg { flex-shrink: 0; }
+.settings-error { display: flex; margin: 14px 0 0; align-items: flex-start; gap: 8px; color: #ff9aa8; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.settings-notice { display: flex; margin: 14px 0 0; align-items: center; gap: 8px; color: #68e2ad; font-size: 12px; }
+.settings-list-failure > p:not(.settings-error) { margin: 7px 0; color: #99a8c3; font-size: 12px; line-height: 1.6; }
+.settings-list-failure button { min-height: 44px; padding: 8px 12px; border: 1px solid #2d3f5f; border-radius: 10px; background: #172238; color: #bfd4f7; font-size: 12px; }
+
+.settings-readiness { margin-top: 16px; padding: 18px; border: 1px solid #263047; border-radius: 22px; background: #111929; }
+.settings-panel-heading h2 { margin: 0; font-size: 17px; font-weight: 600; }
+.settings-readonly { display: flex; margin: 6px 0 14px; align-items: center; gap: 6px; color: #94a3bf; font-size: 11px; }
+.settings-readiness-list { margin: 0; }
+.settings-readiness-list > div { display: flex; padding: 10px 0; align-items: baseline; justify-content: space-between; gap: 12px; border-bottom: 1px solid #243047; font-size: 12px; }
+.settings-readiness-list dt { color: #acbad2; }
+.settings-readiness-list dd { margin: 0; text-align: right; color: #b8c8e5; }
+.settings-readiness-list dd.is-ready { color: #68e2ad; }
+.settings-local-guide { margin-top: 18px; color: #99a8c3; font-size: 12px; line-height: 1.65; }
+.settings-local-guide h3 { margin: 0; color: #e2eaf8; font-size: 13px; font-weight: 600; }
+.settings-local-guide p { margin: 9px 0 0; }
+.settings-local-address { color: #b9d2ff; overflow-wrap: anywhere; }
+
+.settings-signout-area { margin-top: auto; padding-top: 36px; }
+.settings-signout { display: flex; width: 100%; min-height: 90px; padding: 18px 16px; align-items: center; gap: 13px; border: 1px solid #60313e; border-radius: 22px; background: #241521; color: #ff8190; text-align: left; }
+.settings-signout:not(:disabled):hover { background: #301a29; }
+.settings-signout-glyph { display: grid; width: 42px; height: 44px; flex: 0 0 42px; place-items: center; border-radius: 12px; background: #3b202d; }
+.settings-signout > span:nth-child(2) { display: grid; min-width: 0; flex: 1; gap: 5px; }
+.settings-signout strong { font-size: 15px; font-weight: 600; }
+.settings-signout small { color: #ba8795; font-size: 11px; line-height: 1.4; }
+.settings-signout > svg { flex-shrink: 0; }
+.settings-footer { display: flex; margin: 19px 0 0; align-items: center; justify-content: center; gap: 6px; color: #8796b1; font-size: 10px; line-height: 1.6; text-align: center; }
+.settings-footer svg { flex-shrink: 0; }
+
+@media (max-width: 359px) {
+  .settings-page { padding-right: 14px; padding-left: 14px; }
+  .settings-computer-card { padding-right: 14px; padding-left: 14px; }
+  .settings-computer-summary { gap: 10px; }
+  .settings-overline { font-size: 9px; letter-spacing: 0.05em; }
+  .settings-computer-card h2 { font-size: 20px; }
+  .settings-computer-actions { gap: 8px; }
+  .settings-computer-actions button { padding-right: 8px; padding-left: 8px; gap: 5px; font-size: 12px; }
+  .settings-computer-actions button > svg:first-child { width: 15px; }
+  .settings-device { padding: 14px 10px; gap: 9px; }
+  .settings-device-glyph { width: 34px; flex-basis: 34px; }
+  .settings-device-copy strong { font-size: 14px; }
+  .settings-revoke { padding-right: 7px; padding-left: 7px; font-size: 11px; }
+  .settings-signout { padding-right: 12px; padding-left: 12px; gap: 10px; }
+  .settings-signout strong { font-size: 14px; }
+}
+@media (min-width: 720px) {
+  .app-shell:has(> .settings-page) { display: flex; flex-direction: column; }
+  .app-shell:has(> .settings-page) > .offline-banner { flex-shrink: 0; }
+  .settings-page { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior-y: contain; }
+}

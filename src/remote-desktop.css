@@ -1,14 +1,79 @@
-.remote-desktop { overflow-y: auto; padding-bottom: max(24px, env(safe-area-inset-bottom)); }
-.remote-desktop h1 { font-size: 20px; }
-.remote-desktop button { min-height: 44px; padding: 8px 12px; border-radius: 10px; border: 1px solid #777; background: #222; color: #fff; }
-.remote-desktop button:disabled { opacity: .45; }
-.remote-desktop button[aria-pressed="true"] { background: #34664e; }
-.desktop-video-viewport { width: 100%; max-height: 52vh; overflow: auto; background: #000; border-radius: 12px; }
-.desktop-video-viewport video { display: block; min-height: 120px; object-fit: contain; }
-.desktop-trackpad { touch-action: none; user-select: none; height: 130px; border: 1px solid #777; border-radius: 12px; display: grid; place-items: center; margin: 10px 0; font-size: 13px; background: #292929; color: #eee; }
-.desktop-connect, .desktop-controls { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; align-items: center; }
-.desktop-text { display: flex; gap: 8px; margin: 12px 0; }
-.desktop-text.keyboard-open { position: fixed; z-index: 20; left: 12px; right: 12px; bottom: var(--desktop-keyboard-height); margin: 0; padding: 8px; background: #222; flex-wrap: wrap; }
-.desktop-text.keyboard-open textarea { flex-basis: 100%; max-height: 80px; }
-.desktop-text textarea { min-width: 0; flex: 1; font-size: 16px; border-radius: 10px; padding: 8px; }
-@media (orientation: landscape) { .desktop-video-viewport { max-height: 65vh; } .desktop-trackpad { height: 90px; } }
+/* Remote-only palette; all text uses the project's existing WenKai font. */
+.remote-desktop { --desktop-line: #2b3549; --desktop-muted: #a1b0ce; padding: calc(12px + var(--safe-top)) 12px calc(20px + var(--safe-bottom)); min-height: 100dvh; background: radial-gradient(ellipse at 50% 0%, #101c2c 0, #080d15 55%); color: #f1f4fc; font-family: var(--conversation-font); }
+.remote-desktop button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 44px; padding: 9px 13px; border: 1px solid var(--desktop-line); border-radius: 16px; background: linear-gradient(135deg, #1a2433, #111822); color: inherit; font: inherit; font-size: 13px; }
+.remote-desktop button:disabled { opacity: .4; cursor: default; }
+.remote-desktop button:focus-visible { outline-color: #9eb5ff; }
+.remote-desktop button:active:not(:disabled) { background: #253757; }
+.desktop-header { display: grid; grid-template-columns: 64px minmax(0, 1fr) 64px; gap: 6px; align-items: center; margin-bottom: 14px; }
+.desktop-header h1 { margin: 0; font: inherit; font-size: 18px; font-weight: 700; text-align: center; }
+.desktop-header p { display: flex; align-items: center; justify-content: center; gap: 5px; margin: 3px 0 0; font-size: 10px; color: var(--desktop-muted); }
+.desktop-header p i { width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; background: #7a869e; }
+.desktop-header p.is-online i { background: #24e784; }
+.desktop-header p span { max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.remote-desktop .desktop-back, .remote-desktop .desktop-end { padding: 8px; font-size: 12px; border-radius: 999px; }
+.remote-desktop .desktop-end { border-color: #742b40; color: #ff7388; background: linear-gradient(120deg, #391b28, #2b1720); }
+.desktop-video-card { position: relative; height: clamp(240px, 37dvh, 330px); overflow: hidden; border: 1px solid #3b4b67; border-radius: 18px; background: #070b11; box-shadow: 0 12px 28px #0005; }
+.desktop-video-viewport { width: 100%; height: 100%; overflow: auto; overscroll-behavior: contain; }
+.desktop-video-viewport video { display: block; min-height: 100%; object-fit: contain; }
+.desktop-video-hud { position: absolute; z-index: 2; top: 8px; left: 8px; right: 8px; display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; pointer-events: none; }
+.desktop-video-hud > div { display: flex; gap: 5px; }
+.desktop-hud-pill, .remote-desktop .desktop-video-hud button { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 6px 9px; border: 1px solid #a9bde126; border-radius: 11px; background: #111b2ddd; color: #bdd1f9; font-size: 10px; backdrop-filter: blur(10px); }
+.remote-desktop .desktop-video-hud button { min-width: 34px; pointer-events: auto; }
+.desktop-latency.is-online { color: #39e876; }
+.desktop-video-empty { position: absolute; inset: 50px 12px 14px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; background: radial-gradient(ellipse, #15284988, transparent 70%); }
+.desktop-video-empty > svg { color: #789ad7; }
+.desktop-video-empty h2 { margin: 14px 0 6px; font-size: 18px; }
+.desktop-video-empty p { margin: 0 0 17px; max-width: 240px; color: var(--desktop-muted); font-size: 12px; line-height: 1.5; }
+.remote-desktop .desktop-primary { border: 1px solid #688dff; background: linear-gradient(155deg, #4475ff, #1450dc); box-shadow: inset 0 1px #ffffff33, 0 5px 18px #245eff26; }
+.desktop-session-note { margin: 9px 3px 0; color: var(--desktop-muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.desktop-session-note.is-error { color: #ff91a0; }
+.desktop-connecting-dot { height: 9px; width: 9px; border-radius: 50%; background: #658fff; animation: desktop-pulse 1s ease-in-out infinite alternate; }
+@keyframes desktop-pulse { to { opacity: .3; transform: scale(.7); } }
+.desktop-toolbar { display: grid; grid-template-columns: 1.12fr 1fr 1fr .8fr; gap: 6px; margin: 13px 0 11px; }
+.remote-desktop .desktop-toolbar button { min-width: 0; min-height: 42px; padding: 9px 5px; gap: 5px; border-radius: 999px; font-size: 11px; }
+.desktop-toolbar button svg { width: 17px; flex-shrink: 0; }
+.remote-desktop .desktop-toolbar .is-selected { border-color: #9bafff; background: linear-gradient(135deg, #253052, #192039); color: #cbd9ff; box-shadow: 0 0 14px #567dff25; }
+.desktop-trackpad, .desktop-panel { border: 1px solid #364358; border-radius: 18px; background: linear-gradient(140deg, #18212c, #0e1720); }
+.desktop-trackpad { display: flex; min-height: 221px; flex-direction: column; align-items: center; justify-content: center; padding: 25px 10px 18px; touch-action: none; user-select: none; -webkit-user-select: none; background-image: radial-gradient(#4d67844a .7px, transparent .7px), linear-gradient(140deg, #18212c, #0e1720); background-size: 10px 10px, auto; }
+.desktop-trackpad.is-dragging { border-color: #91b0ff; box-shadow: inset 0 0 30px #487aff18; }
+.desktop-trackpad-cursor { color: #b8c9ef; }
+.desktop-trackpad h2 { margin: 13px 0 3px; font-size: 17px; font-weight: 500; color: #bfcef0; }
+.desktop-trackpad > p { margin: 0; font-size: 12px; color: var(--desktop-muted); }
+.desktop-gesture-hints { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); width: 100%; margin-top: 25px; pointer-events: none; }
+.desktop-gesture-hints > div { display: flex; min-width: 0; flex-direction: column; align-items: center; gap: 5px; text-align: center; padding: 0 3px; }
+.desktop-gesture-hints > div + div { border-left: 1px solid #3b485b77; }
+.desktop-gesture-hints svg { margin-bottom: 4px; color: #a9c4ff; }
+.desktop-gesture-hints strong { font-size: 11px; font-weight: 500; }
+.desktop-gesture-hints span { font-size: 10px; color: var(--desktop-muted); }
+.desktop-panel { min-height: 221px; padding: 17px 14px; }
+.desktop-panel h2 { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 17px; font-weight: 500; }
+.desktop-panel p { margin: 7px 0 12px; color: var(--desktop-muted); font-size: 12px; line-height: 1.6; }
+.desktop-trackpad-actions { display: flex; gap: 6px; margin-top: 8px; }
+.remote-desktop .desktop-trackpad-actions button { flex: 1; min-width: 0; padding: 7px 6px; font-size: 11px; border-radius: 12px; }
+.desktop-controls { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
+.desktop-controls button { flex: 1; white-space: nowrap; }
+.remote-desktop button[aria-pressed="true"]:not(.desktop-toolbar button) { border-color: #8cacff; background: #283b61; }
+.remote-desktop .desktop-release { margin-top: 12px; width: 100%; color: #b9caf0; }
+.desktop-text { margin-top: 14px; }
+.desktop-text textarea { width: 100%; min-height: 85px; padding: 12px; border: 1px solid #384660; border-radius: 12px; background: #0d1420; color: #eef2ff; resize: vertical; font-size: 16px; }
+.desktop-text > div { display: flex; align-items: center; gap: 7px; margin-top: 8px; }
+.desktop-text > div > span { flex: 1; color: var(--desktop-muted); font-size: 11px; }
+.desktop-text.keyboard-open { position: fixed; z-index: 30; left: max(12px, calc((100vw - 456px)/2)); right: max(12px, calc((100vw - 456px)/2)); bottom: var(--desktop-keyboard-height); margin: 0; padding: 12px; background: #111b2a; border: 1px solid #394963; border-radius: 16px 16px 0 0; }
+.desktop-text.keyboard-open textarea { min-height: 64px; max-height: 90px; }
+.desktop-zoom { display: grid; grid-template-columns: 1fr auto; gap: 10px; margin-top: 20px; font-size: 13px; }
+.desktop-zoom input { grid-column: 1 / -1; width: 100%; accent-color: #7699ff; }
+.desktop-relay { display: flex; gap: 8px; align-items: center; margin-top: 17px; font-size: 12px; line-height: 1.5; }
+.desktop-relay input { width: 17px; height: 17px; accent-color: #658fff; }
+.desktop-local-address { color: #c0d3ff; overflow-wrap: anywhere; }
+.desktop-computer-bar { display: flex; align-items: center; gap: 10px; margin-top: 11px; padding: 15px 12px; border: 1px solid #273246; border-radius: 19px; background: linear-gradient(135deg, #131d2a, #0d1520); }
+.desktop-computer-icon { display: grid; width: 39px; height: 39px; flex-shrink: 0; place-items: center; border-radius: 50%; background: #212c3c; }
+.desktop-computer-copy { display: grid; flex: 1; min-width: 0; gap: 3px; }
+.desktop-computer-copy strong { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 14px; font-weight: 500; }
+.desktop-computer-copy span { color: #8e9ebc; font-size: 11px; }
+.remote-desktop .desktop-footer-options { width: 39px; min-height: 39px; padding: 7px; border-radius: 50%; }
+.desktop-footnote { display: flex; align-items: center; justify-content: center; gap: 5px; margin: 13px 0 0; color: #8492ad; font-size: 10px; text-align: center; }
+.remote-desktop.is-expanded .desktop-video-card { height: 65dvh; }
+@media (max-width: 359px) { .remote-desktop { padding-right: 10px; padding-left: 10px; } .desktop-header h1 { font-size: 15px; } .desktop-toolbar button span { font-size: 10px; } .desktop-header p span { display: none; } .desktop-gesture-hints strong { font-size: 10px; } }
+@media (orientation: landscape) { .desktop-video-card { height: 58dvh; } .desktop-trackpad { min-height: 170px; } .desktop-gesture-hints { margin-top: 14px; } }
+@media (min-width: 720px) { .app-shell:has(> .remote-desktop) { display: flex; flex-direction: column; } .remote-desktop { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; } }
+@media (prefers-reduced-motion: reduce) { .desktop-connecting-dot { animation: none; } }

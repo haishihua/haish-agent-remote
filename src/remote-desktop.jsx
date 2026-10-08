@@ -1,49 +1,57 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { ArrowLeft, ArrowDownUp, Command, Expand, Hand, Keyboard as KeyboardIcon, Maximize2, Minimize2, Monitor, MoreHorizontal, MousePointer2, Radio, Send, Signal, Square, X } from 'lucide-react';
 import { api } from './api.js';
 import { Keyboard } from '@capacitor/keyboard';
 import { KEYBOARD_FRAME_EVENT, keyboardInset } from './ios-keyboard.js';
 import { DesktopSession } from './desktop-session.js';
+import { DesktopGestures } from './desktop-gestures.js';
 import './remote-desktop.css';
 
-export default function RemoteDesktop({ onBack }) {
+const labels = { idle: 'Not connected', connecting: 'Connecting…', connected: 'Connected', reconnecting: 'Reconnecting…', failed: 'Connection failed' };
+const tabs = [['touchpad', MousePointer2, 'Touchpad'], ['keyboard', KeyboardIcon, 'Keyboard'], ['shortcuts', Command, 'Shortcuts'], ['more', MoreHorizontal, 'More']];
+
+export default function RemoteDesktop({ onBack, computer = 'Computer' }) {
   const video = useRef(null);
   const session = useRef(null);
-  const touches = useRef(new Map());
-  const gesture = useRef(null);
   const [state, setState] = useState('idle');
-  const [message, setMessage] = useState('Enable desktop access on your Mac at http://127.0.0.1:8767. Only unlocked desktops are supported.');
+  const [message, setMessage] = useState('Enable desktop access on your Mac, then connect.');
   const [drag, setDrag] = useState(false);
   const [modifiers, setModifiers] = useState([]);
   const [text, setText] = useState('');
   const [zoom, setZoom] = useState(1);
   const [relay, setRelay] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const [panel, setPanel] = useState('touchpad');
+  const [expanded, setExpanded] = useState(false);
+  const [metrics, setMetrics] = useState({});
   const active = state === 'connected';
+  const busy = state === 'connecting' || state === 'reconnecting';
+  const gestures = useRef(null);
+  if (!gestures.current) gestures.current = new DesktopGestures({
+    send: (command) => session.current?.send(command),
+    onZoom: (ratio) => setZoom((old) => Math.max(1, Math.min(3, old * ratio))),
+    onDrag: setDrag,
+  });
 
   function send(command) { return session.current?.send(command); }
-  function stop(note = 'Session ended. Reconnect manually.') {
-    clearTimeout(clickTimer.current);
-    lastTap.current = 0;
-    session.current?.close();
-    session.current = null;
+  function stop(note = 'Session ended. Reconnect when you’re ready.') {
+    gestures.current.reset(true);
+    session.current?.close(); session.current = null;
     if (video.current) video.current.srcObject = null;
-    touches.current.clear();
-    setDrag(false); setModifiers([]); setState('idle'); setMessage(note);
+    setModifiers([]); setState('idle'); setMessage(note); setMetrics({});
   }
 
   useEffect(() => {
-    const hidden = () => { if (document.hidden) stop('App left the foreground. Reconnect manually.'); };
-    const left = () => stop();
+    const left = () => stop('App left the foreground. Reconnect manually.');
+    const hidden = () => { if (document.hidden) left(); };
+    const native = (e) => { if (e.detail?.isActive === false) left(); };
     const keyboardFrame = (e) => setKeyboardHeight(e.detail?.dismissal ? 0 : keyboardInset(e.detail?.height));
     window.addEventListener(KEYBOARD_FRAME_EVENT, keyboardFrame);
     document.addEventListener('visibilitychange', hidden);
     window.addEventListener('pagehide', left);
-    // Native container emits this on resigning active / backgrounding.
-    const native = (e) => { if (e.detail?.isActive === false) hiddenStop(); };
-    const hiddenStop = () => stop('App left the foreground. Reconnect manually.');
     window.addEventListener('haish:app-state', native);
     return () => {
-      session.current?.close();
+      gestures.current.reset(true); session.current?.close();
       window.removeEventListener(KEYBOARD_FRAME_EVENT, keyboardFrame);
       document.removeEventListener('visibilitychange', hidden);
       window.removeEventListener('pagehide', left);
@@ -52,85 +60,71 @@ export default function RemoteDesktop({ onBack }) {
   }, []);
 
   async function connect() {
-    stop();
+    stop(); setZoom(1);
     const next = new DesktopSession(api, {
       onState: (s, note = '') => {
+        if (session.current !== next) return;
         setState(s); setMessage(note);
-        if (s !== 'connected') { clearTimeout(clickTimer.current); lastTap.current = 0; setDrag(false); setModifiers([]); touches.current.clear(); }
+        if (s !== 'connected') { gestures.current.reset(); setModifiers([]); }
       },
       onStream: (stream) => {
-        if (video.current) { video.current.srcObject = stream; video.current.play().catch(() => {}); }
+        if (session.current === next && video.current) { video.current.srcObject = stream; video.current.play().catch(() => {}); }
       },
+      onMetrics: (update) => { if (session.current === next) setMetrics((old) => ({ ...old, ...update })); },
     });
     session.current = next;
     await next.connect(relay);
   }
-
-  function pointerDown(e) {
-    if (!active) return;
-    e.currentTarget.setPointerCapture(e.pointerId);
-    touches.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (touches.current.size === 1) gesture.current = { at: Date.now(), x: e.clientX, y: e.clientY, moved: false, multi: false };
-    else if (gesture.current) gesture.current.multi = true;
+  function changePanel(next) {
+    gestures.current.reset(true); setModifiers([]);
+    document.activeElement?.blur(); Keyboard.hide().catch(() => {});
+    setPanel(next);
   }
-  function pointerMove(e) {
-    const previous = touches.current.get(e.pointerId);
-    if (!previous || !active) return;
-    const dx = e.clientX - previous.x, dy = e.clientY - previous.y;
-    touches.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    const g = gesture.current;
-    if (g && Math.hypot(e.clientX-g.x, e.clientY-g.y) > 5) g.moved = true;
-    if (touches.current.size >= 2) send({ type: 'scroll', dx: Math.max(-1000, Math.min(1000, -dx)), dy: Math.max(-1000, Math.min(1000, -dy)) });
-    else {
-      const bounds = e.currentTarget.getBoundingClientRect();
-      send({ type: 'move', dx: Math.max(-1, Math.min(1, dx / bounds.width)), dy: Math.max(-1, Math.min(1, dy / bounds.height)) });
-    }
-  }
-  function pointerUp(e) {
-    const g = gesture.current;
-    touches.current.delete(e.pointerId);
-    if (e.type !== 'pointercancel' && active && g && !g.moved && !g.multi && !drag && Date.now()-g.at < 400) {
-      const double = Date.now() - lastTap.current < 300;
-      // Delay first click so a double tap emits exactly one double-click.
-      clearTimeout(clickTimer.current);
-      if (double) { send({ type: 'click', button: 'left', count: 2 }); lastTap.current = 0; }
-      else {
-        lastTap.current = Date.now();
-        clickTimer.current = setTimeout(() => send({ type: 'click', button: 'left', count: 1 }), 300);
-      }
-    }
-    if (e.type === 'pointercancel') { clearTimeout(clickTimer.current); lastTap.current = 0; send({ type: 'release' }); setDrag(false); setModifiers([]); }
-    if (!touches.current.size) gesture.current = null;
-  }
-  const lastTap = useRef(0);
-  const clickTimer = useRef(null);
-  useEffect(() => () => clearTimeout(clickTimer.current), []);
-
   function toggleModifier(key) {
     const down = !modifiers.includes(key);
     if (send({ type: 'key', key, down })) setModifiers((old) => down ? [...old, key] : old.filter((k) => k !== key));
   }
   function key(key, modifier) {
-    const temporaryModifier = modifier && !modifiers.includes(modifier);
-    if (temporaryModifier) send({ type: 'key', key: modifier, down: true });
-    send({ type: 'key', key, down: true });
-    send({ type: 'key', key, down: false });
-    if (temporaryModifier) send({ type: 'key', key: modifier, down: false });
+    const temporary = modifier && !modifiers.includes(modifier);
+    if (temporary) send({ type: 'key', key: modifier, down: true });
+    send({ type: 'key', key, down: true }); send({ type: 'key', key, down: false });
+    if (temporary) send({ type: 'key', key: modifier, down: false });
   }
+  const resolution = metrics.width && metrics.height ? `${metrics.width} × ${metrics.height}` : 'Waiting for video';
 
-  return <main className="screen-content remote-desktop">
-    <header className="screen-header"><button onClick={() => { stop(); onBack(); }}>Back</button><h1>Remote desktop</h1><button onClick={() => stop()} disabled={!session.current}>End</button></header>
-    <p role={state === 'failed' ? 'alert' : 'status'}>{state}: {message}</p>
-    {!active && state !== 'connecting' && state !== 'reconnecting' ? <div className="desktop-connect"><button onClick={connect}>Connect / retry</button><label><input type="checkbox" checked={relay} onChange={(e) => setRelay(e.target.checked)} />Force TURN (testing)</label></div> : null}
-    <div className="desktop-video-viewport"><video ref={video} autoPlay playsInline muted onLoadedData={() => session.current?.frameReceived()} onPlaying={() => session.current?.frameReceived()} style={{ width: `${zoom*100}%`, maxWidth: 'none' }} /></div>
-    <label>Zoom <input type="range" min="1" max="3" step=".1" value={zoom} onChange={(e) => setZoom(Number(e.target.value))} /></label>
-    <div className="desktop-trackpad" role="application" aria-label="Remote trackpad: tap to click, double tap to double-click, two fingers to scroll" onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp}>
-      Trackpad · tap / double tap · two-finger scroll
-    </div>
-    <div className="desktop-controls"><button disabled={!active} onClick={() => send({ type: 'click', button: 'right', count: 1 })}>Right click</button><button disabled={!active} aria-pressed={drag} onClick={() => { if (send({ type: 'button', button: 'left', down: !drag })) setDrag(!drag); }}>{drag ? 'Release drag' : 'Begin drag'}</button><button disabled={!active} onClick={() => { send({ type: 'release' }); setModifiers([]); setDrag(false); }}>Release all</button></div>
-    <div className="desktop-controls">{['Cmd', 'Ctrl', 'Option', 'Shift'].map((m) => <button key={m} disabled={!active} aria-pressed={modifiers.includes(m)} onClick={() => toggleModifier(m)}>{m}</button>)}{['Esc', 'Tab', 'Enter', 'Backspace', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].map((k) => <button key={k} disabled={!active} onClick={() => key(k)}>{k}</button>)}</div>
-    <div className="desktop-controls"><button disabled={!active} onClick={() => key('ArrowLeft', 'Ctrl')}>Space ←</button><button disabled={!active} onClick={() => key('ArrowRight', 'Ctrl')}>Space →</button><button disabled={!active} onClick={() => key('Tab', 'Cmd')}>Cmd + Tab</button></div>
-    <form className={`desktop-text${keyboardHeight ? ' keyboard-open' : ''}`} style={{ '--desktop-keyboard-height': `${keyboardHeight}px` }} onSubmit={(e) => { e.preventDefault(); if (send({ type: 'text', text })) setText(''); }}><textarea aria-label="English or Chinese text to type on Mac" maxLength={1024} value={text} onChange={(e) => setText(e.target.value)} placeholder="Type English / 中文, then send" /><button disabled={!active || !text}>Send text</button>{keyboardHeight > 0 ? <button type="button" onClick={() => { document.activeElement?.blur(); Keyboard.hide().catch(() => {}); }}>Hide keyboard</button> : null}</form>
-    <small>Keyboard shortcuts follow macOS settings. No audio, clipboard or files. Leaving this page ends control, not your Haish tasks.</small>
+  return <main className={`remote-desktop${expanded ? ' is-expanded' : ''}`}>
+    <header className="desktop-header">
+      <button className="desktop-back" onClick={() => { stop(); onBack(); }}><ArrowLeft size={18} /><span>Back</span></button>
+      <div><h1>Remote Desktop</h1><p className={active ? 'is-online' : ''} role="status"><i />{labels[state]}<span> · {computer}</span></p></div>
+      <button className="desktop-end" onClick={() => stop()} disabled={!active && !busy}><Square size={12} fill="currentColor" />End</button>
+    </header>
+
+    <section className="desktop-video-card" aria-label="Live remote desktop">
+      <div className="desktop-video-viewport"><video ref={video} autoPlay playsInline muted onLoadedData={() => session.current?.frameReceived()} onPlaying={() => session.current?.frameReceived()} onResize={() => {
+        if (video.current?.videoWidth) setMetrics((old) => ({ ...old, width: video.current.videoWidth, height: video.current.videoHeight }));
+      }} style={{ width: `${zoom * 100}%`, maxWidth: 'none' }} /></div>
+      <div className="desktop-video-hud"><span className="desktop-hud-pill"><Monitor size={15} />{resolution}</span><div><span className={`desktop-hud-pill desktop-latency${active ? ' is-online' : ''}`} title="Round-trip latency, not input-to-frame latency"><Signal size={16} />{active && Number.isFinite(metrics.rttMs) ? `${metrics.rttMs}ms` : '—'}</span><button onClick={() => setExpanded(!expanded)} aria-label={expanded ? 'Exit expanded view' : 'Expand desktop view'}>{expanded ? <Minimize2 size={18} /> : <Maximize2 size={18} />}</button></div></div>
+      {!active ? <div className="desktop-video-empty"><Monitor size={38} strokeWidth={1.3} /><h2>{busy ? labels[state] : 'Your desktop, anywhere'}</h2><p>{busy ? 'Establishing a secure WebRTC connection' : 'Connect to see and control your Mac’s live screen.'}</p>{!busy ? <button className="desktop-primary" onClick={connect}>{state === 'failed' ? 'Try again' : 'Connect to computer'}</button> : <span className="desktop-connecting-dot" />}</div> : null}
+    </section>
+    {message ? <p className={`desktop-session-note${state === 'failed' ? ' is-error' : ''}`} role={state === 'failed' ? 'alert' : 'status'}>{message}</p> : null}
+
+    <nav className="desktop-toolbar" aria-label="Remote controls">{tabs.map(([id, Icon, label]) => <button key={id} className={panel === id ? 'is-selected' : ''} aria-pressed={panel === id} onClick={() => changePanel(id)}><Icon size={19} /><span>{label}</span></button>)}</nav>
+
+    {panel === 'touchpad' ? <section className={`desktop-trackpad${drag ? ' is-dragging' : ''}${!active ? ' is-disabled' : ''}`} role="application" aria-disabled={!active} aria-label="Remote trackpad: tap to click, double tap to double-click, two fingers to scroll, pinch to zoom, long press to drag" onContextMenu={(e) => e.preventDefault()} onPointerDown={(e) => {
+      if (!active) return; e.currentTarget.setPointerCapture(e.pointerId); gestures.current.down(e.pointerId, e.clientX, e.clientY);
+    }} onPointerMove={(e) => { if (active) { const b = e.currentTarget.getBoundingClientRect(); gestures.current.move(e.pointerId, e.clientX, e.clientY, b.width, b.height); } }} onPointerUp={(e) => gestures.current.up(e.pointerId)} onPointerCancel={(e) => gestures.current.up(e.pointerId, true)} onLostPointerCapture={(e) => gestures.current.up(e.pointerId, true)}>
+      <MousePointer2 className="desktop-trackpad-cursor" size={29} strokeWidth={1.4} /><h2>{drag ? 'Dragging · lift to release' : 'Use gestures to control'}</h2><p>{active ? 'Just like a Mac trackpad' : 'Connect to activate the trackpad'}</p>
+      <div className="desktop-gesture-hints">{[[Hand, 'One finger', 'Move & tap'], [ArrowDownUp, 'Two fingers', 'Scroll'], [Expand, 'Pinch', 'Zoom view'], [Hand, 'Long press', 'Then drag']].map(([Icon, title, hint]) => <div key={title}><Icon size={28} strokeWidth={1.3} /><strong>{title}</strong><span>{hint}</span></div>)}</div>
+    </section> : null}
+    {panel === 'touchpad' ? <div className="desktop-trackpad-actions" aria-label="Trackpad buttons and modifiers"><button disabled={!active} onClick={() => send({ type: 'click', button: 'right', count: 1 })}>Right click</button>{['Cmd', 'Shift'].map((m) => <button key={m} disabled={!active} aria-pressed={modifiers.includes(m)} onClick={() => toggleModifier(m)}>{m}</button>)}<button disabled={!active} onClick={() => { gestures.current.reset(true); setModifiers([]); }}>Release all</button></div> : null}
+
+    {panel === 'keyboard' ? <section className="desktop-panel"><h2><KeyboardIcon size={20} />Type on your computer</h2><p>English / 中文 · compose here, then send</p><form className={`desktop-text${keyboardHeight ? ' keyboard-open' : ''}`} style={{ '--desktop-keyboard-height': `${keyboardHeight}px` }} onSubmit={(e) => { e.preventDefault(); if (send({ type: 'text', text })) setText(''); else setMessage('Text was not sent. Check the connection and retry.'); }}><textarea disabled={!active} aria-label="English or Chinese text to type on Mac" maxLength={1024} value={text} onChange={(e) => setText(e.target.value)} placeholder="Type English / 中文…" /><div><span>{text.length}/1024</span><button className="desktop-primary" disabled={!active || !text}><Send size={16} />Send text</button>{keyboardHeight > 0 ? <button type="button" aria-label="Hide keyboard" onClick={() => { document.activeElement?.blur(); Keyboard.hide().catch(() => {}); }}><X size={18} /></button> : null}</div></form><div className="desktop-controls">{['Esc', 'Tab', 'Enter', 'Backspace'].map((k) => <button key={k} disabled={!active} onClick={() => key(k)}>{k}</button>)}</div></section> : null}
+
+    {panel === 'shortcuts' ? <section className="desktop-panel"><h2><Command size={20} />Keyboard shortcuts</h2><p>Modifiers stay held until toggled or released.</p><div className="desktop-controls">{['Cmd', 'Ctrl', 'Option', 'Shift'].map((m) => <button key={m} disabled={!active} aria-pressed={modifiers.includes(m)} onClick={() => toggleModifier(m)}>{m}</button>)}</div><div className="desktop-controls">{[['←', 'ArrowLeft'], ['↑', 'ArrowUp'], ['↓', 'ArrowDown'], ['→', 'ArrowRight']].map(([label, k]) => <button key={k} aria-label={k} disabled={!active} onClick={() => key(k)}>{label}</button>)}</div><div className="desktop-controls"><button disabled={!active} onClick={() => key('ArrowLeft', 'Ctrl')}>Space ←</button><button disabled={!active} onClick={() => key('ArrowRight', 'Ctrl')}>Space →</button><button disabled={!active} onClick={() => key('Tab', 'Cmd')}>⌘ Tab</button></div><button className="desktop-release" disabled={!active} onClick={() => { gestures.current.reset(true); setModifiers([]); }}>Release all keys & buttons</button></section> : null}
+
+    {panel === 'more' ? <section className="desktop-panel"><h2><MoreHorizontal size={20} />Session options</h2><div className="desktop-controls"><button disabled={!active} onClick={() => send({ type: 'click', button: 'right', count: 1 })}>Right click</button><button disabled={!active} onClick={() => { gestures.current.reset(true); setModifiers([]); }}>Release all</button></div><label className="desktop-zoom">View zoom <span>{zoom.toFixed(1)}×</span><input aria-label="View zoom" type="range" min="1" max="3" step=".1" value={zoom} onChange={(e) => setZoom(Number(e.target.value))} /></label><p>Zoomed video can be panned independently of the trackpad.</p><label className="desktop-relay"><input type="checkbox" disabled={active || busy} checked={relay} onChange={(e) => setRelay(e.target.checked)} />Force TURN relay on next connection</label><p>Enable desktop access locally at <span className="desktop-local-address">http://127.0.0.1:8767</span>. Grant Screen Recording and Accessibility; keep your Mac unlocked.</p><p>Audio, microphone, clipboard and file transfer are not supported.</p></section> : null}
+
+    <footer className="desktop-computer-bar"><div className="desktop-computer-icon"><Monitor size={23} /></div><div className="desktop-computer-copy"><strong>{computer}</strong><span>{active ? `${metrics.connectionType === 'relay' ? 'TURN relay' : metrics.connectionType === 'direct' ? 'Direct WebRTC' : 'WebRTC'}${Number.isFinite(metrics.fps) ? ` · ${Math.round(metrics.fps)} fps` : ''}` : 'Secure remote access'}</span></div><button className="desktop-footer-options" aria-label="Session options" onClick={() => changePanel(panel === 'more' ? 'touchpad' : 'more')}><MoreHorizontal size={22} /></button></footer>
+    <p className="desktop-footnote"><Radio size={12} />Leaving this page ends control, not your Haish tasks.</p>
   </main>;
 }

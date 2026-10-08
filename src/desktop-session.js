@@ -1,7 +1,7 @@
 // No input queues: commands are accepted only under the server's current lease.
 export class DesktopSession {
-  constructor(api, { onState, onStream, Peer = globalThis.RTCPeerConnection, now = () => globalThis.performance.now() } = {}) {
-    Object.assign(this, { api, onState, onStream, Peer, now });
+  constructor(api, { onState, onStream, onMetrics, Peer = globalThis.RTCPeerConnection, now = () => globalThis.performance.now() } = {}) {
+    Object.assign(this, { api, onState, onStream, onMetrics, Peer, now });
     this.closed = false;
     this.epoch = null;
     this.seq = 0;
@@ -46,6 +46,7 @@ export class DesktopSession {
       this.id = answer.session_id;
       if (this.closed) { await this.api.desktopEnd(this.id).catch(() => {}); return; }
       await pc.setRemoteDescription({ type: 'answer', sdp: answer.sdp });
+      if (this.closed) return;
       this.startedAt = this.now();
       this.timer = setInterval(() => this.tick(), 500);
       this.statsTimer = setInterval(() => this.adapt(), 3000);
@@ -101,6 +102,8 @@ export class DesktopSession {
       this.paused = false;
       this.offlineSince = null;
       this.onState?.('connected', this.turnConfigured ? '' : 'TURN not configured: direct connection only; cross-network connectivity is not guaranteed.');
+      const rttMs = now - probe.at;
+      if (Number.isFinite(rttMs) && rttMs >= 0) this.emitMetrics({ rttMs });
     } catch { /* Unrecognized control responses never enable input. */ }
   }
 
@@ -172,10 +175,27 @@ export class DesktopSession {
     } finally { this.checkingStatus = false; }
   }
 
+  // Partial measured updates only: width/height in pixels, fps, heartbeat rttMs,
+  // and connectionType ('direct' or 'relay'). Never expose raw ICE reports.
+  emitMetrics(metrics) {
+    if (this.closed || !Object.keys(metrics).length) return;
+    try { this.onMetrics?.(metrics); } catch { /* Observers cannot affect control or adaptation. */ }
+  }
+
   async adapt() {
+    const pc = this.pc;
+    if (this.closed || !pc?.getStats || this.checkingStats) return;
+    this.checkingStats = true;
     try {
-      const stats = await this.pc.getStats();
+      const stats = await pc.getStats();
+      if (this.closed || this.pc !== pc) return;
+      const metrics = {};
       for (const report of stats.values()) {
+        if (report.type === 'inbound-rtp' && (report.kind || report.mediaType) === 'video') {
+          if (Number.isFinite(report.frameWidth) && report.frameWidth > 0) metrics.width = report.frameWidth;
+          if (Number.isFinite(report.frameHeight) && report.frameHeight > 0) metrics.height = report.frameHeight;
+          if (Number.isFinite(report.framesPerSecond) && report.framesPerSecond >= 0) metrics.fps = report.framesPerSecond;
+        }
         if (report.type === 'inbound-rtp' && report.kind === 'video') {
           const old = this.lastStats;
           if (old) {
@@ -187,7 +207,26 @@ export class DesktopSession {
         }
         if (report.type === 'candidate-pair' && report.state === 'succeeded' && report.currentRoundTripTime > .2) this.quality = 'low';
       }
+      // Prefer the transport's actual selected pair, not an arbitrary successful
+      // connectivity check. Older implementations may mark the pair selected.
+      const reports = [...stats.values()];
+      const transport = reports.find((report) => report.type === 'transport' && report.selectedCandidatePairId);
+      let pair = transport ? stats.get(transport.selectedCandidatePairId) :
+        reports.find((report) => report.type === 'candidate-pair' && report.selected === true);
+      if (!pair && !transport) {
+        const nominated = reports.filter((report) => report.type === 'candidate-pair' && report.nominated === true && report.state === 'succeeded');
+        if (nominated.length === 1) pair = nominated[0];
+      }
+      if (pair?.type === 'candidate-pair') {
+        const local = stats.get(pair.localCandidateId)?.candidateType;
+        const remote = stats.get(pair.remoteCandidateId)?.candidateType;
+        const directTypes = ['host', 'srflx', 'prflx'];
+        if (local === 'relay' || remote === 'relay') metrics.connectionType = 'relay';
+        else if (directTypes.includes(local) && directTypes.includes(remote)) metrics.connectionType = 'direct';
+      }
+      this.emitMetrics(metrics);
     } catch { /* Stats are best-effort, never a reason to send stale input. */ }
+    finally { this.checkingStats = false; }
   }
 
   close() {
