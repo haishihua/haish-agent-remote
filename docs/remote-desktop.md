@@ -28,9 +28,9 @@ Phone foreground ping every 500ms: client input validity ends no later than 750m
 
 Video: main display only, max 1920×1080 at target 30fps. Client stats request 1280×720/15fps on high loss or RTT; WebRTC encoder congestion control handles bitrate. Performance remains unmeasured. Relative trackpad movement is independent of video zoom/orientation; screen bounds are queried per movement, capture dimensions per frame. Zoom viewport can pan separately from the trackpad. Double tap, right-click, two-finger scroll, explicit drag; modifier toggles/release-all, Space arrows and Cmd+Tab; Chinese/English text sent explicitly after local IME composition.
 
-## Self-hosted TURN (not deployed)
+## Self-hosted TURN
 
-Use maintained coturn on a server you administer. A template is `turn/coturn.conf.example`; replace placeholders, use trusted TLS certificates and restrict config/secret files to the service owner. Generate a strong random shared secret and give it only to coturn + adapter environment, **never to the phone**. Set these in the existing adapter process environment:
+Use maintained coturn on a server you administer. A template is `turn/coturn.conf.example`; replace placeholders, use trusted TLS certificates and restrict config/secret files to the service owner. Generate a strong random shared secret and give it only to coturn + adapter, **never to the phone**. The adapter accepts the following existing process environment overrides:
 
 ```sh
 HAISH_DESKTOP_TURN_URLS='turn:turn.example.com:3478?transport=udp,turn:turn.example.com:3478?transport=tcp,turns:turn.example.com:5349?transport=tcp'
@@ -39,7 +39,9 @@ HAISH_DESKTOP_TURN_SECRET='<same private shared secret as coturn>'
 
 Provision DNS/TLS, public IPv4, and firewall rules: UDP/TCP 3478, TLS TCP 5349, UDP relay range 49160–49200. Behind NAT configure coturn's `external-ip=PUBLIC/PRIVATE` and forward the full relay range. Ensure realm, listening/relay interfaces and public address match your deployment. TURN is independent of the FRP HTTPS signaling tunnel. Do not configure `no-auth`, permanent mobile credentials, anonymous relay or credential-bearing access logs. Block loopback/private/link-local relay destinations (template); review IPv6 and any deployment-specific internal networks as well. Monitor quota/abuse without storing username/password or desktop/input content. The adapter's HMAC-SHA1 REST credential expires after 600 seconds; test sessions longer than 10 minutes and fresh reconnections to validate allocation refresh behavior.
 
-Restart the adapter after setting environment; the authenticated ICE response should show configured TURN. Phone Force TURN mode uses `iceTransportPolicy: relay` to verify the fallback, not as the default. Validate selected candidate type `relay` through WebRTC stats, not merely a successful SDP exchange. With no TURN the UI warns direct-only; failed ICE/first frame yields manual retry. This document authorizes no external deployment.
+For desktop-managed startup without environment injection, place a private `desktop-turn.json` in the adapter data directory (default `~/.haish-remote`), containing `{"urls":["turn:turn.example.com:3478?transport=udp"],"secret":"<private shared secret>"}`. It must be owned by the adapter user and have mode `0600`; do not commit it or put it in phone assets. Explicit TURN environment variables take precedence. Both signaling and server peer negotiation use the same configuration, including custom data directories. Invalid private files fail closed and status exposes only the configured boolean.
+
+After deploying and connecting configuration, the authenticated ICE response should show configured TURN. Normal phone connections automatically select a viable ICE path; the ordinary UI has no Force TURN switch. Test-only `iceTransportPolicy: relay` can verify fallback. Validate selected candidate type `relay` and actual video/data, not merely a successful SDP exchange. With no TURN, successful direct connections emit no unnecessary warning; failed ICE/first frame yields manual retry with relevant fallback advice. External deployments require user authorization.
 
 ## Acceptance evidence and remaining checks
 

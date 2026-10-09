@@ -13,6 +13,7 @@ import time
 
 from fastapi import HTTPException
 from server.macos_desktop import KEYS, MacDesktop
+from server.desktop_ice import turn_settings, turn_configured
 
 # A ticket expires from SERVER issuance, not receipt. A delayed heartbeat cannot
 # extend an older command's validity; neither side needs synchronized wall clocks.
@@ -20,10 +21,8 @@ INPUT_LEASE_SECONDS = 1.0
 NEGOTIATION_SECONDS = 12
 
 
-def ice_servers(env=None, now=None, subject='device'):
-    env = os.environ if env is None else env
-    urls = [u.strip() for u in env.get('HAISH_DESKTOP_TURN_URLS', '').split(',') if u.strip()]
-    secret = env.get('HAISH_DESKTOP_TURN_SECRET', '')
+def ice_servers(env=None, now=None, subject='device', data_dir=None):
+    urls, secret = turn_settings(data_dir=data_dir, env=env)
     if not urls or not secret:
         return [], False
     if not all(u.startswith(('turn:', 'turns:')) and '@' not in u for u in urls):
@@ -113,7 +112,7 @@ class DesktopManager:
 
     def status(self):
         return {**self.backend.status(), 'enabled': self.enabled, 'busy': self.session is not None,
-                'turn_configured': bool(os.getenv('HAISH_DESKTOP_TURN_URLS') and os.getenv('HAISH_DESKTOP_TURN_SECRET'))}
+                'turn_configured': turn_configured(self.path.parent)}
 
     def ready(self):
         status = self.status()
@@ -156,7 +155,7 @@ class DesktopManager:
             except TimeoutError:
                 raise HTTPException(503, 'Desktop media initialization timed out. Retry after initialization completes.') from None
             self.ready()  # local disable/permission changes may occur during import
-            servers, configured = ice_servers(subject=device_id)
+            servers, configured = ice_servers(subject=device_id, data_dir=self.path.parent)
             pc = RTCPeerConnection(RTCConfiguration(iceServers=[RTCIceServer(**s) for s in servers]))
             session = DesktopSession(self, device_id, pc)
             self.session = session

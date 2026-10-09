@@ -945,7 +945,7 @@ def create_app(*, data_dir: Path | None = None, dist_dir: Path | None = None) ->
     @app.get('/remote/desktop/ice')
     async def desktop_ice(device: dict[str, Any] = Depends(current_device)):
         desktop.ready()
-        servers, configured = ice_servers(subject=device['device_id'])
+        servers, configured = ice_servers(subject=device['device_id'], data_dir=desktop.path.parent)
         return JSONResponse({'iceServers': servers, 'turn_configured': configured, 'expires_in': 600},
                             headers={'cache-control': 'no-store'})
 
