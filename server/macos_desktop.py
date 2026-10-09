@@ -44,7 +44,7 @@ class MacDesktop:
             self.q.CGRequestScreenCaptureAccess()
             self.ax.AXIsProcessTrustedWithOptions({self.ax.kAXTrustedCheckOptionPrompt: True})
 
-    def capture(self, width=1920, height=1080):
+    def capture(self, width=None, height=None):
         from av import VideoFrame
         q = self.q
         image = q.CGDisplayCreateImage(q.CGMainDisplayID())
@@ -56,7 +56,8 @@ class MacDesktop:
         # The buffer protocol copies the same bytes without that conversion.
         copied = q.CGDataProviderCopyData(q.CGImageGetDataProvider(image))
         data = memoryview(copied).tobytes()
-        scale = min(width/w, height/h, 1)
+        # High quality uses native capture pixels; low quality remains bounded.
+        scale = 1 if width is None and height is None else min(width/w, height/h, 1)
         bounds = q.CGDisplayBounds(q.CGMainDisplayID())
         pos = self._position()
         data = composite_cursor(data, w, h, stride, (pos.x, pos.y),

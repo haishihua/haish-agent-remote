@@ -5,6 +5,7 @@ import { Keyboard } from '@capacitor/keyboard';
 import { KEYBOARD_FRAME_EVENT, keyboardInset } from './ios-keyboard.js';
 import { DesktopSession } from './desktop-session.js';
 import { DesktopGestures } from './desktop-gestures.js';
+import { desktopViewSize } from './desktop-view.js';
 import './remote-desktop.css';
 
 const labels = { idle: 'Not connected', connecting: 'Connecting…', connected: 'Connected', reconnecting: 'Reconnecting…', failed: 'Connection failed' };
@@ -12,14 +13,15 @@ const tabs = [['touchpad', MousePointer2, 'Touchpad'], ['keyboard', KeyboardIcon
 
 export default function RemoteDesktop({ onBack, computer = 'Computer' }) {
   const video = useRef(null);
+  const viewport = useRef(null);
+  const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   const session = useRef(null);
   const [state, setState] = useState('idle');
   const [message, setMessage] = useState('Enable desktop access on your Mac, then connect.');
   const [drag, setDrag] = useState(false);
   const [modifiers, setModifiers] = useState([]);
   const [text, setText] = useState('');
-  const [zoom, setZoom] = useState(1);
-  const [relay, setRelay] = useState(false);
+  const [zoom, setZoom] = useState(1.5);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const [panel, setPanel] = useState('touchpad');
   const [expanded, setExpanded] = useState(false);
@@ -42,6 +44,12 @@ export default function RemoteDesktop({ onBack, computer = 'Computer' }) {
   }
 
   useEffect(() => {
+    const observer = new ResizeObserver(([entry]) => setViewportSize({ width: entry.contentRect.width, height: entry.contentRect.height }));
+    observer.observe(viewport.current);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
     const left = () => stop('App left the foreground. Reconnect manually.');
     const hidden = () => { if (document.hidden) left(); };
     const native = (e) => { if (e.detail?.isActive === false) left(); };
@@ -60,7 +68,7 @@ export default function RemoteDesktop({ onBack, computer = 'Computer' }) {
   }, []);
 
   async function connect() {
-    stop(); setZoom(1);
+    stop(); setZoom(1.5);
     const next = new DesktopSession(api, {
       onState: (s, note = '') => {
         if (session.current !== next) return;
@@ -73,7 +81,7 @@ export default function RemoteDesktop({ onBack, computer = 'Computer' }) {
       onMetrics: (update) => { if (session.current === next) setMetrics((old) => ({ ...old, ...update })); },
     });
     session.current = next;
-    await next.connect(relay);
+    await next.connect();
   }
   function changePanel(next) {
     gestures.current.reset(true); setModifiers([]);
@@ -90,6 +98,7 @@ export default function RemoteDesktop({ onBack, computer = 'Computer' }) {
     send({ type: 'key', key, down: true }); send({ type: 'key', key, down: false });
     if (temporary) send({ type: 'key', key: modifier, down: false });
   }
+  const viewSize = desktopViewSize(viewportSize.width, viewportSize.height, metrics.width, metrics.height, zoom);
   const resolution = metrics.width && metrics.height ? `${metrics.width} × ${metrics.height}` : 'Waiting for video';
 
   return <main className={`remote-desktop${expanded ? ' is-expanded' : ''}`}>
@@ -100,10 +109,10 @@ export default function RemoteDesktop({ onBack, computer = 'Computer' }) {
     </header>
 
     <section className="desktop-video-card" aria-label="Live remote desktop">
-      <div className="desktop-video-viewport"><video ref={video} autoPlay playsInline muted onLoadedData={() => session.current?.frameReceived()} onPlaying={() => session.current?.frameReceived()} onResize={() => {
+      <div ref={viewport} className="desktop-video-viewport"><div className="desktop-video-surface"><video style={{ width: viewSize.width || '100%', height: viewSize.height || '100%' }} ref={video} autoPlay playsInline muted onLoadedData={() => session.current?.frameReceived()} onPlaying={() => session.current?.frameReceived()} onResize={() => {
         if (video.current?.videoWidth) setMetrics((old) => ({ ...old, width: video.current.videoWidth, height: video.current.videoHeight }));
-      }} style={{ width: `${zoom * 100}%`, maxWidth: 'none' }} /></div>
-      <div className="desktop-video-hud"><span className="desktop-hud-pill"><Monitor size={15} />{resolution}</span><div><span className={`desktop-hud-pill desktop-latency${active ? ' is-online' : ''}`} title="Round-trip latency, not input-to-frame latency"><Signal size={16} />{active && Number.isFinite(metrics.rttMs) ? `${metrics.rttMs}ms` : '—'}</span><button onClick={() => setExpanded(!expanded)} aria-label={expanded ? 'Exit expanded view' : 'Expand desktop view'}>{expanded ? <Minimize2 size={18} /> : <Maximize2 size={18} />}</button></div></div>
+      }} /></div></div>
+      <div className="desktop-video-hud"><span className="desktop-hud-pill"><Monitor size={15} />{resolution}</span><div><span className={`desktop-hud-pill desktop-latency${active ? ' is-online' : ''}`} title="Round-trip latency, not input-to-frame latency"><Signal size={16} />{active && Number.isFinite(metrics.rttMs) ? `${Math.round(metrics.rttMs)}ms` : '—'}</span><button onClick={() => setZoom(zoom === 1 ? 1.5 : 1)} aria-label="Toggle video zoom" title="1× shows the entire desktop; 1.5× enlarges it and allows panning">{zoom.toFixed(1)}×</button><button onClick={() => setExpanded(!expanded)} aria-label={expanded ? 'Exit expanded view' : 'Expand desktop view'}>{expanded ? <Minimize2 size={18} /> : <Maximize2 size={18} />}</button></div></div>
       {!active ? <div className="desktop-video-empty"><Monitor size={38} strokeWidth={1.3} /><h2>{busy ? labels[state] : 'Your desktop, anywhere'}</h2><p>{busy ? 'Establishing a secure WebRTC connection' : 'Connect to see and control your Mac’s live screen.'}</p>{!busy ? <button className="desktop-primary" onClick={connect}>{state === 'failed' ? 'Try again' : 'Connect to computer'}</button> : <span className="desktop-connecting-dot" />}</div> : null}
     </section>
     {message ? <p className={`desktop-session-note${state === 'failed' ? ' is-error' : ''}`} role={state === 'failed' ? 'alert' : 'status'}>{message}</p> : null}
@@ -122,7 +131,7 @@ export default function RemoteDesktop({ onBack, computer = 'Computer' }) {
 
     {panel === 'shortcuts' ? <section className="desktop-panel"><h2><Command size={20} />Keyboard shortcuts</h2><p>Modifiers stay held until toggled or released.</p><div className="desktop-controls">{['Cmd', 'Ctrl', 'Option', 'Shift'].map((m) => <button key={m} disabled={!active} aria-pressed={modifiers.includes(m)} onClick={() => toggleModifier(m)}>{m}</button>)}</div><div className="desktop-controls">{[['←', 'ArrowLeft'], ['↑', 'ArrowUp'], ['↓', 'ArrowDown'], ['→', 'ArrowRight']].map(([label, k]) => <button key={k} aria-label={k} disabled={!active} onClick={() => key(k)}>{label}</button>)}</div><div className="desktop-controls"><button disabled={!active} onClick={() => key('ArrowLeft', 'Ctrl')}>Space ←</button><button disabled={!active} onClick={() => key('ArrowRight', 'Ctrl')}>Space →</button><button disabled={!active} onClick={() => key('Tab', 'Cmd')}>⌘ Tab</button></div><button className="desktop-release" disabled={!active} onClick={() => { gestures.current.reset(true); setModifiers([]); }}>Release all keys & buttons</button></section> : null}
 
-    {panel === 'more' ? <section className="desktop-panel"><h2><MoreHorizontal size={20} />Session options</h2><div className="desktop-controls"><button disabled={!active} onClick={() => send({ type: 'click', button: 'right', count: 1 })}>Right click</button><button disabled={!active} onClick={() => { gestures.current.reset(true); setModifiers([]); }}>Release all</button></div><label className="desktop-zoom">View zoom <span>{zoom.toFixed(1)}×</span><input aria-label="View zoom" type="range" min="1" max="3" step=".1" value={zoom} onChange={(e) => setZoom(Number(e.target.value))} /></label><p>Zoomed video can be panned independently of the trackpad.</p><label className="desktop-relay"><input type="checkbox" disabled={active || busy} checked={relay} onChange={(e) => setRelay(e.target.checked)} />Force TURN relay on next connection</label><p>Enable desktop access locally at <span className="desktop-local-address">http://127.0.0.1:8767</span>. Grant Screen Recording and Accessibility; keep your Mac unlocked.</p><p>Audio, microphone, clipboard and file transfer are not supported.</p></section> : null}
+    {panel === 'more' ? <section className="desktop-panel"><h2><MoreHorizontal size={20} />Session options</h2><div className="desktop-controls"><button disabled={!active} onClick={() => send({ type: 'click', button: 'right', count: 1 })}>Right click</button><button disabled={!active} onClick={() => { gestures.current.reset(true); setModifiers([]); }}>Release all</button></div><label className="desktop-zoom">View zoom <span>{zoom.toFixed(1)}×</span><input aria-label="View zoom" type="range" min="1" max="3" step=".1" value={zoom} onChange={(e) => setZoom(Number(e.target.value))} /></label><p>Zoomed video can be panned independently of the trackpad.</p><p>Connection routing is automatic: direct when possible, with TURN relay as a fallback when configured on your Mac.</p><p>Enable desktop access locally at <span className="desktop-local-address">http://127.0.0.1:8767</span>. Grant Screen Recording and Accessibility; keep your Mac unlocked.</p><p>Audio, microphone, clipboard and file transfer are not supported.</p></section> : null}
 
     <footer className="desktop-computer-bar"><div className="desktop-computer-icon"><Monitor size={23} /></div><div className="desktop-computer-copy"><strong>{computer}</strong><span>{active ? `${metrics.connectionType === 'relay' ? 'TURN relay' : metrics.connectionType === 'direct' ? 'Direct WebRTC' : 'WebRTC'}${Number.isFinite(metrics.fps) ? ` · ${Math.round(metrics.fps)} fps` : ''}` : 'Secure remote access'}</span></div><button className="desktop-footer-options" aria-label="Session options" onClick={() => changePanel(panel === 'more' ? 'touchpad' : 'more')}><MoreHorizontal size={22} /></button></footer>
     <p className="desktop-footnote"><Radio size={12} />Leaving this page ends control, not your Haish tasks.</p>

@@ -263,7 +263,7 @@ class DesktopSession:
         self.last_live = self.started
         self.last_seq = -1
         self.next_frame = self.started
-        self.width, self.height, self.fps = 1920, 1080, 30
+        self.width, self.height, self.fps = None, None, 30
         self.input_diagnostics = {'received': 0, 'accepted': 0, 'rejected': 0, 'native_errors': 0}
         self.bucket = 0
         self.bucket_start = self.started
@@ -326,7 +326,7 @@ class DesktopSession:
                     self.held_keys.intersection_update(m.get('heldKeys', []))
                     self.held_buttons.intersection_update(m.get('heldButtons', []))
                 quality = m.get('quality', 'high')
-                self.width, self.height, self.fps = (1280, 720, 15) if quality == 'low' else (1920, 1080, 30)
+                self.width, self.height, self.fps = (1280, 720, 15) if quality == 'low' else (None, None, 30)
                 ticket = secrets.token_urlsafe(16)
                 self.tickets = {k: v for k, v in self.tickets.items() if v > now}
                 # Bound allocations even if an authenticated client floods probes.

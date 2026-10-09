@@ -101,7 +101,8 @@ export class DesktopSession {
       this.lastReady = now;
       this.paused = false;
       this.offlineSince = null;
-      this.onState?.('connected', this.turnConfigured ? '' : 'TURN not configured: direct connection only; cross-network connectivity is not guaranteed.');
+      // A working connection needs no missing-fallback warning.
+      this.onState?.('connected', '');
       const rttMs = now - probe.at;
       if (Number.isFinite(rttMs) && rttMs >= 0) this.emitMetrics({ rttMs });
     } catch { /* Unrecognized control responses never enable input. */ }
@@ -141,7 +142,9 @@ export class DesktopSession {
     if (this.closed) return;
     if (!this.paused && this.now() >= this.inputUntil) this.disconnected();
     if ((!this.lastReady || !this.firstFrame) && this.now() - this.startedAt > 10_000) {
-      this.onState?.('failed', 'No desktop connection. Direct connection or TURN failed. Retry after checking the network.');
+      this.onState?.('failed', this.turnConfigured
+        ? 'Unable to connect to the desktop. Check the network and retry; automatic relay was available.'
+        : 'Unable to connect directly. Check the network and retry. This computer has no TURN fallback configured.');
       this.close(); return;
     }
     if (this.offlineSince != null && this.now() - this.offlineSince >= 30_000) {

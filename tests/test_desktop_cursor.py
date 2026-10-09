@@ -61,6 +61,9 @@ class DesktopCursorTests(unittest.TestCase):
             result = backend.capture(50, 40)
         self.assertEqual(plane_data[0], composite_cursor(data, 100, 80, stride, (30, 20), (0, 0, 100, 80), .5))
         self.assertEqual(result, {'width': 50, 'height': 40, 'format': 'yuv420p'})
+        with patch('av.VideoFrame', return_value=frame):
+            native = backend.capture()
+        self.assertEqual(native, {'width': 100, 'height': 80, 'format': 'yuv420p'})
 
 
 if __name__ == '__main__':

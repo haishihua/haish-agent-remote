@@ -151,6 +151,13 @@ class FreshnessTests(unittest.TestCase):
         s.channel = Mock()
         return s, backend
 
+    def test_high_quality_is_native_and_low_quality_remains_bounded(self):
+        s, _ = self.session()
+        self.assertEqual((s.width, s.height, s.fps), (None, None, 30))
+        for quality, expected in [('low', (1280, 720, 15)), ('high', (None, None, 30))]:
+            s.message(json.dumps({'type': 'ping', 'generation': 0, 'probe': quality, 'quality': quality}))
+            self.assertEqual((s.width, s.height, s.fps), expected)
+
     def test_delayed_input_before_and_after_returning_ping(self):
         for gap in (2, 2.5, 3, 8):
             for returning_ping in (False, True):

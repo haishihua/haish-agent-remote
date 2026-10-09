@@ -179,6 +179,25 @@ test('connect configures bounded partial-reliable ordered SCTP input', async () 
   session.close();
 });
 
+test('connected direct sessions do not warn about an unneeded TURN fallback', () => {
+  for (const configured of [false, true]) {
+    const { session, commands, states, advance } = live();
+    session.turnConfigured = configured;
+    advance(50); session.ping(); advance(20);
+    reply(session, commands.at(-1), 'ready', 'current', 'new-ticket');
+    assert.deepEqual(states.at(-1), ['connected', '']);
+    session.close();
+  }
+});
+
+test('missing TURN fallback is explained only when a connection fails', () => {
+  const { session, states, advance } = live();
+  session.turnConfigured = false; session.firstFrame = false;
+  advance(11000); session.tick();
+  assert.match(states.at(-1)[1], /no TURN fallback/);
+  session.close();
+});
+
 test('metrics measure heartbeat RTT only after a fresh accepted ready', () => {
   const metrics = [];
   const { session, commands, advance } = live({ onMetrics: (value) => metrics.push(value) });
