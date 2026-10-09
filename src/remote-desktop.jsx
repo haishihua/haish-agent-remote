@@ -117,7 +117,7 @@ export default function RemoteDesktop({ onBack, computer = 'Computer' }) {
     </section>
     {message ? <p className={`desktop-session-note${state === 'failed' ? ' is-error' : ''}`} role={state === 'failed' ? 'alert' : 'status'}>{message}</p> : null}
 
-    <nav className="desktop-toolbar" aria-label="Remote controls">{tabs.map(([id, Icon, label]) => <button key={id} className={panel === id ? 'is-selected' : ''} aria-pressed={panel === id} onClick={() => changePanel(id)}><Icon size={19} /><span>{label}</span></button>)}</nav>
+    <nav className="desktop-toolbar" aria-label="Remote controls">{tabs.map(([id, Icon, label]) => <button key={id} aria-label={label} className={panel === id ? 'is-selected' : ''} aria-pressed={panel === id} onClick={() => changePanel(id)}><Icon size={19} /><span>{label}</span></button>)}</nav>
 
     {panel === 'touchpad' ? <section className={`desktop-trackpad${drag ? ' is-dragging' : ''}${!active ? ' is-disabled' : ''}`} role="application" aria-disabled={!active} aria-label="Remote trackpad: tap to click, double tap to double-click, two fingers to scroll, pinch to zoom, long press to drag" onContextMenu={(e) => e.preventDefault()} onPointerDown={(e) => {
       if (!active) return; e.currentTarget.setPointerCapture(e.pointerId); gestures.current.down(e.pointerId, e.clientX, e.clientY);
