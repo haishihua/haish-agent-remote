@@ -126,7 +126,7 @@ class DesktopTests(unittest.TestCase):
         self.assertTrue(configured)
         self.assertEqual(servers[0]['username'], '700:paired')
         self.assertNotIn(env['HAISH_DESKTOP_TURN_SECRET'], json.dumps(servers))
-        self.assertEqual(ice_servers({}), ([], False))
+        self.assertEqual(ice_servers({}, data_dir=self.path), ([], False))
 
     def test_input_validation(self):
         for m in [None, {}, {'type': 'text', 'text': 'x'*1025}, {'type': 'move', 'dx': float('nan'), 'dy': 0}, {'type': 'key', 'key': 'invalid', 'down': True}, {'type': 'button', 'button': 'left', 'down': 1}]:
