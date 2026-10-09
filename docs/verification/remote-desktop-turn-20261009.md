@@ -1,6 +1,6 @@
 # Authenticated TURN deployment — 2026-10-09
 
-## State (public firewall configured; full cross-network acceptance pending)
+## State (5G relay video verified; further phone acceptance handed to user)
 
 User authorized deployment to their existing Ubuntu ECS and continuing phone acceptance. No SSH password or TURN shared secret is included in source, report, mobile assets or output.
 
@@ -30,4 +30,13 @@ User authorized deployment to their existing Ubuntu ECS and continuing phone acc
 - Forced-relay video attempt after adapter replacement failed before negotiation because no public relay allocation was obtained. Its temporary pairing was removed and original pairing IDs were preserved; no video/data relay pass is claimed.
 - After firewall configuration, public authenticated UDP and TCP TURN allocations passed (relay ports 49163 and 49164). TLS public allocation still fails; 5349 was intentionally not opened. These allocation results do not prove actual video/control forwarding.
 - First two post-firewall local video tests received video but nominated host/host paths despite SDP relay filtering/test transport policy; their relay assertions failed. They are not accepted as relay evidence. A subsequent test removed local host transports and then filtered server candidates to relay only; actual received video timed out. Cause remains unresolved and may involve the same-Mac/VPN/relay-to-relay test topology; it is not evidence of successful cross-network desktop.
-- All temporary test pairings were removed and original device IDs preserved. Actual relay-selected desktop video/data, cellular phone usability and allocation refresh beyond ten minutes remain unverified.
+- All temporary test pairings were removed and original device IDs preserved.
+
+## Real iPhone 5G follow-up
+
+- Screenshot confirmed 5G (not Wi-Fi), installed app 1.94/build94. Initial ICE gathering failed while an unexposed TLS fallback was advertised. Removed the 5349 URL from private local configuration rather than expanding cloud firewall scope.
+- Scoped server capture identified `486 Allocation Quota Reached` during browser candidate collection. Increased per-user allocation quota from 4 to 12, retaining total quota 40, bandwidth caps and the same eight relay ports. No payload/credential traces are included here; task-owned capture removed afterward.
+- With diagnostic UDP-only configuration, real phone received **2940 × 1912** desktop video and selected-pair-derived UI reported **TURN relay · 15 fps**, heartbeat RTT sample **56ms**. This is real cellular relay evidence, not the earlier same-Mac test. RTT is not end-to-end input-to-display latency.
+- One exact phone text send to a task-owned TextEdit document passed: `5G远控验收 abc中文🙂`. Earlier assertions failed when foreground focus moved elsewhere. The subsequent Enter/newline assertion failed; native Enter is not accepted as verified.
+- User stopped further automated acceptance. Restored UDP 3478 plus TCP 3478 fallback in persistent private configuration (TLS remains omitted); final combined UDP/TCP configuration was not reaccepted on the phone. Closed task-owned document without saving, released phone control/WDA session, stopped task-owned WDA/USB forwarding and SSH control connection. Kept existing userspace device tunnel, application, pairings and access enabled. Final management status: enabled true, busy false, turn_configured true.
+- Sustained latency, reliable repeated reconnects, TCP-only cellular fallback, allocation refresh beyond ten minutes and comprehensive keyboard/gesture behavior remain unverified; user takes over manual acceptance.
