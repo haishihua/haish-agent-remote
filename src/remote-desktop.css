@@ -60,8 +60,30 @@
 .desktop-text textarea { width: 100%; min-height: 85px; padding: 12px; border: 1px solid #384660; border-radius: 12px; background: #0d1420; color: #eef2ff; resize: vertical; font-size: 16px; }
 .desktop-text > div { display: flex; align-items: center; gap: 7px; margin-top: 8px; }
 .desktop-text > div > span { flex: 1; color: var(--desktop-muted); font-size: 11px; }
-.desktop-text.keyboard-open { position: fixed; z-index: 30; left: max(12px, calc((100vw - 456px)/2)); right: max(12px, calc((100vw - 456px)/2)); bottom: var(--desktop-keyboard-height); margin: 0; padding: 12px; background: #111b2a; border: 1px solid #394963; border-radius: 16px 16px 0 0; }
-.desktop-text.keyboard-open textarea { min-height: 64px; max-height: 90px; }
+.desktop-text.keyboard-open { position: fixed; z-index: 60; left: max(8px, env(safe-area-inset-left)); right: max(8px, env(safe-area-inset-right)); bottom: var(--desktop-keyboard-height); margin: 0; padding: 10px; background: #111b2a; border: 1px solid #394963; border-radius: 16px 16px 0 0; max-height: calc(100dvh - var(--desktop-keyboard-height) - var(--safe-top) - 8px); overflow-y: auto; }
+.desktop-keyboard-panel { min-height: 0; padding: 12px; }
+.desktop-keyboard-heading { display: flex; align-items: center; gap: 8px; }
+.desktop-keyboard-heading h2 { margin: 0; font-size: 15px; }
+.desktop-keyboard-heading > span { margin-left: auto; color: var(--desktop-muted); font-size: 11px; }
+.desktop-keyboard-heading button { padding: 6px; min-height: 36px; }
+.desktop-keyboard-panel .desktop-text { margin-top: 8px; }
+.desktop-keyboard-caption { color: var(--desktop-muted); font-size: 11px; }
+.desktop-keyboard-caption button { padding: 5px; min-height: 36px; margin-left: auto; }
+.desktop-keyboard-panel textarea { min-height: 60px; max-height: 120px; resize: none; margin-top: 6px; }
+.desktop-keyboard-panel .desktop-keyboard-submit > span { font-size: 10px; }
+.desktop-keyboard-keys { display: grid !important; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 5px !important; }
+.remote-desktop .desktop-keyboard-keys button { padding: 8px 3px; min-width: 0; min-height: 44px; border-radius: 10px; font-size: 12px; }
+.desktop-text.keyboard-open textarea { min-height: 48px; max-height: 64px; }
+@media (orientation: landscape) {
+  .desktop-keyboard-heading > span { display: none; }
+  .desktop-keyboard-panel:not(:has(.keyboard-open)) .desktop-keyboard-keys { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .desktop-text.keyboard-open { display: grid; grid-template-columns: minmax(0, 1fr) minmax(175px, 32%); gap: 6px 12px; padding: 8px 12px; }
+  .desktop-text.keyboard-open .desktop-keyboard-caption { grid-column: 1 / -1; margin: 0; }
+  .desktop-text.keyboard-open textarea { grid-column: 1; grid-row: 2 / 4; height: 100%; min-height: 60px; max-height: 100px; margin: 0; }
+  .desktop-text.keyboard-open .desktop-keyboard-submit { grid-column: 2; grid-row: 2; margin: 0; }
+  .desktop-text.keyboard-open .desktop-keyboard-keys { grid-column: 2; grid-row: 3; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; }
+  .remote-desktop .desktop-text.keyboard-open .desktop-keyboard-keys button { min-height: 32px; padding: 4px; }
+}
 .desktop-zoom { display: grid; grid-template-columns: 1fr auto; gap: 10px; margin-top: 20px; font-size: 13px; }
 .desktop-zoom input { grid-column: 1 / -1; width: 100%; accent-color: #7699ff; }
 .desktop-relay { display: flex; gap: 8px; align-items: center; margin-top: 17px; font-size: 12px; line-height: 1.5; }

@@ -1,11 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, ArrowDownUp, Command, Expand, Hand, Keyboard as KeyboardIcon, Maximize2, Minimize2, Monitor, MoreHorizontal, MousePointer2, Radio, Send, Signal, Square, X } from 'lucide-react';
+import { ArrowLeft, ArrowDownUp, Command, Expand, Hand, Keyboard as KeyboardIcon, Maximize2, Minimize2, Monitor, MoreHorizontal, MousePointer2, Radio, Signal, Square } from 'lucide-react';
 import { api } from './api.js';
 import { Keyboard } from '@capacitor/keyboard';
 import { KEYBOARD_FRAME_EVENT, keyboardInset } from './ios-keyboard.js';
 import { DesktopSession } from './desktop-session.js';
 import { DesktopGestures } from './desktop-gestures.js';
 import { desktopViewSize } from './desktop-view.js';
+import DesktopKeyboard from './desktop-keyboard.jsx';
 import './remote-desktop.css';
 
 const labels = { idle: 'Not connected', connecting: 'Connecting…', connected: 'Connected', reconnecting: 'Reconnecting…', failed: 'Connection failed' };
@@ -17,7 +18,7 @@ export default function RemoteDesktop({ onBack, computer = 'Computer' }) {
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   const session = useRef(null);
   const [state, setState] = useState('idle');
-  const [message, setMessage] = useState('Enable desktop access on your Mac, then connect.');
+  const [message, setMessage] = useState('');
   const [drag, setDrag] = useState(false);
   const [modifiers, setModifiers] = useState([]);
   const [text, setText] = useState('');
@@ -127,7 +128,7 @@ export default function RemoteDesktop({ onBack, computer = 'Computer' }) {
     </section> : null}
     {panel === 'touchpad' ? <div className="desktop-trackpad-actions" aria-label="Trackpad buttons and modifiers"><button disabled={!active} onClick={() => send({ type: 'click', button: 'right', count: 1 })}>Right click</button>{['Cmd', 'Shift'].map((m) => <button key={m} disabled={!active} aria-pressed={modifiers.includes(m)} onClick={() => toggleModifier(m)}>{m}</button>)}<button disabled={!active} onClick={() => { gestures.current.reset(true); setModifiers([]); }}>Release all</button></div> : null}
 
-    {panel === 'keyboard' ? <section className="desktop-panel"><h2><KeyboardIcon size={20} />Type on your computer</h2><p>English / 中文 · compose here, then send</p><form className={`desktop-text${keyboardHeight ? ' keyboard-open' : ''}`} style={{ '--desktop-keyboard-height': `${keyboardHeight}px` }} onSubmit={(e) => { e.preventDefault(); if (send({ type: 'text', text })) setText(''); else setMessage('Text was not sent. Check the connection and retry.'); }}><textarea disabled={!active} aria-label="English or Chinese text to type on Mac" maxLength={1024} value={text} onChange={(e) => setText(e.target.value)} placeholder="Type English / 中文…" /><div><span>{text.length}/1024</span><button className="desktop-primary" disabled={!active || !text}><Send size={16} />Send text</button>{keyboardHeight > 0 ? <button type="button" aria-label="Hide keyboard" onClick={() => { document.activeElement?.blur(); Keyboard.hide().catch(() => {}); }}><X size={18} /></button> : null}</div></form><div className="desktop-controls">{['Esc', 'Tab', 'Enter', 'Backspace'].map((k) => <button key={k} disabled={!active} onClick={() => key(k)}>{k}</button>)}</div></section> : null}
+    {panel === 'keyboard' ? <DesktopKeyboard active={active} keyboardHeight={keyboardHeight} text={text} setText={setText} send={send} onKey={key} onError={setMessage} /> : null}
 
     {panel === 'shortcuts' ? <section className="desktop-panel"><h2><Command size={20} />Keyboard shortcuts</h2><p>Modifiers stay held until toggled or released.</p><div className="desktop-controls">{['Cmd', 'Ctrl', 'Option', 'Shift'].map((m) => <button key={m} disabled={!active} aria-pressed={modifiers.includes(m)} onClick={() => toggleModifier(m)}>{m}</button>)}</div><div className="desktop-controls">{[['←', 'ArrowLeft'], ['↑', 'ArrowUp'], ['↓', 'ArrowDown'], ['→', 'ArrowRight']].map(([label, k]) => <button key={k} aria-label={k} disabled={!active} onClick={() => key(k)}>{label}</button>)}</div><div className="desktop-controls"><button disabled={!active} onClick={() => key('ArrowLeft', 'Ctrl')}>Space ←</button><button disabled={!active} onClick={() => key('ArrowRight', 'Ctrl')}>Space →</button><button disabled={!active} onClick={() => key('Tab', 'Cmd')}>⌘ Tab</button></div><button className="desktop-release" disabled={!active} onClick={() => { gestures.current.reset(true); setModifiers([]); }}>Release all keys & buttons</button></section> : null}
 
