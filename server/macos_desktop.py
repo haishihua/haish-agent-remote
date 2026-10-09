@@ -4,6 +4,7 @@ No permission prompts from network requests. Only the local management page may
 request TCC consent. CoreGraphics captures the main display on the 14.x target.
 """
 import platform
+from server.desktop_cursor import composite_cursor
 
 KEYS = {'Cmd': 55, 'Ctrl': 59, 'Option': 58, 'Shift': 56, 'Esc': 53,
         'Tab': 48, 'Enter': 36, 'Backspace': 51, 'ArrowLeft': 123,
@@ -55,13 +56,17 @@ class MacDesktop:
         # The buffer protocol copies the same bytes without that conversion.
         copied = q.CGDataProviderCopyData(q.CGImageGetDataProvider(image))
         data = memoryview(copied).tobytes()
+        scale = min(width/w, height/h, 1)
+        bounds = q.CGDisplayBounds(q.CGMainDisplayID())
+        pos = self._position()
+        data = composite_cursor(data, w, h, stride, (pos.x, pos.y),
+                                (bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height), scale)
         frame = VideoFrame(w, h, 'bgra')
         plane = frame.planes[0]
         if stride == plane.line_size:
             plane.update(data[:plane.buffer_size])
         else:
             plane.update(b''.join(data[y*stride:y*stride+w*4].ljust(plane.line_size, b'\0') for y in range(h)))
-        scale = min(width/w, height/h, 1)
         return frame.reformat(width=max(2, int(w*scale)//2*2), height=max(2, int(h*scale)//2*2), format='yuv420p')
 
     def _position(self):

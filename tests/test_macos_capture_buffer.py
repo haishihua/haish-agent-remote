@@ -18,7 +18,9 @@ class CaptureBufferTests(unittest.TestCase):
             plane = SimpleNamespace(line_size=8, buffer_size=16, update=lambda data: received.append(data))
             frame = SimpleNamespace(planes=[plane], reformat=lambda **kwargs: kwargs)
             q = SimpleNamespace(CGDisplayCreateImage=lambda _: object(), CGMainDisplayID=lambda: 1, CGImageGetWidth=lambda _: 2, CGImageGetHeight=lambda _: 2, CGImageGetBytesPerRow=lambda _: stride, CGImageGetDataProvider=lambda _: object(), CGDataProviderCopyData=lambda _: source)
+            q.CGDisplayBounds = lambda _: SimpleNamespace(origin=SimpleNamespace(x=0, y=0), size=SimpleNamespace(width=2, height=2))
             backend = object.__new__(MacDesktop); backend.q = q
+            backend._position = lambda: SimpleNamespace(x=-1, y=-1)
             with patch('av.VideoFrame', return_value=frame):
                 result = backend.capture()
             self.assertEqual(received, [b'abcdefghijklmnop'])
