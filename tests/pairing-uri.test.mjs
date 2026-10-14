@@ -5,14 +5,14 @@ import { parsePairingUri, validateStoredConnection } from '../src/pairing-uri.js
 
 test('parses the single supported Haish pairing URI format', () => {
   assert.deepEqual(
-    parsePairingUri('haish://pair?v=1&endpoint=https%3A%2F%2F47.97.24.242&code=12345678'),
-    { endpoint: 'https://47.97.24.242', code: '12345678' },
+    parsePairingUri('haish://pair?v=1&endpoint=https%3A%2F%2Fremote.example.com&code=12345678'),
+    { endpoint: 'https://remote.example.com', code: '12345678' },
   );
 });
 
 test('rejects insecure and non-canonical pairing endpoints', () => {
   assert.throws(
-    () => parsePairingUri('haish://pair?v=1&endpoint=http%3A%2F%2F47.97.24.242&code=12345678'),
+    () => parsePairingUri('haish://pair?v=1&endpoint=http%3A%2F%2Fremote.example.com&code=12345678'),
     /secure HTTPS origin/,
   );
   assert.throws(
@@ -46,10 +46,10 @@ test('rejects unsupported versions, fields, and pairing codes', () => {
 
 test('validates persisted native connections', () => {
   const token = 'a'.repeat(43);
-  assert.deepEqual(validateStoredConnection({ endpoint: 'https://47.97.24.242', token }), {
-    endpoint: 'https://47.97.24.242',
+  assert.deepEqual(validateStoredConnection({ endpoint: 'https://remote.example.com', token }), {
+    endpoint: 'https://remote.example.com',
     token,
   });
-  assert.equal(validateStoredConnection({ endpoint: 'http://47.97.24.242', token }), null);
-  assert.equal(validateStoredConnection({ endpoint: 'https://47.97.24.242', token: 'short' }), null);
+  assert.equal(validateStoredConnection({ endpoint: 'http://remote.example.com', token }), null);
+  assert.equal(validateStoredConnection({ endpoint: 'https://remote.example.com', token: 'short' }), null);
 });

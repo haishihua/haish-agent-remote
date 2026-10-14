@@ -178,15 +178,15 @@ class DeviceStoreTest(unittest.TestCase):
             self.assertEqual(store.mark_conversation_read("conversation-1", 3000, "desktop"), 3000)
             self.assertEqual(store.conversation_reads(), {"conversation-1": 3000})
 
-    @patch.dict("server.app.os.environ", {"HAISH_REMOTE_PUBLIC_ENDPOINT": "https://47.97.24.242"})
+    @patch.dict("server.app.os.environ", {"HAISH_REMOTE_PUBLIC_ENDPOINT": "https://remote.example.com"})
     def test_public_endpoint_builds_the_versioned_pairing_uri(self):
-        self.assertEqual(_public_endpoint(), "https://47.97.24.242")
+        self.assertEqual(_public_endpoint(), "https://remote.example.com")
         self.assertEqual(
             _pairing_uri("12345678"),
-            "haish://pair?v=1&endpoint=https%3A%2F%2F47.97.24.242&code=12345678",
+            "haish://pair?v=1&endpoint=https%3A%2F%2Fremote.example.com&code=12345678",
         )
 
-    @patch.dict("server.app.os.environ", {"HAISH_REMOTE_PUBLIC_ENDPOINT": "http://47.97.24.242"})
+    @patch.dict("server.app.os.environ", {"HAISH_REMOTE_PUBLIC_ENDPOINT": "http://remote.example.com"})
     def test_public_endpoint_rejects_http(self):
         with self.assertRaisesRegex(RuntimeError, "secure HTTPS origin"):
             _public_endpoint()

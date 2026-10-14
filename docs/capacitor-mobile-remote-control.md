@@ -34,7 +34,7 @@ JSON.parse(localStorage.getItem('haish_remote_request_diagnostics_v1') || '[]')
 iOS App（React + Capacitor）
         │ HTTPS + Bearer device token
         ▼
-https://47.97.24.242
+https://remote.example.com
         │ Nginx 443 → 127.0.0.1:18766
         │ FRP server 7000 ← encrypted tunnel
         ▼
@@ -49,7 +49,7 @@ Haish Agent runtime（127.0.0.1）
 
 当前已验证的部署约束：
 
-- 公网服务器：`47.97.24.242`；
+- 公网服务器：`remote.example.com`；
 - FRP server：TCP `7000`，需要云安全组放行；
 - Nginx：公网 `443` 转发到服务器本机 `127.0.0.1:18766`；
 - Mac FRP client：连接服务器 `7000`，将本机 `127.0.0.1:8766` 映射到服务器 `18766`；
@@ -153,7 +153,7 @@ haish-agent-remote/
 电脑客户端展示二维码，二维码只接受以下版本化 URI：
 
 ```text
-haish://pair?v=1&endpoint=https%3A%2F%2F47.97.24.242&code=12345678
+haish://pair?v=1&endpoint=https%3A%2F%2Fremote.example.com&code=12345678
 ```
 
 字段规则：
@@ -441,8 +441,8 @@ adapter 并返回 401，超限大小应返回 413；该探测不存储图片，�
 Mac 上的 Clash/TUN 等网络接管可能把 FRP 流量导向虚拟接口。启动 FRP 前应确认：
 
 ```bash
-route -n get 47.97.24.242
-nc -vz -G 5 47.97.24.242 7000
+route -n get remote.example.com
+nc -vz -G 5 remote.example.com 7000
 ```
 
 目标是使用真实网卡（通常为 `en0`），并能连通 TCP `7000`。FRP client 配置中的 token 必须与服务器一致；token 曾泄露时应重新生成并同时替换两端配置。
@@ -450,7 +450,7 @@ nc -vz -G 5 47.97.24.242 7000
 电脑端启动 adapter 时必须设置：
 
 ```bash
-HAISH_REMOTE_PUBLIC_ENDPOINT=https://47.97.24.242 python3 -m server.app serve
+HAISH_REMOTE_PUBLIC_ENDPOINT=https://remote.example.com python3 -m server.app serve
 ```
 
 桌面客户端从 loopback 调用 `POST /remote/pairing/start`，响应中的 `pairing_uri` 是二维码的唯一内容。
@@ -513,7 +513,7 @@ npm run mobile:sync
 - 最新移动端 UI：已通过 Actions 成功构建并验证 artifact 内容；
 - 会话名与线程锚点：手机 New task 建出的会话带的是桌面认得的占位名（`NEW_CONVERSATION_TITLE`），第一条消息一发出就由客户端 PATCH 成一句话摘要（`src/conversation-title.js` + `src/api.js` 的 `updateConversation`，与桌面 `startDeploy` 同一套判据：占位名 + 还没跑过任务才换；换名失败只报错条，消息照发）；线程从顶上往下排（与桌面 `.chat-message-list` 一致，内容比窗口短时空白落在下面）；
 - 本地 adapter：`127.0.0.1:8766` 正常，但跑的是 release `adapter-v0.2.0` 的二进制（桌面 `scripts/remote-adapter.lock.json` 钉住的），比本仓源码旧：上面那条 `PATCH` 路由与 CORS 放行要到下一版 adapter release 才会跟着二进制上机（现在预检回的是 `400 Disallowed CORS method`）；
-- 公网 HTTPS：`https://47.97.24.242/remote/status` 已验证返回 `200`；
+- 公网 HTTPS：`https://remote.example.com/remote/status` 已验证返回 `200`；
 - FRP：服务器 `7000` 与 Mac client 隧道已验证可用；
 - SideStore 真机安装：仍需在目标 iPhone 上执行；
 - 签名：当前使用 SideStore 个人签名，不是 App Store/TestFlight 分发。
