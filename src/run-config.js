@@ -19,6 +19,37 @@ export const THINKING_OPTIONS = [
   { id: 'xhigh', label: 'XHigh' },
 ];
 
+export const LAST_RUN_CONFIG_STORAGE_KEY = 'haish_remote_last_run_config_v1';
+
+export function loadLastRunConfig(storage = globalThis.localStorage) {
+  try {
+    const raw = storage?.getItem(LAST_RUN_CONFIG_STORAGE_KEY);
+    const value = raw ? JSON.parse(raw) : null;
+    if (!value || typeof value !== 'object') return null;
+    return {
+      providerId: String(value.providerId || '').trim(),
+      modelId: String(value.modelId || '').trim(),
+      agentId: String(value.agentId || '').trim(),
+      thinking: THINKING_OPTIONS.some((item) => item.id === value.thinking) ? value.thinking : 'high',
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function saveLastRunConfig(config, storage = globalThis.localStorage) {
+  try {
+    storage?.setItem(LAST_RUN_CONFIG_STORAGE_KEY, JSON.stringify({
+      providerId: String(config?.providerId || '').trim(),
+      modelId: String(config?.modelId || '').trim(),
+      agentId: String(config?.agentId || '').trim(),
+      thinking: THINKING_OPTIONS.some((item) => item.id === config?.thinking) ? config.thinking : 'high',
+    }));
+  } catch {
+    // WebView storage can be unavailable; run configuration still works in memory.
+  }
+}
+
 function uniqueModels(...groups) {
   const seen = new Set();
   return groups.flat().map((item) => {
@@ -166,7 +197,7 @@ function providerFromSelector(providers, selector, taskModel) {
 // `provider_key`, `model` and `reasoning_effort` live on the task (the runtime
 // stores nothing of the sort on the conversation), so the latest task that recorded
 // how it ran is the only record of what the conversation was configured with.
-export function resolveRunConfig(conversation, providers, agents) {
+export function resolveRunConfig(conversation, providers, agents, lastRunConfig = null) {
   const tasks = Array.isArray(conversation?.tasks) ? conversation.tasks : [];
   const latestTask = tasks.find((task) => task?.task_id === conversation?.last_task_id) || tasks.at(-1) || null;
   const recordedTask = taskProviderSelector(latestTask)
@@ -180,12 +211,19 @@ export function resolveRunConfig(conversation, providers, agents) {
     || providers.find((item) => modelMatches(item, taskModel))
     || providers.find((item) => providerKeyMatches(item, taskProvider))
     || providers[0] || null;
+  const hasRecordedTask = Boolean(recordedTask && (taskModel || taskProviderSelector(recordedTask) || recordedTask.agent_id || recordedTask.profile_id));
+  const rememberedProvider = !hasRecordedTask && lastRunConfig?.providerId
+    ? providers.find((item) => item.id === lastRunConfig.providerId) : null;
+  const selectedProvider = rememberedProvider || provider;
   const conversationAgentId = String(recordedTask?.agent_id || recordedTask?.profile_id || conversation?.agent_id || conversation?.profile_id || '').trim();
-  const agentId = conversationAgentId || agents[0]?.id || '';
-  const thinking = [recordedTask?.reasoning_effort, taskOptions?.reasoning_effort, provider?.reasoningEffort]
+  const agentId = conversationAgentId || (!hasRecordedTask && lastRunConfig?.agentId) || agents[0]?.id || '';
+  const thinking = [recordedTask?.reasoning_effort, taskOptions?.reasoning_effort,
+    (!hasRecordedTask && lastRunConfig?.thinking), selectedProvider?.reasoningEffort]
     .find((value) => THINKING_OPTIONS.some((item) => item.id === value)) || 'high';
-  const modelId = String(taskModel || provider?.defaultModelId || provider?.models[0]?.id || '').trim();
-  return { agentId, providerId: provider?.id || '', modelId, thinking };
+  const rememberedModel = !hasRecordedTask && rememberedProvider && lastRunConfig.modelId
+    ? lastRunConfig.modelId : '';
+  const modelId = String(taskModel || rememberedModel || selectedProvider?.defaultModelId || selectedProvider?.models[0]?.id || '').trim();
+  return { agentId, providerId: selectedProvider?.id || '', modelId, thinking };
 }
 
 // The provider model list is fetched from the runtime and can lag behind the model

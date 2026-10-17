@@ -103,6 +103,8 @@ import {
   mergeProviderModels,
   modelOptionsFromTasks,
   providerOptionsFromSettings,
+  loadLastRunConfig,
+  saveLastRunConfig,
   resolveRunConfig,
   taskOptionsForRunConfig,
 } from './run-config.js';
@@ -837,6 +839,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   const [agents, setAgents] = useState([]);
   const [providers, setProviders] = useState([]);
   const [runConfig, setRunConfig] = useState(null);
+  const [lastRunConfig] = useState(() => loadLastRunConfig());
   const [models, setModels] = useState([]);
   const [modelLoading, setModelLoading] = useState(false);
   const [showReasoningPicker, setShowReasoningPicker] = useState(false);
@@ -1156,8 +1159,8 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
 
   useEffect(() => {
     if (!conversationHydrated || !conversation || !providers.length || runConfig) return;
-    setRunConfig(resolveRunConfig(conversation, providers, agents));
-  }, [agents, conversation, conversationHydrated, providers, runConfig]);
+    setRunConfig(resolveRunConfig(conversation, providers, agents, lastRunConfig));
+  }, [agents, conversation, conversationHydrated, lastRunConfig, providers, runConfig]);
 
   useEffect(() => {
     const provider = providers.find((item) => item.id === runConfigRef.current?.providerId);
@@ -1508,6 +1511,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
       }
 
       interruptedRunRef.current = null;
+      saveLastRunConfig(runConfig);
       localStreamRef.current = true;
       // 第一条消息给会话起名：`New Chat` 这种占位名 + 还没跑过任务时，换成 `titleFromTaskText` 的
       // 一句话摘要（桌面在提交那一趟里做的是同一件事：`startDeploy` 算名字 + 客户端 PATCH）。
@@ -1928,7 +1932,11 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
           </div>
         </section>
       </div> : null}
-      {showRunConfig && runConfig ? <RunConfigSheet config={runConfig} agentLabel={conversation?.profile_display_name} agentLocked={agentLocked} agents={agents} providers={providers} models={models} modelLoading={modelLoading} onChange={setRunConfig} onClose={() => setShowRunConfig(false)} /> : null}
+      {showRunConfig && runConfig ? <RunConfigSheet config={runConfig} agentLabel={conversation?.profile_display_name} agentLocked={agentLocked} agents={agents} providers={providers} models={models} modelLoading={modelLoading} onChange={(update) => setRunConfig((current) => {
+        const next = typeof update === 'function' ? update(current) : update;
+        saveLastRunConfig(next);
+        return next;
+      })} onClose={() => setShowRunConfig(false)} /> : null}
       <ImagePreview image={previewImage} onClose={() => setPreviewImage(null)} />
     </main>
   );

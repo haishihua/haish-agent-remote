@@ -9,8 +9,30 @@ import {
   resolveRunConfig,
   taskOptionsForRunConfig,
   withCurrentModel,
+  loadLastRunConfig,
+  saveLastRunConfig,
 } from '../src/run-config.js';
 
+test('a new conversation uses the remembered client configuration instead of the first remote profile', () => {
+  const providers = providerOptionsFromSettings({
+    profiles: [
+      { id: 'openai', provider: 'openai', model: 'gpt-6.1-sol' },
+      { id: 'router', provider: 'custom', name: 'ai router', model: 'deepseek-v4-flash' },
+    ],
+  });
+  assert.deepEqual(resolveRunConfig({}, providers, [], {
+    providerId: 'router', modelId: 'deepseek-v4-flash', agentId: 'simple', thinking: 'medium',
+  }), {
+    providerId: 'router', modelId: 'deepseek-v4-flash', agentId: 'simple', thinking: 'medium',
+  });
+});
+
+test('remembered configuration round-trips through guarded storage', () => {
+  const values = new Map();
+  const storage = { getItem: (key) => values.get(key) || null, setItem: (key, value) => values.set(key, value) };
+  saveLastRunConfig({ providerId: 'router', modelId: 'model-a', agentId: 'agent', thinking: 'xhigh' }, storage);
+  assert.deepEqual(loadLastRunConfig(storage), { providerId: 'router', modelId: 'model-a', agentId: 'agent', thinking: 'xhigh' });
+});
 test('runtime config uses the configured provider selector and conversation agent', () => {
   assert.deepEqual(THINKING_OPTIONS.map((item) => item.id), ['low', 'medium', 'high', 'xhigh']);
   const providers = providerOptionsFromSettings({
