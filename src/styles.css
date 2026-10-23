@@ -576,6 +576,19 @@ button.pending-banner svg:last-child { margin-left: auto; opacity: 0.7; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes connection-pulse { 50% { opacity: 0.45; transform: scale(0.82); } }
 
+/* 轻提示（见 src/toast.jsx）：动作造成的一句话反馈，不再占页面版面。
+   容器独占 fixed 定位、pointer-events 关掉（绝不挡手势，也不挡按钮），
+   顶部让过刘海；宽度跟着详情页那 480px 走。 */
+.app-toast-stack { position: fixed; z-index: 1600; top: calc(12px + var(--safe-top)); left: 50%; display: flex; width: min(calc(100vw - 24px), 452px); flex-direction: column; align-items: center; gap: 8px; pointer-events: none; transform: translateX(-50%); }
+.app-toast { display: inline-flex; max-width: 100%; padding: 9px 13px 9px 11px; align-items: center; gap: 9px; border: 1px solid rgba(120, 137, 177, 0.28); border-radius: 12px; background: rgba(11, 16, 29, 0.94); box-shadow: 0 14px 34px rgba(0, 0, 0, 0.34); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); animation: toast-in 240ms ease-out; }
+.app-toast-success { border-color: rgba(96, 211, 160, 0.34); --toast-icon: #4fd39b; }
+.app-toast-error { border-color: rgba(236, 94, 111, 0.34); --toast-icon: #f4728a; }
+.app-toast-warn { border-color: rgba(240, 176, 72, 0.34); --toast-icon: #e8ae4c; }
+.app-toast-info { border-color: rgba(120, 168, 255, 0.34); --toast-icon: #7aa4ff; }
+.app-toast-icon { display: inline-flex; width: 15px; height: 15px; flex: 0 0 15px; align-items: center; justify-content: center; color: var(--toast-icon, #7aa4ff); image-rendering: auto; }
+.app-toast-message { color: #e9eefc; font-size: 12.5px; font-weight: 500; line-height: 1.45; letter-spacing: 0.006em; word-break: break-word; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+
 
 
 

@@ -720,3 +720,42 @@ test('folding one stream event only respawns the live row', () => {
     assert.equal(after[index].traceTimeline, row.traceTimeline, `第 ${index} 行没变，时间线不该换身份`);
   });
 });
+
+test('a failed last turn is a row whose task id is what the Retry gate compares', () => {
+  // 「Retry 点不动」的根因链有两段：组件从来不传 onRetry，以及**传的时候比的是哪个 id**。
+  // App 拿 `conversation.last_task_id` 当准入（runtime 的 rerun 只收最新一轮的 failed），
+  // 行上的 `taskId` 必须就是它——差一位，按钮就永远是那颗禁用的药丸。
+  const conversation = {
+    conversation_id: 'convo-1',
+    last_task_id: 'task-1',
+    agent_id: 'preset.general',
+    messages: [
+      { message_id: 'm1', role: 'user', content: 'go', task_id: 'task-1', created_at: '2026-09-19T00:00:00Z' },
+    ],
+    tasks: [{
+      task_id: 'task-1',
+      status: 'failed',
+      request_message: 'go',
+      error: 'Model returned 400',
+      created_at: '2026-09-19T00:00:00Z',
+      completed_at: '2026-09-19T00:00:05Z',
+    }],
+  };
+  const replies = orphanTaskReplies(conversation);
+  const rows = buildChatRows({
+    conversationId: 'convo-1',
+    conversation,
+    messages: conversation.messages,
+    tasksById: new Map([['task-1', conversation.tasks[0]]]),
+    runtimeTasks: { 'task-1': runtimeTaskFromSummary(conversation.tasks[0]) },
+    orphanReplyByAnchor: orphanReplyAnchors(conversation.messages, replies),
+    agentOptions: AGENT_OPTIONS,
+  });
+
+  const failedRow = rows.at(-1);
+  assert.equal(failedRow.role, 'agent');
+  assert.equal(failedRow.status, 'failed');
+  assert.equal(failedRow.taskId, conversation.last_task_id);
+  // 重跑时被顶掉的那一行就是这个 id（App 的 retriedTaskIds 过滤用同一把钥匙）。
+  assert.match(failedRow.text, /Model returned 400/);
+});

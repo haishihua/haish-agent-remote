@@ -143,7 +143,7 @@ export function stabilizeRows(cache, rows) {
   return stable;
 }
 
-function ChatThreadComponent({ conversationId = '', rows = [], loadTaskTrace, annotationNumbers = null, onPreviewImage, onAnnotationJump }) {
+function ChatThreadComponent({ conversationId = '', rows = [], loadTaskTrace, annotationNumbers = null, onPreviewImage, onAnnotationJump, onRetryTask = null, retryableTaskId = '', retryPendingTaskId = '', retryBlocked = false }) {
   const rowCacheRef = React.useRef(new Map());
   const viewCacheRef = React.useRef(new Map());
   const [imageVersion, bumpImageVersion] = React.useReducer((value) => value + 1, 0);
@@ -206,6 +206,10 @@ function ChatThreadComponent({ conversationId = '', rows = [], loadTaskTrace, an
 
   return viewRows.map((row) => {
     const needsTrace = row.role === 'agent' && row.traceHydrated === false && row.taskId;
+    // Retry 只给「这个会话的最后一轮、状态 failed」那一行：runtime 的 `rerun` 也只接
+    // 这种任务，其余失败行保持桌面那颗带 title 提示的禁用按钮（ErrorState 自己画）。
+    const retryable = Boolean(onRetryTask) && row.role === 'agent' && row.status === 'failed'
+      && row.taskId && row.taskId === retryableTaskId;
     return (
       <div className="chat-row" key={row.id}>
         <ChatMessageRow
@@ -213,7 +217,9 @@ function ChatThreadComponent({ conversationId = '', rows = [], loadTaskTrace, an
           annotationNumbers={annotationNumbers || undefined}
           onAnnotationJump={onAnnotationJump}
           onPreviewImage={onPreviewImage}
-          actionsDisabled={Boolean(row.streaming)}
+          onRetry={retryable ? onRetryTask : undefined}
+          retryPending={Boolean(retryPendingTaskId) && row.taskId === retryPendingTaskId}
+          actionsDisabled={Boolean(row.streaming) || retryBlocked}
         />
         {needsTrace ? <span ref={(node) => attachRow(node, row.taskId)} aria-hidden="true" /> : null}
       </div>

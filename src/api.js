@@ -107,6 +107,36 @@ export async function requestWithTimeout(path, timeoutMs = 8_000) {
   }
 }
 
+// One ETag per rewriteable GET. The adapter revalidates (`304 Not Modified`)
+// instead of resending the ~0.5 MB directory every poll; the cached body keeps
+// the last 200 response so a 304 resolves with the previous payload. No cache
+// entry means the request goes out without `If-None-Match` (first load, or after
+// an adapter restart changed every tag).
+const etagCache = new Map();
+
+async function requestWithEtag(path) {
+  const cached = etagCache.get(path);
+  const response = await remoteFetch(path, {
+    ...(cached?.etag ? { headers: { 'If-None-Match': cached.etag } } : {}),
+  });
+  if (response.status === 304) {
+    if (!cached) throw new Error(`Unexpected 304 without a cached response for ${path}`);
+    etagCache.set(path, { ...cached, at: Date.now() });
+    return cached.body;
+  }
+  const body = await consumeResponse(response, 'json-read', async (context) => {
+    if (response.status === 204) return null;
+    const text = await response.text();
+    context.responseChars = text.length;
+    context.stage = 'json-parse';
+    return JSON.parse(text);
+  });
+  const etag = response.headers.get('etag');
+  if (etag) etagCache.set(path, { etag, body, at: Date.now() });
+  else etagCache.delete(path);
+  return body;
+}
+
 async function desktopRequest(path, init, timeoutMs) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -135,7 +165,7 @@ export const api = {
     if (isNativeApp) await saveNativeConnection(endpoint, result.token);
     return result;
   },
-  projects: () => request('/api/projects?execution_mode=chat'),
+  projects: () => requestWithEtag('/api/projects?execution_mode=chat'),
   conversation: (id) => request(`/api/conversations/${encodeURIComponent(id)}`),
   // `afterEventId` is the desktop's incremental protocol: the runtime answers
   // with `events_delta: true` and only the events after the cursor, or with the
@@ -221,6 +251,20 @@ export const api = {
     await consumeResponse(response, 'stream-open', async () => {
       // Acceptance and callbacks keep their existing order; diagnostics must not
       // change draft recovery or introduce task-start retries.
+      onOpen?.();
+      await readNdjson(response, onEvent);
+    });
+  },
+  // 重跑会话最新一轮失败的任务（桌面那个 Retry）：适配器把它当 `task.start` 的 `rerun`
+  // 命令发到 runtime，回来还是同一份 NDJSON 事件流（新任务号在事件里）。不带正文——
+  // `rerun` 不接受改过的文字，那是 `edit`。
+  retryTask: async (conversationId, taskId, runOptions, onEvent, onOpen) => {
+    const response = await remoteFetch(`/remote/conversations/${encodeURIComponent(conversationId)}/tasks/${encodeURIComponent(taskId)}/retry`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ options: runOptions }),
+    });
+    await consumeResponse(response, 'stream-open', async () => {
       onOpen?.();
       await readNdjson(response, onEvent);
     });

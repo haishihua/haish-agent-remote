@@ -21,6 +21,27 @@ export const THINKING_OPTIONS = [
 
 export const LAST_RUN_CONFIG_STORAGE_KEY = 'haish_remote_last_run_config_v1';
 
+// 每个会话在**这台手机**上用过的那套运行配置。会话本身只记下任务是怎么跑的
+// （runtime 的 `request_options`），手机自己改过的 provider / model / thinking 没有
+// 任何服务端字段可放——桌面那边也不会被改（适配器压根不允许写 settings/llm）。
+// 不缓存的话，一离开会话再回来就只剩「桌面最后一次跑的那套」，用户每次都得重选一遍。
+export const CONVERSATION_RUN_CONFIG_STORAGE_KEY = 'haish_remote_conversation_run_config_v1';
+// 会话 id 是 runtime 侧生成的字符串，每台手机都可能有上千条历史；留最近用过的这些就够，
+// 超出的按最后写入时间淘汰（localStorage 是同步的，不能让它无限长）。
+const CONVERSATION_RUN_CONFIG_LIMIT = 200;
+
+function normalizedRunConfig(value) {
+  if (!value || typeof value !== 'object') return null;
+  const providerId = String(value.providerId || '').trim();
+  if (!providerId) return null;
+  return {
+    providerId,
+    modelId: String(value.modelId || '').trim(),
+    agentId: String(value.agentId || '').trim(),
+    thinking: THINKING_OPTIONS.some((item) => item.id === value.thinking) ? value.thinking : 'high',
+  };
+}
+
 export function loadLastRunConfig(storage = globalThis.localStorage) {
   try {
     const raw = storage?.getItem(LAST_RUN_CONFIG_STORAGE_KEY);
@@ -47,6 +68,54 @@ export function saveLastRunConfig(config, storage = globalThis.localStorage) {
     }));
   } catch {
     // WebView storage can be unavailable; run configuration still works in memory.
+  }
+}
+
+function readConversationRunConfigs(storage) {
+  try {
+    const raw = storage?.getItem(CONVERSATION_RUN_CONFIG_STORAGE_KEY);
+    const value = raw ? JSON.parse(raw) : null;
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+/** 这台手机在这个会话里最后选定的运行配置；没选过就是 `null`。 */
+export function loadConversationRunConfig(conversationId, storage = globalThis.localStorage) {
+  const key = String(conversationId || '').trim();
+  if (!key) return null;
+  const entry = readConversationRunConfigs(storage)[key];
+  return normalizedRunConfig(entry);
+}
+
+/** 记下这个会话的配置。写坏了也不影响本轮运行（内存里那份照旧）。 */
+export function rememberConversationRunConfig(conversationId, config, storage = globalThis.localStorage) {
+  const key = String(conversationId || '').trim();
+  const value = normalizedRunConfig(config);
+  if (!key || !value) return;
+  try {
+    const entries = readConversationRunConfigs(storage);
+    entries[key] = { ...value, at: Date.now() };
+    const keys = Object.keys(entries);
+    if (keys.length > CONVERSATION_RUN_CONFIG_LIMIT) {
+      keys
+        .sort((left, right) => Number(entries[left]?.at || 0) - Number(entries[right]?.at || 0))
+        .slice(0, keys.length - CONVERSATION_RUN_CONFIG_LIMIT)
+        .forEach((staleKey) => { delete entries[staleKey]; });
+    }
+    storage?.setItem(CONVERSATION_RUN_CONFIG_STORAGE_KEY, JSON.stringify(entries));
+  } catch {
+    // WebView storage can be unavailable; run configuration still works in memory.
+  }
+}
+
+/** 换一台电脑配对（登出）时整份丢掉：会话 id 是上一台机器的。 */
+export function forgetRunConfigCache(storage = globalThis.localStorage) {
+  try {
+    storage?.removeItem(CONVERSATION_RUN_CONFIG_STORAGE_KEY);
+  } catch {
+    // Nothing to clear when storage is unavailable.
   }
 }
 
@@ -197,7 +266,7 @@ function providerFromSelector(providers, selector, taskModel) {
 // `provider_key`, `model` and `reasoning_effort` live on the task (the runtime
 // stores nothing of the sort on the conversation), so the latest task that recorded
 // how it ran is the only record of what the conversation was configured with.
-export function resolveRunConfig(conversation, providers, agents, lastRunConfig = null) {
+export function resolveRunConfig(conversation, providers, agents, lastRunConfig = null, rememberedConfig = null) {
   const tasks = Array.isArray(conversation?.tasks) ? conversation.tasks : [];
   const latestTask = tasks.find((task) => task?.task_id === conversation?.last_task_id) || tasks.at(-1) || null;
   const recordedTask = taskProviderSelector(latestTask)
@@ -216,7 +285,24 @@ export function resolveRunConfig(conversation, providers, agents, lastRunConfig 
     ? providers.find((item) => item.id === lastRunConfig.providerId) : null;
   const selectedProvider = rememberedProvider || provider;
   const conversationAgentId = String(recordedTask?.agent_id || recordedTask?.profile_id || conversation?.agent_id || conversation?.profile_id || '').trim();
-  const agentId = conversationAgentId || (!hasRecordedTask && lastRunConfig?.agentId) || agents[0]?.id || '';
+  // 这台手机在这个会话里手动选过的 provider 优先于「任务记录那套」（那是桌面/上一次
+  // 跑出来的结果）：不然用户每换一次会话就得把 provider、model、thinking 重新挑一遍。
+  // 记录里的 agent 仍然优先——首个 chat 轮之后 runtime 写死了绑定，换它一定 400。
+  const cachedProvider = rememberedConfig?.providerId
+    ? providers.find((item) => item.id === rememberedConfig.providerId) : null;
+  const agentId = conversationAgentId || String(rememberedConfig?.agentId || '').trim()
+    || (!hasRecordedTask && lastRunConfig?.agentId) || agents[0]?.id || '';
+  if (cachedProvider) {
+    return {
+      agentId,
+      providerId: cachedProvider.id,
+      // 模型照旧用记住的那个：模型目录是「配置 + 用过的」合并出来的，认不出不等于不存在
+      // （见 `withCurrentModel`）。猜一个默认值反而会把用户刚选的模型默默换掉。
+      modelId: String(rememberedConfig.modelId || cachedProvider.defaultModelId || cachedProvider.models[0]?.id || '').trim(),
+      thinking: THINKING_OPTIONS.some((item) => item.id === rememberedConfig.thinking)
+        ? rememberedConfig.thinking : 'high',
+    };
+  }
   const thinking = [recordedTask?.reasoning_effort, taskOptions?.reasoning_effort,
     (!hasRecordedTask && lastRunConfig?.thinking), selectedProvider?.reasoningEffort]
     .find((value) => THINKING_OPTIONS.some((item) => item.id === value)) || 'high';

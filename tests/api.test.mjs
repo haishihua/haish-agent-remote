@@ -247,3 +247,112 @@ test('the first message renames the conversation through the core PATCH route', 
     globalThis.fetch = originalFetch;
   }
 });
+
+test('project directory revalidates with If-None-Match and reuses the cached body on 304', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  const directory = { projects: [{ name: 'haish-agent', conversations: [] }] };
+  const etag = 'W/"haish-projects-abc123"';
+  globalThis.fetch = async (path, init = {}) => {
+    calls.push([path, init.headers?.['If-None-Match'] ?? null]);
+    if (init.headers?.['If-None-Match'] === etag) return new Response(null, { status: 304, headers: { ETag: etag } });
+    return new Response(JSON.stringify(directory), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json', ETag: etag },
+    });
+  };
+
+  try {
+    const first = await api.projects();
+    assert.deepEqual(first, directory);
+    assert.equal(calls[0][1], null, 'first load has no cached ETag');
+
+    const second = await api.projects();
+    assert.deepEqual(second, directory, 'a 304 resolves with the previous payload');
+    assert.equal(calls[1][1], etag, 'the second request revalidates with If-None-Match');
+    assert.equal(calls.length, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('a changed directory downloads a fresh body and adopts its new ETag', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  // 版本化服务器：If-None-Match 命中当前版本就 304，否则下发当前 body+ETag。
+  // 不假设模块缓存的初始状态（上一个测试可能已经留下条目）。
+  let current = { etag: 'W/"dir-v1"', body: { projects: [{ name: 'v1', conversations: [] }] } };
+  globalThis.fetch = async (_path, init = {}) => {
+    const incoming = init.headers?.['If-None-Match'] ?? null;
+    calls.push(incoming);
+    if (incoming === current.etag) return new Response(null, { status: 304, headers: { ETag: current.etag } });
+    return new Response(JSON.stringify(current.body), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json', ETag: current.etag },
+    });
+  };
+
+  try {
+    assert.deepEqual(await api.projects(), current.body);
+    assert.deepEqual(await api.projects(), current.body, 'unchanged directory short-circuits on 304');
+    assert.equal(calls.at(-1), current.etag, 'revalidation carries the adopted ETag');
+
+    current = { etag: 'W/"dir-v2"', body: { projects: [{ name: 'v2', conversations: [] }] } };
+    assert.deepEqual(await api.projects(), current.body, 'changed directory downloads v2');
+    assert.deepEqual(await api.projects(), current.body, 'the adopted v2 ETag also short-circuits');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('retry reuses the task stream contract on the adapter rerun route', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (path, init = {}) => {
+    calls.push({ path, init });
+    return new Response('{"type":"run_started","task_id":"task-2"}\n{"type":"run_finished","task_id":"task-2"}\n', {
+      status: 200,
+      headers: { 'Content-Type': 'application/x-ndjson' },
+    });
+  };
+
+  try {
+    const events = [];
+    let opened = false;
+    await api.retryTask(
+      'conversation-1',
+      'task-1',
+      { provider: 'chat:custom:router', model_id: 'deepseek-v4-flash', agent_id: 'simple', reasoning_effort: 'low' },
+      (event) => events.push(event),
+      () => { opened = true; },
+    );
+
+    assert.equal(calls[0].path, '/remote/conversations/conversation-1/tasks/task-1/retry');
+    assert.equal(calls[0].init.method, 'POST');
+    // 运行配置原样交给适配器（它只挑 provider / model / reasoning_effort 发给 runtime）。
+    assert.deepEqual(JSON.parse(calls[0].init.body), {
+      options: { provider: 'chat:custom:router', model_id: 'deepseek-v4-flash', agent_id: 'simple', reasoning_effort: 'low' },
+    });
+    assert.equal(opened, true);
+    assert.deepEqual(events.map((event) => event.type), ['run_started', 'run_finished']);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('a rejected retry keeps the runtime verdict for the row', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ detail: 'Only the latest turn can be retried.' }), {
+    status: 409,
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+  try {
+    await assert.rejects(api.retryTask('conversation-1', 'task-1', {}, () => {}), {
+      message: /Only the latest turn can be retried\./,
+      status: 409,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

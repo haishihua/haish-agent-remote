@@ -67,9 +67,8 @@
 .settings-revoke svg { flex-shrink: 0; }
 .settings-revoke:not(:disabled):hover { background: #ff7f8c1a; }
 .settings-loading, .settings-empty { display: flex; margin: 0; padding: 24px 16px; align-items: center; justify-content: center; gap: 9px; color: #a7b5cd; font-size: 13px; }
-.settings-loading svg, .settings-error svg, .settings-notice svg { flex-shrink: 0; }
+.settings-loading svg, .settings-error svg { flex-shrink: 0; }
 .settings-error { display: flex; margin: 14px 0 0; align-items: flex-start; gap: 8px; color: #ff9aa8; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
-.settings-notice { display: flex; margin: 14px 0 0; align-items: center; gap: 8px; color: #68e2ad; font-size: 12px; }
 .settings-list-failure > p:not(.settings-error) { margin: 7px 0; color: #99a8c3; font-size: 12px; line-height: 1.6; }
 .settings-list-failure button { min-height: 44px; padding: 8px 12px; border: 1px solid #2d3f5f; border-radius: 10px; background: #172238; color: #bfd4f7; font-size: 12px; }
 

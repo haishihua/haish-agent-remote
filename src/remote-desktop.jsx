@@ -12,7 +12,7 @@ import './remote-desktop.css';
 const labels = { idle: 'Not connected', connecting: 'Connecting…', connected: 'Connected', reconnecting: 'Reconnecting…', failed: 'Connection failed' };
 const tabs = [['touchpad', MousePointer2, 'Touchpad'], ['keyboard', KeyboardIcon, 'Keyboard'], ['shortcuts', Command, 'Shortcuts'], ['more', MoreHorizontal, 'More']];
 
-export default function RemoteDesktop({ onBack, computer = 'Computer' }) {
+export default function RemoteDesktop({ onBack, computer = 'Computer', onToast }) {
   const video = useRef(null);
   const viewport = useRef(null);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
@@ -128,7 +128,7 @@ export default function RemoteDesktop({ onBack, computer = 'Computer' }) {
     </section> : null}
     {panel === 'touchpad' ? <div className="desktop-trackpad-actions" aria-label="Trackpad buttons and modifiers"><button disabled={!active} onClick={() => send({ type: 'click', button: 'right', count: 1 })}>Right click</button>{['Cmd', 'Shift'].map((m) => <button key={m} disabled={!active} aria-pressed={modifiers.includes(m)} onClick={() => toggleModifier(m)}>{m}</button>)}<button disabled={!active} onClick={() => { gestures.current.reset(true); setModifiers([]); }}>Release all</button></div> : null}
 
-    {panel === 'keyboard' ? <DesktopKeyboard active={active} keyboardHeight={keyboardHeight} text={text} setText={setText} send={send} onKey={key} onError={setMessage} /> : null}
+    {panel === 'keyboard' ? <DesktopKeyboard active={active} keyboardHeight={keyboardHeight} text={text} setText={setText} send={send} onKey={key} onToast={onToast} /> : null}
 
     {panel === 'shortcuts' ? <section className="desktop-panel"><h2><Command size={20} />Keyboard shortcuts</h2><p>Modifiers stay held until toggled or released.</p><div className="desktop-controls">{['Cmd', 'Ctrl', 'Option', 'Shift'].map((m) => <button key={m} disabled={!active} aria-pressed={modifiers.includes(m)} onClick={() => toggleModifier(m)}>{m}</button>)}</div><div className="desktop-controls">{[['←', 'ArrowLeft'], ['↑', 'ArrowUp'], ['↓', 'ArrowDown'], ['→', 'ArrowRight']].map(([label, k]) => <button key={k} aria-label={k} disabled={!active} onClick={() => key(k)}>{label}</button>)}</div><div className="desktop-controls"><button disabled={!active} onClick={() => key('ArrowLeft', 'Ctrl')}>Space ←</button><button disabled={!active} onClick={() => key('ArrowRight', 'Ctrl')}>Space →</button><button disabled={!active} onClick={() => key('Tab', 'Cmd')}>⌘ Tab</button></div><button className="desktop-release" disabled={!active} onClick={() => { gestures.current.reset(true); setModifiers([]); }}>Release all keys & buttons</button></section> : null}
 

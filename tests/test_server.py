@@ -1,4 +1,5 @@
 import asyncio
+import gzip
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import threading
@@ -401,6 +402,38 @@ class RemoteProxyTest(unittest.TestCase):
             response = client.put("/api/settings/llm", headers=headers, json={"profiles": []})
             self.assertEqual(response.status_code, 403)
 
+    def test_projects_listing_answers_304_for_a_matching_if_none_match(self):
+        payload = {"projects": [{"project_id": "project-1", "conversations": []}]}
+        with TemporaryDirectory() as directory, FakeRuntimeHttp({"/api/projects": payload}) as runtime:
+            client, headers = self._client(Path(directory))
+            with patch("server.app.discover_upstream", return_value=runtime.upstream()):
+                first = client.get("/api/projects", headers=headers)
+                self.assertEqual(first.status_code, 200)
+                etag = first.headers["etag"]
+                self.assertTrue(etag.startswith('W/"haish-projects-'))
+
+                # 命中：同 ETag 弱比较返回 304，不再下发 body。
+                revalidated = client.get("/api/projects", headers={**headers, "If-None-Match": etag})
+                self.assertEqual(revalidated.status_code, 304)
+                self.assertEqual(revalidated.headers["etag"], etag)
+                self.assertEqual(revalidated.content, b"")
+
+                # 未命中：不同 ETag 重新下发完整 body。
+                changed = client.get("/api/projects", headers={**headers, "If-None-Match": 'W/"haish-projects-other"'})
+                self.assertEqual(changed.status_code, 200)
+                self.assertIn(b"projects", changed.content)
+
+    def test_projects_listing_is_gzipped_for_compression_capable_clients(self):
+        payload = {"projects": [{"project_id": f"p{i}", "conversations": []} for i in range(80)]}
+        with TemporaryDirectory() as directory, FakeRuntimeHttp({"/api/projects": payload}) as runtime:
+            client, headers = self._client(Path(directory))
+            with patch("server.app.discover_upstream", return_value=runtime.upstream()):
+                response = client.get("/api/projects", headers={**headers, "Accept-Encoding": "gzip"})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.headers.get("content-encoding"), "gzip")
+                listing = json.loads(response.content)
+                self.assertEqual(len(listing["projects"]), 80)
+
     def test_stopped_runtime_is_reported_as_unavailable(self):
         with TemporaryDirectory() as directory:
             client, headers = self._client(Path(directory))
@@ -686,6 +719,78 @@ class RemoteTaskStartTest(unittest.TestCase):
             self.assertEqual(json.loads(line)["type"], "run_started")
             self.assertTrue(runtime.completed.wait(timeout=10))
             self.assertTrue(runtime.closed_cleanly.wait(timeout=10))
+
+
+class RemoteTaskRetryTest(unittest.TestCase):
+    """「任务失败重试」：适配器把它翻成 runtime 的同一条 task.start 命令 + rerun。"""
+
+    RETRY_PATH = "/remote/conversations/conversation-1/tasks/task-1/retry"
+    OPTIONS = {"provider": "chat:custom:router", "model_id": "deepseek-v4-flash", "reasoning_effort": "low"}
+
+    def _client(self, directory: Path):
+        app = create_app(data_dir=directory, dist_dir=directory)
+        store = app.state.device_store
+        code = store.issue_pairing_code()
+        token, _ = store.exchange(code, "iPhone")
+        return TestClient(app), {"Authorization": f"Bearer {token}"}
+
+    def test_retry_reruns_the_failed_turn_on_the_realtime_socket(self):
+        with TemporaryDirectory() as directory, FakeRuntimeSocket(
+            lambda request_id: [
+                command_result(request_id),
+                *task_events(request_id, {"type": "run_started", "task_id": "task-2"}),
+                task_end(request_id),
+            ],
+        ) as runtime, patch("server.app.discover_upstream", return_value=runtime.upstream()):
+            client, headers = self._client(Path(directory))
+            response = client.post(self.RETRY_PATH, json={"options": self.OPTIONS}, headers=headers)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual([json.loads(line)["type"] for line in response.text.splitlines() if line.strip()], ["run_started"])
+            command = runtime.commands[0]
+            # 桌面 Retry 走的是同一条命令（`type` 仍是 task.start，区别只在 operation/task_id）。
+            self.assertEqual(command["type"], "task.start")
+            self.assertEqual(command["operation"], "rerun")
+            self.assertEqual(command["task_id"], "task-1")
+            self.assertEqual(command["conversation_id"], "conversation-1")
+            self.assertTrue(command["payload"]["request_id"])
+            # 手机当前选的那套原样带过去；正文不在里面（rerun 不接受改字）。
+            self.assertEqual(command["payload"]["provider"], "chat:custom:router")
+            self.assertEqual(command["payload"]["model_id"], "deepseek-v4-flash")
+            self.assertEqual(command["payload"]["reasoning_effort"], "low")
+            self.assertNotIn("message", command["payload"])
+
+    def test_retry_without_options_lets_the_runtime_use_the_conversation_config(self):
+        with TemporaryDirectory() as directory, FakeRuntimeSocket(
+            lambda request_id: [
+                command_result(request_id),
+                *task_events(request_id, {"type": "run_started", "task_id": "task-2"}),
+                task_end(request_id),
+            ],
+        ) as runtime, patch("server.app.discover_upstream", return_value=runtime.upstream()):
+            client, headers = self._client(Path(directory))
+            response = client.post(self.RETRY_PATH, json={}, headers=headers)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(set(runtime.commands[0]["payload"]), {"request_id"})
+
+    def test_retry_reports_the_runtime_verdict_with_its_status(self):
+        with TemporaryDirectory() as directory, FakeRuntimeSocket(
+            lambda request_id: [
+                command_result(request_id, ok=False, status=409, detail="Only the latest turn can be retried."),
+            ],
+        ) as runtime, patch("server.app.discover_upstream", return_value=runtime.upstream()):
+            client, headers = self._client(Path(directory))
+            response = client.post(self.RETRY_PATH, json={"options": self.OPTIONS}, headers=headers)
+
+            self.assertEqual(response.status_code, 409)
+            self.assertEqual(response.json()["detail"], "Only the latest turn can be retried.")
+
+    def test_retry_requires_a_paired_device(self):
+        with TemporaryDirectory() as directory:
+            client, headers = self._client(Path(directory))
+            response = client.post(self.RETRY_PATH, json={"options": self.OPTIONS})
+            self.assertEqual(response.status_code, 401)
 
 
 class RemoteApprovalResolveTest(unittest.TestCase):

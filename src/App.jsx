@@ -30,6 +30,8 @@ import {
 } from 'lucide-react';
 import { api, runtimeConnectionState } from './api.js';
 import ConnectionScreen from './ConnectionScreen.jsx';
+// 动作反馈统一走轻提示（见 toast.jsx）；持续状态（断线、加载失败、桌面会话）留在页面。
+import { ToastStack, useToasts } from './toast.jsx';
 import { observeNotificationConversation, observeNotificationTask, startTaskNotifications } from './task-notifications.js';
 import { conversationHasSentMessage } from './agent-binding.js';
 import { createImageUploader, hasBlockedImageUploads } from './image-upload.js';
@@ -105,6 +107,9 @@ import {
   providerOptionsFromSettings,
   loadLastRunConfig,
   saveLastRunConfig,
+  loadConversationRunConfig,
+  rememberConversationRunConfig,
+  forgetRunConfigCache,
   resolveRunConfig,
   taskOptionsForRunConfig,
 } from './run-config.js';
@@ -818,7 +823,12 @@ function taskIdsOf(conversation) {
   return (conversation?.tasks || []).map((task) => task?.task_id).filter(Boolean);
 }
 
-function ConversationDetail({ id, projectName, initialConversation, modelCatalogTasks, onBack, connection, nativeSwipeBack = false }) {
+const NOOP_TOAST = () => {};
+
+function ConversationDetail({ id, projectName, initialConversation, modelCatalogTasks, onBack, connection, nativeSwipeBack = false, onToast }) {
+  // 动作反馈：一句提示，不占版面（见 toast.jsx）。`onToast` 由 shell 的 useToasts 提供，
+  // 身份稳定；没给（独立挂载/测试）时退化成不提示，绝不报错。
+  const pushToast = onToast || NOOP_TOAST;
   const [conversation, setConversation] = useState(initialConversation || null);
   const [conversationHydrated, setConversationHydrated] = useState(false);
   // 这条会话的线程渲染完了没有。没渲染完之前输入框只是一个「Loading conversation…」占位。
@@ -830,6 +840,10 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [liveRun, setLiveRun] = useState(null);
+  // 重跑（Retry）的现场：`retriedTaskIds` 是被新一发任务顶掉的那几行失败轮，
+  // `retryPendingTaskId` 是正在等 runtime 接单的那一条（按钮转圈、不可重复点）。
+  const [retriedTaskIds, setRetriedTaskIds] = useState(() => new Set());
+  const [retryPendingTaskId, setRetryPendingTaskId] = useState('');
   const [optimisticUserMessages, setOptimisticUserMessages] = useState([]);
   const [composerImages, setComposerImages] = useState([]);
   const [previewImage, setPreviewImage] = useState(null);
@@ -875,6 +889,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   const liveRunFrameRef = useRef(0);
   const liveRunQuietTimerRef = useRef(0);
   const runConfigRef = useRef(null);
+  const retriedTaskIdsRef = useRef(new Set());
   const loadedTraceIdsRef = useRef(new Set());
   const hasMessageRef = useRef(false);
   const composerComposingRef = useRef(false);
@@ -921,6 +936,15 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     if (!liveRunFrameRef.current && !liveRunQuietTimerRef.current) liveRunRef.current = liveRun;
   }, [liveRun]);
   useEffect(() => { runConfigRef.current = runConfig; }, [runConfig]);
+  // 一次改动同时落在三处：本轮的 state、这台手机的上次配置、这个会话的缓存。关面板
+  // 再回来、回到列表再进来都还是这一套；桌面客户端的 setings/llm 一动不动（适配器也
+  // 不允许写）。
+  const commitRunConfig = useCallback((next) => {
+    if (!next) return;
+    setRunConfig(next);
+    saveLastRunConfig(next);
+    rememberConversationRunConfig(id, next);
+  }, [id]);
   useEffect(() => { composerImagesRef.current = composerImages; }, [composerImages]);
   useEffect(() => { optimisticUserMessagesRef.current = optimisticUserMessages; }, [optimisticUserMessages]);
   useEffect(() => { onBackRef.current = onBack; }, [onBack]);
@@ -1040,6 +1064,9 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   useEffect(() => {
     interruptedRunRef.current = null;
     setTaskRuntimes({});
+    retriedTaskIdsRef.current = new Set();
+    setRetriedTaskIds(retriedTaskIdsRef.current);
+    setRetryPendingTaskId('');
     releaseConversationImageUrls(id);
     optimisticUserMessagesRef.current = [];
     setOptimisticUserMessages([]);
@@ -1159,8 +1186,10 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
 
   useEffect(() => {
     if (!conversationHydrated || !conversation || !providers.length || runConfig) return;
-    setRunConfig(resolveRunConfig(conversation, providers, agents, lastRunConfig));
-  }, [agents, conversation, conversationHydrated, lastRunConfig, providers, runConfig]);
+    // 这台手机在这个会话里选过的那套优先（见 run-config.js 的缓存）；没选过才是
+    // 「会话任务记录的那套 / 客户端上次的配置」。
+    setRunConfig(resolveRunConfig(conversation, providers, agents, lastRunConfig, loadConversationRunConfig(id)));
+  }, [agents, conversation, conversationHydrated, id, lastRunConfig, providers, runConfig]);
 
   useEffect(() => {
     const provider = providers.find((item) => item.id === runConfigRef.current?.providerId);
@@ -1256,6 +1285,122 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
       setBusy(false);
     }
   }, [activeTaskId, conversation, refresh, running]);
+
+  // 重跑最后一轮失败的任务（桌面 ChatPanel 那个 Retry）：runtime 新起一个 attempt，
+  // 事件流还是同一份 NDJSON。接单之后那一行才被顶掉（桌面的 pendingReplacesSource 同理），
+  // 没被接单就原样留着，并把原因弹出来（不是断线，所以不进错误条）。
+  const retryFailedRun = useCallback(async (row) => {
+    const sourceTaskId = String(row?.taskId || '');
+    if (!sourceTaskId || !conversation || !runConfig || running || busy || retryPendingTaskId) return;
+    const previousRetried = retriedTaskIdsRef.current;
+    setRetryPendingTaskId(sourceTaskId);
+    setBusy(true);
+    setError('');
+    const liveRunBeforeRetry = liveRunRef.current;
+    let accepted = false;
+    try {
+      interruptedRunRef.current = null;
+      localStreamRef.current = true;
+      const initialRun = draftRuntimeTask();
+      liveRunRef.current = initialRun;
+      flushLiveRun();
+      await api.retryTask(
+        conversation.conversation_id,
+        sourceTaskId,
+        taskOptionsForRunConfig(runConfig, providers),
+        (streamEvent) => {
+          const nextRun = runtimeTaskWithEvent(liveRunRef.current, streamEvent);
+          if (!liveRunRef.current?.taskId && nextRun?.taskId) {
+            observeNotificationTask({ ...nextRun, displayText: row?.text || '' }, conversation);
+          }
+          scheduleLiveRun(nextRun);
+        },
+        () => {
+          accepted = true;
+          setBusy(false);
+          // 接单之后才顶掉旧行（桌面也是等 run_started）：在那之前，用户看到的还是
+          // 那一张失败卡片，只是按钮转着圈。
+          const nextRetried = new Set(retriedTaskIdsRef.current).add(sourceTaskId);
+          retriedTaskIdsRef.current = nextRetried;
+          setRetriedTaskIds(nextRetried);
+        },
+      );
+      localStreamRef.current = false;
+      // 收尾与提交同一套判定：助手消息真的落库才把这一行交回快照。
+      let streamedRun = liveRunRef.current || {};
+      const streamedTaskId = streamedRun.taskId;
+      if (streamedTaskId) {
+        taskRuntime.cache.retainStream(streamedRun);
+        setTaskRuntimes((current) => ({ ...current, [streamedTaskId]: streamedRun }));
+      }
+      const nextConversation = await waitForPersistedAssistant({ taskId: streamedTaskId, refresh });
+      const latestRun = liveRunRef.current?.taskId === streamedTaskId
+        ? liveRunRef.current : taskRuntime.cache.state(streamedTaskId);
+      if (latestRun) streamedRun = latestRun;
+      const streamedTask = nextConversation?.tasks?.find((task) => task.task_id === streamedTaskId);
+      const outcome = String(isFailureStatus(streamedRun.status)
+        ? streamedRun.status : streamedTask?.status || streamedRun.status || 'done').toLowerCase();
+      if (streamedTaskId) {
+        const settledTrace = { ...streamedRun, status: outcome, completedAt: streamedRun.completedAt || Date.now() };
+        taskRuntime.cache.retainStream(settledTrace);
+        setTaskRuntimes((current) => ({ ...current, [streamedTaskId]: settledTrace }));
+      }
+      if (isFailureStatus(outcome)) {
+        liveRunRef.current = {
+          ...streamedRun,
+          taskId: streamedRun.taskId || streamedTask?.task_id || null,
+          status: outcome,
+          answerText: textContent(streamedTask?.answer_text || streamedRun.answerText || ''),
+          error: streamedTask?.error || streamedRun.error || '',
+          completedAt: streamedRun.completedAt || Date.now(),
+        };
+      } else {
+        const persisted = nextConversation?.messages?.some((message) => (
+          message?.role !== 'user' && message?.task_id === streamedTaskId
+        ));
+        liveRunRef.current = persisted ? null : {
+          ...streamedRun,
+          status: 'done',
+          answerText: textContent(streamedTask?.answer_text || streamedRun.answerText || ''),
+          completedAt: streamedRun.completedAt || Date.now(),
+        };
+      }
+      flushLiveRun();
+    } catch (nextError) {
+      if (!accepted) {
+        // runtime 拒了（不是最后一轮 / 状态不是 failed / 会话还在跑）：那一行原样留着，
+        // 把原因报给用户（不是断线，所以不进错误条）。
+        retriedTaskIdsRef.current = previousRetried;
+        setRetriedTaskIds(previousRetried);
+        liveRunRef.current = liveRunBeforeRetry;
+        flushLiveRun();
+        pushToast('error', nextError.message);
+        return;
+      }
+      // 接单后流断了：与提交一样只当传输诊断，交给轮询继续核对。
+      localStreamRef.current = false;
+      const notice = interruptedStreamNotice(nextError);
+      interruptedRunRef.current = { run: liveRunRef.current, notice };
+      flushLiveRun();
+      setError(notice);
+      await refresh({ keep: true });
+    } finally {
+      localStreamRef.current = false;
+      setRetryPendingTaskId('');
+      setBusy(false);
+    }
+  }, [busy, conversation, flushLiveRun, providers, pushToast, refresh, retryPendingTaskId, runConfig, running, scheduleLiveRun]);
+  // 行组件按 prop 身份 memo（ChatMessageRow）：重跑回调走一层 ref 转发，轮询换掉
+  // conversation 对象时整条线程不该跟着重渲染。
+  const retryRef = useRef(retryFailedRun);
+  useEffect(() => { retryRef.current = retryFailedRun; }, [retryFailedRun]);
+  const retryRow = useCallback((row) => retryRef.current?.(row), []);
+  // 与 runtime 同一条准入规则：只有这个会话的最后一轮、状态 failed 的那条能重跑
+  // （`stream_task_attempt` 里它自己还会再判一次；这里只是别把一颗死按钮亮出来）。
+  // 刚跑挂的那一轮可能还没进快照（`last_task_id` 要等下一次轮询），所以本地失败行也算。
+  const lastTaskId = String(conversation?.last_task_id
+    || (((conversation?.tasks || []).at(-1) || {}).task_id)
+    || (isFailureStatus(liveRun?.status) ? liveRun.taskId || '' : '') || '');
 
   useEffect(() => {
     const taskId = interruptedRunRef.current?.run?.taskId || activeTask?.task_id;
@@ -1412,7 +1557,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
       if (files?.length) await attachImages(files);
     } catch (nextError) {
       if (isPhotoPickerCancellation(nextError)) return;
-      setError(nextError?.message || 'Could not open the photo library.');
+      pushToast('error', nextError?.message || 'Could not open the photo library.');
     } finally {
       composerSheetRestore();
     }
@@ -1445,8 +1590,10 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     if ((!nextMessage && !imageAttachments.length && !hasAnnotations) || !conversation || (steering && (!activeTaskId || hasAnnotations)) || composerImages.some((image) => image.uploading) || (!steering && !runConfig)) return;
     // 引用与正文加起来最多 20,000 个字（桌面同款预算）。
     const commentsError = annotationDrafts.length ? annotationError(annotationDrafts, nextMessage) : '';
-    setAnnotationNotice(commentsError);
-    if (commentsError) return;
+    if (commentsError) {
+      pushToast('error', commentsError);
+      return;
+    }
     const optimisticId = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const existingOccurrence = optimisticUserMessagesRef.current
       .filter((item) => item.text === nextMessage)
@@ -1511,11 +1658,11 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
       }
 
       interruptedRunRef.current = null;
-      saveLastRunConfig(runConfig);
+      commitRunConfig(runConfig);
       localStreamRef.current = true;
       // 第一条消息给会话起名：`New Chat` 这种占位名 + 还没跑过任务时，换成 `titleFromTaskText` 的
       // 一句话摘要（桌面在提交那一趟里做的是同一件事：`startDeploy` 算名字 + 客户端 PATCH）。
-      // 服务端不会自己改名，所以这一步得在这里发；换名失败只报到错误条上，这一轮消息照发——
+      // 服务端不会自己改名，所以这一步得在这里发；换名失败只弹一条提示，这一轮消息照发——
       // 收回去的是名字，不是消息。
       const nextTitle = conversationTitleForMessage(nextMessage);
       if (nextTitle && isPlaceholderConversationTitle(conversation.title || conversation.label) && !(conversation.tasks || []).length) {
@@ -1524,7 +1671,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
           conversationSignatureRef.current = conversationSignature(renamed);
           setConversation(renamed);
         } catch (renameError) {
-          setError(renameError.message);
+          pushToast('error', renameError.message);
         }
       }
       // 本地草稿：任务号还没回来（第一个事件带到之前）时的壳。
@@ -1677,7 +1824,13 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   const visibleOptimisticMessages = useMemo(() => optimisticUserMessages.filter((item) => (
     userMessageOccurrenceCount(visibleMessages, item.text, userMessageTextOf) < item.occurrence
   )), [optimisticUserMessages, userMessageTextOf, visibleMessages]);
-  const orphanReplies = useMemo(() => orphanTaskReplies(conversation), [conversation]);
+  const orphanReplies = useMemo(() => {
+    const replies = orphanTaskReplies(conversation);
+    // 已重跑过的那一轮失败由新任务顶掉（桌面的 pendingReplacesSource 同理）：
+    // 否则同一句用户消息下面会挂出两条助手行。
+    for (const taskId of retriedTaskIds) replies.delete(taskId);
+    return replies;
+  }, [conversation, retriedTaskIds]);
   const orphanReplyByAnchor = useMemo(() => orphanReplyAnchors(visibleMessages, orphanReplies), [orphanReplies, visibleMessages]);
   // Keep the live trace on screen between "stop" and the refreshed conversation
   // snapshot that carries the local reply for the cancelled task.
@@ -1727,7 +1880,6 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     ...annotationDrafts.map((item) => ({ item, key: `draft:${item.id}` })),
   ], [annotationDrafts, annotationMessages]);
   const approvalTaskIds = useMemo(() => taskIdsOf(conversation), [conversation]);
-  const [annotationNotice, setAnnotationNotice] = useState('');
   const annotationUiRef = useRef(null);
   const jumpToAnnotation = useCallback((item) => {
     // 目标可能落在被收起来的那一段里：先把窗口推到能装下它，下一帧再跳——`findAnnotationRange`
@@ -1747,14 +1899,28 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
       ? annotationSnapshots.map((draft) => draft.id === item.id ? item : draft)
       : [...annotationSnapshots, item];
     const problem = annotationError(next);
-    setAnnotationNotice(problem);
-    if (problem) return false;
+    if (problem) {
+      pushToast('error', problem);
+      return false;
+    }
     updateAnnotations((previous) => previous.some((draft) => draft.id === item.id)
       ? previous.map((draft) => draft.id === item.id ? item : draft)
       : [...previous, item]);
+    // 运行中不能连引用一起发（annotations 只随 task.start 提交）。这句话以前常驻在输入框
+    // 上方，现在在草稿真的存下来那一刻提示一次。
+    if (running) pushToast('info', 'Comments are saved as a draft. Send after the task finishes or stops.');
     return true;
-  }, [annotationSnapshots, updateAnnotations]);
-  useEffect(() => { setAnnotationNotice(''); }, [id]);
+  }, [annotationSnapshots, pushToast, running, updateAnnotations]);
+  const handleAnnotationError = useCallback((message) => { pushToast('error', message); }, [pushToast]);
+  // 草稿写不进 localStorage（配额/隐私模式）：只在写失败那一刻提示一次。
+  useEffect(() => {
+    if (annotationStorageError) pushToast('error', annotationStorageError);
+  }, [annotationStorageError, pushToast]);
+  // 图片校验/上传失败：缩略图上已经有 Retry 覆盖层，这段文字不再占一行。
+  const firstImageError = composerImages.find((image) => image.error)?.error || '';
+  useEffect(() => {
+    if (firstImageError) pushToast('error', firstImageError);
+  }, [firstImageError, pushToast]);
 
   return (
     <main className="detail-screen">
@@ -1782,6 +1948,10 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
               annotationNumbers={annotationNumbers}
               onAnnotationJump={jumpToAnnotation}
               onPreviewImage={previewThreadImage}
+              onRetryTask={retryRow}
+              retryableTaskId={lastTaskId}
+              retryPendingTaskId={retryPendingTaskId}
+              retryBlocked={busy || running}
             />
             {/* 插槽属于线程最新的一端，不属于历史之前：详情页一挂载就滚到最新消息并跟着它走，
                 把卡片摆在整段历史之前等于一进来就被滚出视野（看起来只闪了一下就没了）。
@@ -1807,7 +1977,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
           highlightItems={highlightedAnnotations}
           drafts={annotationDrafts}
           onSave={saveAnnotation}
-          onError={setAnnotationNotice}
+          onError={handleAnnotationError}
         />
         <form className={`composer ${runConfig ? 'has-config-icon' : ''} ${running ? 'is-running' : ''} ${hasMessageRef.current ? 'has-message' : ''} ${composerImages.some((image) => image.imageId && !image.error) ? 'has-image' : ''} ${(annotationDrafts.length || composerImages.some((image) => image.imageId && !image.error)) ? 'has-other-sendable' : ''} ${composerPending ? 'is-loading' : ''}`} aria-busy={composerPending ? 'true' : undefined} onSubmit={submit} onDragOver={(event) => {
           if (Array.from(event.dataTransfer?.items || []).some((item) => item.kind === 'file')) event.preventDefault();
@@ -1824,8 +1994,6 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
               onJump={jumpToAnnotation} onEdit={editAnnotation}
               onRemove={() => updateAnnotations((previous) => previous.filter((draft) => draft.id !== item.id))} />)}
           </div> : null}
-          {(annotationNotice || annotationStorageError) ? <p className="haish-annotation-notice" role="status">{annotationNotice || annotationStorageError}</p> : null}
-          {running && annotationDrafts.length ? <p className="haish-annotation-notice">Comments are saved as a draft. Send after the task finishes or stops.</p> : null}
           {composerImages.length ? <div className="composer-images" aria-label="Selected images">{composerImages.map((image) => (
             <div className={`composer-image ${image.uploading ? 'uploading' : ''} ${image.error ? 'error' : ''}`} key={image.id} title={image.error || image.file.name}>
               {image.previewUrl ? <button type="button" onClick={() => setPreviewImage({ src: image.previewUrl, name: image.file.name })} aria-label={`Preview ${image.file.name}`}><img src={image.previewUrl} alt="" /></button> : <span aria-hidden="true">!</span>}
@@ -1835,7 +2003,6 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
               <button type="button" disabled={busy} className="composer-image-remove" onClick={() => removeComposerImage(image.id)} aria-label={`Remove ${image.file.name}`}><X size={13} /></button>
             </div>
           ))}</div> : null}
-          {composerImages.some((image) => image.error) ? <p className="composer-image-error" role="alert">{composerImages.find((image) => image.error)?.error}</p> : null}
           <label htmlFor="task-message" className="sr-only">Send instructions</label>
           <textarea ref={messageInputRef} id="task-message" rows={2} disabled={busy || composerPending} onFocus={activateComposer} onBlur={(event) => {
             // Programmatic/native resignFirstResponder can arrive without a click on the thread.
@@ -1922,7 +2089,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
               onChange={(event) => {
                 const index = Number(event.target.value);
                 if (index === selectedThinkingIndex) return;
-                setRunConfig((current) => ({ ...current, thinking: THINKING_OPTIONS[index].id }));
+                commitRunConfig({ ...runConfigRef.current, thinking: THINKING_OPTIONS[index].id });
                 impactReasoningStep(index).catch(() => {});
               }}
             />
@@ -1932,11 +2099,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
           </div>
         </section>
       </div> : null}
-      {showRunConfig && runConfig ? <RunConfigSheet config={runConfig} agentLabel={conversation?.profile_display_name} agentLocked={agentLocked} agents={agents} providers={providers} models={models} modelLoading={modelLoading} onChange={(update) => setRunConfig((current) => {
-        const next = typeof update === 'function' ? update(current) : update;
-        saveLastRunConfig(next);
-        return next;
-      })} onClose={() => setShowRunConfig(false)} /> : null}
+      {showRunConfig && runConfig ? <RunConfigSheet config={runConfig} agentLabel={conversation?.profile_display_name} agentLocked={agentLocked} agents={agents} providers={providers} models={models} modelLoading={modelLoading} onChange={(update) => commitRunConfig(typeof update === 'function' ? update(runConfigRef.current) : update)} onClose={() => setShowRunConfig(false)} /> : null}
       <ImagePreview image={previewImage} onClose={() => setPreviewImage(null)} />
     </main>
   );
@@ -1958,6 +2121,8 @@ export default function App() {
   const [runtimeOfflineSince, setRuntimeOfflineSince] = useState(0);
   const [initialized, setInitialized] = useState(false);
   const [startupRetrying, setStartupRetrying] = useState(true);
+  // 全 App 一份轻提示队列（toast.jsx）：列表页、详情页、设置页、远程桌面都往这里报。
+  const { toasts, pushToast } = useToasts();
   const restoredConversationRef = useRef(false);
   const startupRequestRef = useRef(false);
   const detailOpenRef = useRef(false);
@@ -2333,6 +2498,8 @@ export default function App() {
     // 换一台电脑配对时，上一台的会话 id 与「看过」时刻表一起丢掉。
     seenAtRef.current = {};
     saveConversationSeenAt(window.localStorage, {});
+    // 会话 id 属于上一台电脑：连这个会话级的运行配置缓存一起丢掉。
+    forgetRunConfigCache(window.localStorage);
     setSeenAt({});
     setStatus({ paired: false, runtime_online: false });
   }
@@ -2352,6 +2519,7 @@ export default function App() {
     onBack={closeConversation}
     connection={connection}
     nativeSwipeBack={api.isNative}
+    onToast={pushToast}
   /> : null;
 
   const approvalCount = (approvals?.pending?.length || 0) + (approvals?.pending_workflow_approvals?.length || 0) + (approvals?.pending_user_inputs?.length || 0);
@@ -2369,8 +2537,9 @@ export default function App() {
           {approvalCount ? <button type="button" className="pending-banner" onClick={openWaitingConversation} disabled={!waitingConversationId}><ShieldCheck size={18} /><span>{approvalCount} {approvalCount === 1 ? 'action' : 'actions'} waiting</span>{waitingConversationId ? <ChevronRight size={17} aria-hidden="true" /> : null}</button> : null}
           <ConversationList projects={projects} conversations={conversations} tasks={tasks} status={status} approvals={approvals} loading={loading} error={fatalError} seenAt={seenAt} onRefresh={refreshDirectory} onOpen={openConversation} onNew={createConversation} onSettings={showSettings} />
         </>
-      ) : tab === 'desktop' ? <RemoteDesktop computer={status.computer_model || 'Computer'} onBack={() => setTab('settings')} /> : <SettingsScreen status={status} onLogout={logout} onBack={() => setTab('tasks')} onDesktop={() => setTab('desktop')} />}
+      ) : tab === 'desktop' ? <RemoteDesktop computer={status.computer_model || 'Computer'} onBack={() => setTab('settings')} onToast={pushToast} /> : <SettingsScreen status={status} onLogout={logout} onBack={() => setTab('tasks')} onDesktop={() => setTab('desktop')} onToast={pushToast} />}
       {detail}
+      <ToastStack toasts={toasts} />
     </div>
   );
 }

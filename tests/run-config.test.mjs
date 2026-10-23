@@ -11,6 +11,10 @@ import {
   withCurrentModel,
   loadLastRunConfig,
   saveLastRunConfig,
+  CONVERSATION_RUN_CONFIG_STORAGE_KEY,
+  forgetRunConfigCache,
+  loadConversationRunConfig,
+  rememberConversationRunConfig,
 } from '../src/run-config.js';
 
 test('a new conversation uses the remembered client configuration instead of the first remote profile', () => {
@@ -277,4 +281,105 @@ test('official providers use canonical labels instead of stale profile names', (
   });
 
   assert.equal(providers[0].label, 'DeepSeek');
+});
+
+// 手机端自己的会话级缓存（用户：「我在手机上改变了运行配置…应该要有缓存呀，而不是我每次都换」）。
+// 排列顺序是硬契约：手机选的 provider/model/thinking > 任务记录那套 > 客户端上次的配置。
+function memoryStorage() {
+  const values = new Map();
+  return {
+    values,
+    getItem: (key) => (values.has(key) ? values.get(key) : null),
+    setItem: (key, value) => values.set(key, String(value)),
+    removeItem: (key) => values.delete(key),
+  };
+}
+
+test('the phone remembers the run config it picked for a conversation', () => {
+  const storage = memoryStorage();
+  rememberConversationRunConfig('conv-1', {
+    providerId: 'router', modelId: 'deepseek-v4-flash', agentId: 'code', thinking: 'low',
+  }, storage);
+
+  assert.deepEqual(loadConversationRunConfig('conv-1', storage), {
+    providerId: 'router', modelId: 'deepseek-v4-flash', agentId: 'code', thinking: 'low',
+  });
+  assert.equal(loadConversationRunConfig('conv-2', storage), null);
+  assert.equal(loadConversationRunConfig('', storage), null);
+});
+
+test('the conversation cache beats the provider recorded on the latest task', () => {
+  const providers = providerOptionsFromSettings({
+    chat: { provider: 'custom', name: 'opencode_go', model: 'deepseek-v4-flash', reasoning_effort: 'high' },
+    profiles: [
+      { id: 'openai', provider: 'openai', model: 'gpt-5.6-sol', reasoning_effort: 'xhigh' },
+      { id: 'router', provider: 'custom', name: 'ai router', model: 'gpt-5.6-sol', reasoning_effort: 'medium' },
+    ],
+  });
+  const conversation = {
+    last_task_id: 'task-2',
+    tasks: [{ task_id: 'task-2', provider_key: 'openai', model: 'gpt-5.6-sol', agent_id: 'simple', reasoning_effort: 'xhigh' }],
+  };
+
+  // 没有缓存时沿用任务记录（桌面跑出来的那套）。
+  assert.equal(resolveRunConfig(conversation, providers, []).providerId, 'openai');
+  // 手机在这个会话里换成了 router + 别的 thinking：重开必须还是它。
+  assert.deepEqual(resolveRunConfig(conversation, providers, [], null, {
+    providerId: 'router', modelId: 'deepseek-v4-flash', thinking: 'low',
+  }), {
+    agentId: 'simple', providerId: 'router', modelId: 'deepseek-v4-flash', thinking: 'low',
+  });
+});
+
+test('a cached provider the runtime no longer offers falls back to the recorded task', () => {
+  const providers = providerOptionsFromSettings({
+    profiles: [{ id: 'openai', provider: 'openai', model: 'gpt-5.6-sol', reasoning_effort: 'xhigh' }],
+  });
+  const conversation = { tasks: [{ task_id: 'task-1', provider_key: 'openai', model: 'gpt-5.6-sol' }] };
+
+  assert.deepEqual(resolveRunConfig(conversation, providers, [], null, {
+    providerId: 'deleted-profile', modelId: 'gone', thinking: 'low',
+  }), {
+    agentId: '', providerId: 'openai', modelId: 'gpt-5.6-sol', thinking: 'xhigh',
+  });
+});
+
+test('the cache is bounded and forgets the least recently written conversation', () => {
+  const storage = memoryStorage();
+  for (let index = 0; index < 205; index += 1) {
+    rememberConversationRunConfig(`conv-${index}`, { providerId: 'router', modelId: 'model', thinking: 'high' }, storage);
+  }
+  const stored = JSON.parse(storage.values.get(CONVERSATION_RUN_CONFIG_STORAGE_KEY));
+  assert.equal(Object.keys(stored).length, 200);
+  assert.equal(stored['conv-0'], undefined);
+  assert.ok(stored['conv-204']);
+});
+
+test('logout clears the conversation cache and unreadable storage is tolerated', () => {
+  const storage = memoryStorage();
+  rememberConversationRunConfig('conv-1', { providerId: 'router', thinking: 'high' }, storage);
+  forgetRunConfigCache(storage);
+  assert.equal(loadConversationRunConfig('conv-1', storage), null);
+
+  const broken = { getItem: () => '{not json', setItem: () => { throw new Error('quota'); }, removeItem: () => { throw new Error('quota'); } };
+  assert.equal(loadConversationRunConfig('conv-1', broken), null);
+  assert.equal(loadLastRunConfig(broken), null);
+  rememberConversationRunConfig('conv-1', { providerId: 'router' }, broken);
+  forgetRunConfigCache(broken);
+});
+
+test('a cached model the catalog no longer lists is kept instead of being swapped', () => {
+  // 模型目录是「配置里那个 + 这个 provider 用过的」合并出来的（见 `withCurrentModel`）：
+  // 目录里没有不代表 runtime 不认。这时猜一个默认值，等于又把用户刚选的模型默默换掉——
+  // 正是这次要修的那个抱怨。
+  const providers = providerOptionsFromSettings({
+    profiles: [{ id: 'router', provider: 'custom', name: 'ai router', model: 'gpt-5.6-sol', reasoning_effort: 'medium' }],
+  });
+  const conversation = { last_task_id: 'task-1', tasks: [{ task_id: 'task-1', provider_key: 'custom', model: 'gpt-5.6-sol' }] };
+
+  assert.deepEqual(resolveRunConfig(conversation, providers, [], null, {
+    providerId: 'router', modelId: 'not-in-catalog', thinking: 'low',
+  }), {
+    agentId: '', providerId: 'router', modelId: 'not-in-catalog', thinking: 'low',
+  });
 });

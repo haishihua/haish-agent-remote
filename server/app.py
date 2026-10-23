@@ -25,6 +25,7 @@ from uuid import uuid4
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 import uvicorn
@@ -369,6 +370,19 @@ class TaskStartRequest(BaseModel):
         return self
 
 
+class TaskRetryRequest(BaseModel):
+    """重跑会话最后一轮失败的任务（桌面那个 Retry / ReRun）。
+
+    规则全在 runtime：必须是这个会话的最新一轮、状态必须是 `failed`、会话不能另有一个
+    在跑的任务；不满足时它回自己的 409。适配器只做一件事——把手机当前选的 provider /
+    model / thinking 带过去（不带就是沿用会话已存的运行配置）。
+
+    这里故意没有 `message`：`rerun` 不接受改过的正文（那是 `edit`），多带一个字段会被
+    runtime 直接 400。
+    """
+    options: dict[str, Any] = Field(default_factory=dict)
+
+
 def _candidate_pid_files() -> list[Path]:
     explicit = os.getenv("HAISH_RUNTIME_PID_FILE")
     if explicit:
@@ -628,9 +642,13 @@ class RealtimeTaskStream:
     reads whatever events it is still connected for and polls that status afterwards.
     """
 
-    def __init__(self, *, conversation_id: str, payload: dict[str, Any]) -> None:
+    def __init__(self, *, conversation_id: str, payload: dict[str, Any], task_id: str = '', operation: str = 'start') -> None:
         self.conversation_id = conversation_id
         self.payload = payload
+        # `rerun` 与 `start` 走的是同一条 `task.start` 命令（见 runtime 的
+        # `routes/realtime.py`）：只多/少 operation 与 task_id。
+        self.task_id = task_id
+        self.operation = operation
         self.request_id = uuid4().hex
         self.messages: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self.forwarding = True
@@ -638,13 +656,16 @@ class RealtimeTaskStream:
 
     @property
     def command(self) -> dict[str, Any]:
-        return {
+        command = {
             "type": "task.start",
             "request_id": self.request_id,
-            "operation": "start",
+            "operation": self.operation,
             "conversation_id": self.conversation_id,
             "payload": self.payload,
         }
+        if self.task_id:
+            command["task_id"] = self.task_id
+        return command
 
     async def open(self) -> dict[str, Any]:
         """Return the first runtime event, or raise ``TaskStreamError`` for a start failure."""
@@ -743,6 +764,23 @@ class RealtimeTaskStream:
             await self._emit({"kind": "end"})
 
 
+def _retry_payload(options: Any) -> dict[str, Any]:
+    """The runtime's `rerun` body: the phone's route selection plus a fresh request id.
+
+    `agent_id` / `execution_mode` / `use_history` belong to `task.start` only — a rerun
+    reuses the source task's agent and history, and the runtime rejects edited text on
+    this operation — so nothing else travels.
+    """
+    payload: dict[str, Any] = {"request_id": uuid4().hex}
+    if not isinstance(options, dict):
+        return payload
+    for key in ("provider", "model_id", "reasoning_effort"):
+        value = options.get(key)
+        if isinstance(value, str) and value.strip():
+            payload[key] = value.strip()
+    return payload
+
+
 def _carried_selector(task: Any) -> str:
     """The recorded selector a task already carries, from either runtime or adapter."""
     if not isinstance(task, dict):
@@ -791,6 +829,33 @@ def _is_conversation_detail(path: str) -> bool:
     """`conversations/<id>` only: the task and image sub-routes stay untouched."""
     prefix = "conversations/"
     return path.startswith(prefix) and bool(path[len(prefix):]) and "/" not in path[len(prefix):]
+
+
+def _etag_matches(incoming: str | None, etag: str) -> bool:
+    """Weak `If-None-Match` comparison (RFC 9110 §13.1.2): `*` or any opaque
+    tag equal after stripping the `W/` weakness marker matches."""
+    if not incoming:
+        return False
+    if incoming.strip() == "*":
+        return True
+
+    def bare(tag: str) -> str:
+        return tag.strip().removeprefix("W/").strip('"')
+
+    return any(bare(candidate) == bare(etag) for candidate in incoming.split(","))
+
+
+def _listing_etag(payload: Any) -> str:
+    """Weak ETag over a compacted projects listing.
+
+    The compacted directory is rebuilt from an 18 MB upstream document on every
+    poll; hashing the small result once (SHA-256) is what makes `If-None-Match`
+    cheaper than resending ~0.5 MB every 15 seconds.
+    """
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
+    return f'W/"haish-projects-{digest[:32]}"'
 
 
 def _compact_project_listing(payload: Any) -> Any:
@@ -896,6 +961,9 @@ def create_app(*, data_dir: Path | None = None, dist_dir: Path | None = None) ->
     computer_model = _computer_model()
 
     app = FastAPI(title="Haish Remote", lifespan=_lifespan)
+    # The compacted directory is ~0.5 MB of highly compressible JSON (~0.08 MB gzipped);
+    # the phone polls it every 15 s over a bandwidth-limited public tunnel.
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["capacitor://localhost", "https://localhost"],
@@ -1063,6 +1131,27 @@ def create_app(*, data_dir: Path | None = None, dist_dir: Path | None = None) ->
             return JSONResponse(content={"detail": error.detail}, status_code=error.status)
         return StreamingResponse(stream.body_lines(first), status_code=200, headers=NDJSON_HEADERS)
 
+    @app.post("/remote/conversations/{conversation_id}/tasks/{task_id}/retry")
+    async def retry_task(
+        conversation_id: str,
+        task_id: str,
+        payload: TaskRetryRequest,
+        _: dict[str, Any] = Depends(current_device),
+    ) -> Response:
+        # Same bridge, different runtime operation: the phone reads the new attempt as an
+        # ordinary NDJSON task stream and polls the resulting task like any other run.
+        stream = RealtimeTaskStream(
+            conversation_id=conversation_id,
+            payload=_retry_payload(payload.options),
+            task_id=task_id,
+            operation="rerun",
+        )
+        try:
+            first = await stream.open()
+        except TaskStreamError as error:
+            return JSONResponse(content={"detail": error.detail}, status_code=error.status)
+        return StreamingResponse(stream.body_lines(first), status_code=200, headers=NDJSON_HEADERS)
+
     # The runtime removed the HTTP resolve routes; the phone keeps its endpoints but
     # the adapter sends approval.resolve over the realtime socket.
     @app.post("/api/approvals/{request_id}/resolve")
@@ -1151,7 +1240,15 @@ def create_app(*, data_dir: Path | None = None, dist_dir: Path | None = None) ->
             raw, payload = await read_upstream_json()
             if payload is None:
                 return upstream_error(raw)
-            return rewritten_json(_compact_project_listing(payload))
+            listing = _compact_project_listing(payload)
+            etag = _listing_etag(listing)
+            # Weak comparison covers the `W/` prefix and any client that sends a
+            # bare hash; a hit skips the ~0.5 MB serialization and download.
+            if _etag_matches(request.headers.get("if-none-match"), etag):
+                return Response(status_code=304, headers={"ETag": etag})
+            response = rewritten_json(listing)
+            response.headers["ETag"] = etag
+            return response
 
         # The runtime API never exposes the provider a task ran with, so the phone
         # would have to guess it from the coarse `provider_key`. PATCH answers with

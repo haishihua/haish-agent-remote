@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowLeft, Check, ChevronRight, CircleAlert, Laptop, LoaderCircle, LogOut, Monitor, RefreshCw, Settings2, ShieldCheck, Smartphone, Tablet } from 'lucide-react';
+import { ArrowLeft, ChevronRight, CircleAlert, Laptop, LoaderCircle, LogOut, Monitor, RefreshCw, Settings2, ShieldCheck, Smartphone, Tablet } from 'lucide-react';
 import { api } from './api.js';
 import './settings-screen.css';
+
+const NOOP_TOAST = () => {};
 
 function lastSeen(value) {
   const date = new Date(Number(value) * 1000);
@@ -38,7 +40,9 @@ const READINESS_FIELDS = [
   ['turn_configured', 'TURN relay', 'Configured', 'Not configured'],
 ];
 
-export default function SettingsScreen({ status, onLogout, onBack, onDesktop }) {
+export default function SettingsScreen({ status, onLogout, onBack, onDesktop, onToast }) {
+  // 动作反馈走轻提示（见 toast.jsx）：撤销设备、操作失败不再在页面尾部占一行。
+  const pushToast = onToast || NOOP_TOAST;
   const currentId = status.device?.device_id;
   const currentDevice = useRef(status.device);
   currentDevice.current = status.device;
@@ -49,8 +53,6 @@ export default function SettingsScreen({ status, onLogout, onBack, onDesktop }) 
   const [devices, setDevices] = useState([]);
   const [loading, setLoading] = useState(true);
   const [listError, setListError] = useState('');
-  const [actionError, setActionError] = useState('');
-  const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState('');
   const [manageOpen, setManageOpen] = useState(false);
   const [desktop, setDesktop] = useState(null);
@@ -118,8 +120,6 @@ export default function SettingsScreen({ status, onLogout, onBack, onDesktop }) 
     if (!confirmed) return;
     actionPending.current = true;
     setBusy(signingOut ? 'logout' : device.device_id);
-    setActionError('');
-    setNotice('');
     try {
       if (signingOut) {
         // Keep the app's existing logout/local connection cleanup behavior.
@@ -128,11 +128,11 @@ export default function SettingsScreen({ status, onLogout, onBack, onDesktop }) 
         await api.revokeDevice(device.device_id);
         if (!mounted.current) return;
         setDevices((previous) => previous.filter((item) => item.device_id !== device.device_id));
-        setNotice(`Access revoked for ${name}.`);
+        pushToast('success', `Access revoked for ${name}.`);
         await loadDevices();
       }
     } catch (error) {
-      if (mounted.current) setActionError(error.message || 'Unable to complete this action. Please try again.');
+      if (mounted.current) pushToast('error', error.message || 'Unable to complete this action. Please try again.');
     } finally {
       actionPending.current = false;
       if (mounted.current) setBusy('');
@@ -203,8 +203,6 @@ export default function SettingsScreen({ status, onLogout, onBack, onDesktop }) 
       {listError ? <div className="settings-list-failure"><p className="settings-error" role="alert"><CircleAlert size={17} />{listError}</p><p>The full device list is unavailable. Any rows shown are previously known devices.</p><button type="button" onClick={loadDevices} disabled={loading || Boolean(busy)}>Try again</button></div> : null}
     </section>
 
-    {actionError ? <p className="settings-error" role="alert"><CircleAlert size={17} />{actionError}</p> : null}
-    {notice ? <p className="settings-notice" role="status"><Check size={17} />{notice}</p> : null}
     <div className="settings-signout-area">
       <button type="button" className="settings-signout" onClick={() => confirmAction()} disabled={Boolean(busy)}>
         <span className="settings-signout-glyph">{busy === 'logout' ? <LoaderCircle size={23} className="spin" /> : <LogOut size={23} />}</span>
