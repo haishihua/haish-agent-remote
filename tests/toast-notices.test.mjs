@@ -68,3 +68,23 @@ test('持续状态继续留在页面：断线横幅、加载失败卡片、桌�
   const desktop = await read('src/remote-desktop.jsx');
   assert.match(desktop, /desktop-session-note/);
 });
+
+// 真机验收发现的：进程里一条都看不见的提示。
+//
+// 详情页盖住目录页时，目录那棵树的动画会被 `animation-play-state: paused` 冻住（省电，
+// 也免得多余重绘）。提示栈跟目录是同一个父节点的兄弟，所以整条 `toast-in` 也被冻在
+// 第一帧——`from { opacity: 0 }`，于是提示"弹"了但一直是全透明：iPhone 上点 Retry 被
+// runtime 拒绝时，页面看起来什么都没发生，其实请求、错误文案、计时器全都跑了。
+// 这里钉两件事：暂停规则必须把 `.app-toast-stack` 排除在外；入场动画仍然是那条从
+// 透明起步的 keyframes（否则这条豁免就没有意义了）。
+test('详情页打开时提示栈不被目录的暂停规则冻住', async () => {
+  const css = await read('src/styles.css');
+  assert.match(
+    css,
+    /\.app-shell\.detail-open > :not\(\.detail-screen\):not\(\.app-toast-stack\) \*,[\s\S]*?html\.detail-closing \.app-shell > :not\(\.detail-screen\):not\(\.app-toast-stack\) \* \{ animation-play-state: paused; \}/,
+  );
+  // 目录那棵树该暂停的照旧暂停（别为了提示把整条规则删了）。
+  assert.match(css, /\.app-shell\.detail-open > :not\(\.detail-screen\) \{ pointer-events: none; \}/);
+  assert.match(css, /\.app-toast \{[^}]*animation: toast-in 240ms ease-out;/);
+  assert.match(css, /@keyframes toast-in \{ from \{ opacity: 0;/);
+});

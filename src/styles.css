@@ -286,9 +286,12 @@ html:not(.native-app) .detail-screen { height: 100dvh; }
 /* The directory stays mounted below an open conversation so WebKit's native interactive
    back snapshot reveals the same list and scroll position. Its repeating animations are paused
    while fully covered; the button/PWA handoff keeps that pause for two paint frames while React
-   removes the detail. Native edge-back owns its own snapshots and never runs this CSS transition. */
-.app-shell.detail-open > :not(.detail-screen) *,
-html.detail-closing .app-shell > :not(.detail-screen) * { animation-play-state: paused; }
+   removes the detail. Native edge-back owns its own snapshots and never runs this CSS transition.
+   轻提示栈是唯一例外：它跟详情页同层，进详情页之后仍然要能弹（重跑被拒、保存失败都在这里）。
+   `toast-in` 从 `opacity: 0` 起步，动画被冻在第一帧就等于整条提示不可见——真机上就是这样
+   「点了 Retry 什么都没发生」，其实请求和提示都发了，只是被这条暂停规则冻成透明。 */
+.app-shell.detail-open > :not(.detail-screen):not(.app-toast-stack) *,
+html.detail-closing .app-shell > :not(.detail-screen):not(.app-toast-stack) * { animation-play-state: paused; }
 /* The covered directory header does not need a live full-screen blur. */
 .app-shell.detail-open .remote-topbar { backdrop-filter: none; }
 .detail-top { touch-action: none; }

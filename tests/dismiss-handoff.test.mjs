@@ -20,7 +20,9 @@ function fakeRaf() {
 test('the hold class matches the one styles.css pauses the directory with', async () => {
   assert.equal(DIRECTORY_HOLD_CLASS, 'detail-closing');
   const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
-  assert.match(css, /html\.detail-closing \.app-shell > :not\(\.detail-screen\) \*/);
+  // 目录（含 `detail-closing` 那两帧）靠这条暂停规则停在最后一帧；提示栈被排除在外，
+  // 详情页开着时的 toast 才有动画（见 tests/toast-notices.test.mjs）。
+  assert.match(css, /html\.detail-closing \.app-shell > :not\(\.detail-screen\):not\(\.app-toast-stack\) \*/);
 });
 
 test('afterPaint waits for two frames: the current one is painted before the work runs', () => {
