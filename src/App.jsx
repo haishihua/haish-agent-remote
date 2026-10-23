@@ -50,6 +50,9 @@ import {
 } from './photo-picker.js';
 import { composerInputQuietDelay, isComposerInputActive, markComposerInputActivity, setComposerInputFocused } from './composer-input-activity.js';
 import { hideKeyboardAccessoryBar, isKeyboardMoving, mountKeyboardInset, registerKeyboardSurface } from './ios-keyboard.js';
+// 首屏取会话不让路、落空就快速重试（见 detail-load.js）：这一次请求被挤掉，用户看到的是
+// 「进会话一片空白，退回再进又好了」。
+import { defersConversationFetch, firstLoadRetryDelay } from './detail-load.js';
 import penguinLogo from './assets/penguin_logo_user.png';
 import { ScrollToBottomButton } from './ScrollToBottomButton.jsx';
 // 长线程的渲染窗口（见 thread-window.js）：iOS 17 的 WebKit 没有 content-visibility，
@@ -868,6 +871,9 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   const photoLongPressRef = useRef(false);
   const photoLongPressTimerRef = useRef(0);
   const conversationSignatureRef = useRef('');
+  // 与 `conversationHydrated` 同步的 ref：首屏重试链在 `await` 之后要立刻知道「拿到了没有」，
+  // 读 state 那一份要等下一次渲染。
+  const conversationHydratedRef = useRef(false);
   const dismissHandoffRef = useRef(null);
   // 收起那个动作会一直活着（`createDismissHandoff` 只在第一次收起时建一次），所以 `onBack` 得穿过一层
   // ref：否则它拿的永远是建它的那一次渲染的 `onBack`。
@@ -1070,6 +1076,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     releaseConversationImageUrls(id);
     optimisticUserMessagesRef.current = [];
     setOptimisticUserMessages([]);
+    conversationHydratedRef.current = false;
     setConversationHydrated(false);
     loadedTraceIdsRef.current = new Set();
     // 进这条会话先进 loading，输入框等线程渲染完再交出去（见下面的 ready gate）。
@@ -1084,21 +1091,25 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     if (localStreamRef.current) return null;
     // 这份会话最大 1.7MB：解析一遍 + 整棵重渲染一次，落进下拉手势或键盘动画里就是一帧几十毫秒。
     // 检查放在 fetch 之前——已经发出的请求收不回来，但至少别把这份活排到动画中间才开始。
-    if (!keep && threadBusy()) return null;
+    // 首屏（还没 hydrate）例外：那会儿线程是空的，没有可被打断的渲染，而这一次请求被挤掉
+    // 就等于十几秒空白（见 detail-load.js）。
+    if (defersConversationFetch({ hydrated: conversationHydratedRef.current, keep, busy: threadBusy() })) return null;
     try {
       const nextConversation = await api.conversation(id);
       observeNotificationConversation(nextConversation);
       if (localStreamRef.current) return null;
       // A poll that resolves while a gesture owns the thread would rebuild the message list
       // under the finger; drop it here. The next interval catches up after the gesture.
-      // `keep` is the pull-to-refresh call itself, which is the point of the gesture.
-      if (!keep && threadBusy()) return null;
+      // `keep` is the pull-to-refresh call itself, which is the point of the gesture. The first
+      // load is exempt for the same reason as the check above.
+      if (defersConversationFetch({ hydrated: conversationHydratedRef.current, keep, busy: threadBusy() })) return null;
       // 内容没变就别写 state：写下去就是整棵详情树重渲染一次，而这轮轮询多半什么都没带回来。
       const signature = conversationSignature(nextConversation);
       if (signature !== conversationSignatureRef.current) {
         conversationSignatureRef.current = signature;
         setConversation(nextConversation);
       }
+      conversationHydratedRef.current = true;
       setConversationHydrated(true);
       const interrupted = interruptedRunRef.current;
       if (interrupted) {
@@ -1130,11 +1141,28 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   });
 
   useEffect(() => {
-    refresh();
+    let cancelled = false;
+    let attempts = 0;
+    let retry = 0;
+    // 首屏那一次不能落空：让路规则已经不挡它了（见 detail-load.js），但网络抖动或 runtime
+    // 正忙仍然会返回 null。干等 15 秒的轮询就是用户嘴里的「整屏空白」，退避重试几轮就回来了。
+    const load = async () => {
+      const loaded = await refresh();
+      if (cancelled || loaded || conversationHydratedRef.current) return;
+      const delay = firstLoadRetryDelay(attempts);
+      attempts += 1;
+      if (!delay) return;
+      retry = window.setTimeout(load, delay);
+    };
+    load();
     // A poll rebuilds and re-renders the whole thread; `refresh` drops a round while a
     // pull or keyboard animation owns the surface, and the next interval catches up.
     const timer = window.setInterval(refresh, CONVERSATION_POLL_MS);
-    return () => window.clearInterval(timer);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(retry);
+      window.clearInterval(timer);
+    };
   }, [refresh]);
 
   // 输入框的 ready gate：会话取回来、并且整条线程（Markdown / 工具卡 / 时间线）真的渲染完
@@ -1960,7 +1988,10 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
             {detailLoadFailed ? (
               <div className="load-failed"><CircleAlert size={28} aria-hidden="true" /><h2>Couldn’t load this conversation</h2><p>Pull down to try again.</p></div>
             ) : null}
-            {!conversation && !detailLoadFailed ? <div className="center-state"><LoaderCircle className="spin" /></div> : null}
+            {/* 目录里那行不带 messages（只有 message_count），所以首次进会话的线程真就是空的：
+                在 hydrate 之前得画出加载态，否则用户看到的是「整屏空白」（看起来像没反应）。
+                有行就不挡——那可能是同一条详情被换成了另一个会话，旧行让位即可。 */}
+            {!conversationHydrated && !detailLoadFailed && !rows.length ? <div className="center-state"><LoaderCircle className="spin" /><span>Loading conversation…</span></div> : null}
           </div>
         </div>
       </div>
