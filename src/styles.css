@@ -381,9 +381,7 @@ html.detail-closing .app-shell > :not(.detail-screen) * { animation-play-state: 
    shown in attachment four. */
 .composer.expanded { grid-template-columns: 44px minmax(0, 1fr) 44px 48px; padding: 8px; border-color: rgba(138, 166, 209, 0.42); box-shadow: 0 -10px 32px rgba(0, 0, 0, 0.18); }
 .composer.expanded > .haish-annotation-drafts,
-.composer.expanded > .haish-annotation-notice,
-.composer.expanded > .composer-images,
-.composer.expanded > .composer-image-error { grid-column: 1 / -1; }
+.composer.expanded > .composer-images { grid-column: 1 / -1; }
 .composer.expanded textarea { min-width: 0; grid-column: 1 / -1; width: 100%; height: 60px; min-height: 60px; max-height: 60px; padding-block: 8px; grid-row: auto; line-height: 22px; }
 .composer-file-input { position: fixed; width: 1px; height: 1px; min-height: 0; padding: 0; overflow: hidden; border: 0; opacity: 0; pointer-events: none; clip-path: inset(50%); }
 .composer-photo-button { display: none; width: 44px; height: 44px; padding: 0; place-items: center; align-self: end; border: 0; border-radius: 12px; background: transparent; color: var(--text); cursor: pointer; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
@@ -402,7 +400,6 @@ html.detail-closing .app-shell > :not(.detail-screen) * { animation-play-state: 
 .composer-image-remove::before { position: absolute; inset: -9px; content: ''; }
 .composer-image-retry { position: absolute; z-index: 2; right: 0; bottom: 0; left: 0; display: flex; min-height: 30px; padding: 3px; align-items: center; justify-content: center; gap: 3px; border: 0; background: rgba(0, 0, 0, 0.82); color: white; font-size: 10px; }
 .composer-image-retry:disabled, .composer-image-remove:disabled { opacity: 0.45; }
-.composer-image-error { margin: -1px 6px 2px; grid-column: 1 / -1; color: var(--danger); font-size: 11px; line-height: 1.35; }
 /* 引用批注：组件直接复用桌面的 SelectionToolbar / QuoteBlock；手机只缩尺寸，不另画一套框。 */
 .annotation-menu { z-index: 1700; }
 .annotation-menu .haish-selection-toolbar { border-radius: 9px; }
