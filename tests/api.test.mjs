@@ -88,6 +88,39 @@ test('conversation reads use the adapter canonical read-marker endpoints', async
   }
 });
 
+test('current conversation route read is authenticated GET and preserves the exact ID', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  const route = { llm_config_id: 'oauth-record', model_id: 'non-default', reasoning_effort: 'xhigh' };
+  globalThis.fetch = async (path, init = {}) => {
+    calls.push([path, init.method || 'GET']);
+    return Response.json(route);
+  };
+  try {
+    assert.deepEqual(await api.conversationRunConfig('conv 1'), route);
+    assert.deepEqual(calls, [['/api/conversations/conv%201/run-config', 'GET']]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('only unsupported current-route reads allow compatibility fallback, not auth or transport failures', async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const status of [403, 404, 401, 500]) {
+      globalThis.fetch = async () => status === 500
+        ? Response.json({ runtime_online: true }, { status: 500 })
+        : Response.json({ detail: 'test failure' }, { status });
+      if (status === 403 || status === 404) assert.equal(await api.conversationRunConfig('conv'), null);
+      else await assert.rejects(api.conversationRunConfig('conv'), (error) => error.status === status);
+    }
+    globalThis.fetch = async () => { throw new TypeError('test offline'); };
+    await assert.rejects(api.conversationRunConfig('conv'), /Network request failed/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('image uploads and task starts use the desktop image attachment protocol', async () => {
   const originalFetch = globalThis.fetch;
   const calls = [];
@@ -190,6 +223,7 @@ test('provider models fall back to the runtime built-in catalog when live refres
 
   try {
     const catalog = await api.providerModels({
+      llmConfigId: 'oauth-record',
       provider: 'openai',
       authMode: 'oauth',
       customProvider: '',
@@ -199,6 +233,7 @@ test('provider models fall back to the runtime built-in catalog when live refres
     assert.deepEqual(calls.map(([, body]) => body.refresh), [true, false]);
     assert.equal(calls[0][0], '/api/llm/models');
     assert.equal(calls[1][1].model, 'gpt-5.6-sol');
+    assert.deepEqual(calls.map(([, body]) => body.llm_config_id), ['oauth-record', 'oauth-record']);
     assert.deepEqual(catalog.models.map((item) => item.id), ['gpt-5.5', 'gpt-5.4']);
   } finally {
     globalThis.fetch = originalFetch;

@@ -26,7 +26,11 @@ test('a send the runtime never accepted hands the optimistic run back', async ()
   assert.ok(Number.isInteger(submitStart), 'App.jsx 里应当还有详情页的 submit()');
 
   // 1) 记住那一份要放在 try 之前：catch 里拿不到 try 内部的 const。
-  const beforeTry = app.slice(submitStart, app.indexOf('try {', submitStart));
+  // Route validation has its own early try; the stream try starts after the
+  // saved live run, which must stay outside that stream recovery scope.
+  const streamTry = app.indexOf('try {\n      if (steering)', submitStart);
+  assert.ok(streamTry > submitStart);
+  const beforeTry = app.slice(submitStart, streamTry);
   assert.match(
     beforeTry,
     /const liveRunBeforeSend = liveRunRef\.current;/,

@@ -98,6 +98,7 @@ _ALLOWED_CORE_ROUTES: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("POST", r"llm/models"),
         ("POST", r"messages/images"),
         ("GET", r"conversations/[^/]+"),
+        ("GET", r"conversations/[^/]+/run-config"),
         ("GET", r"conversations/[^/]+/messages/images/preview"),
         ("GET", r"conversations/[^/]+/tasks"),
         ("GET", r"tasks/[^/]+"),
@@ -116,6 +117,7 @@ _MODEL_CATALOG_TASK_FIELDS = (
     "provider",
     "provider_key",
     "model",
+    "request_llm_config_id",
     "request_provider",
     "requested_provider",
     "provider_selector",
@@ -409,12 +411,10 @@ def discover_upstream() -> str:
     raise RuntimeError("Haish runtime was not found. Start the desktop app or set HAISH_UPSTREAM_URL.")
 
 
-# Every task stores the options its client sent (`request_options.provider`), but the
-# runtime API only exposes the coarse `provider_key`: two saved custom providers that
-# share a model (`custom` + `deepseek-v4-flash`) stay indistinguishable, so a phone
-# that never started the task would keep falling back to the first matching entry.
-# The runtime persists those options in its own state directory, next to the pid file
-# the adapter already discovers; read them from there instead of guessing.
+# Modern runtimes expose request_llm_config_id. For older summaries missing that
+# identity, recover llm_config_id (or legacy provider) from persisted task options
+# beside the discovered runtime pid file. Never infer a credential record from
+# provider_key/model: OAuth and API records can share both.
 _RUNTIME_TASK_PROVIDER_CACHE: dict[tuple[str, int, int], dict[str, str]] = {}
 _SAFE_CONVERSATION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 # A conversation record this large costs hundreds of megabytes to parse; past this
@@ -437,7 +437,7 @@ def _recorded_provider(task: Any) -> str:
     options = task.get("request_options") if isinstance(task, dict) else None
     if not isinstance(options, dict):
         return ""
-    return str(options.get("provider") or "").strip()
+    return str(options.get("llm_config_id") or options.get("provider") or "").strip()
 
 
 def _task_providers_from_journal(path: Path) -> dict[str, str]:
@@ -774,10 +774,12 @@ def _retry_payload(options: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {"request_id": uuid4().hex}
     if not isinstance(options, dict):
         return payload
-    for key in ("provider", "model_id", "reasoning_effort"):
-        value = options.get(key)
-        if isinstance(value, str) and value.strip():
-            payload[key] = value.strip()
+    for key in ("llm_config_id", "provider", "model_id", "reasoning_effort"):
+        if key in options:
+            value = options[key]
+            # Preserve explicit null/invalid identities for the runtime to reject;
+            # dropping them could silently inherit a different credential record.
+            payload[key] = value.strip() if isinstance(value, str) else value
     return payload
 
 
@@ -787,7 +789,9 @@ def _carried_selector(task: Any) -> str:
         return ""
     options = task.get("request_options")
     return str(
-        task.get("request_provider")
+        task.get("request_llm_config_id")
+        or (options.get("llm_config_id") if isinstance(options, dict) else "")
+        or task.get("request_provider")
         or task.get("requested_provider")
         or (options.get("provider") if isinstance(options, dict) else "")
         or ""
@@ -795,11 +799,11 @@ def _carried_selector(task: Any) -> str:
 
 
 def _attach_requested_providers(payload: Any) -> Any:
-    """Carry the provider each task ran with onto the conversation payload.
+    """Preserve exact record identities, including aliases older phones understand.
 
-    The phone restores a conversation's run config from its latest task, and
-    `provider_key` alone cannot tell two saved custom providers apart. A runtime that
-    exposes the recorded selector itself (`request_provider`) is left untouched.
+    A modern `request_llm_config_id` must also reach old clients through
+    `requested_provider`; otherwise they guess OAuth/API from provider and model.
+    Disk recovery is only needed for tasks without any recorded selector.
     """
     if not isinstance(payload, dict):
         return payload
@@ -807,21 +811,20 @@ def _attach_requested_providers(payload: Any) -> Any:
     tasks = payload.get("tasks")
     if not conversation_id or not isinstance(tasks, list) or not tasks:
         return payload
-    newest = next(
-        (task for task in tasks if isinstance(task, dict) and task.get("task_id") == payload.get("last_task_id")),
-        tasks[-1],
-    )
-    if _carried_selector(newest):
-        return payload
-    providers = conversation_task_providers(conversation_id, last_task_id=str(payload.get("last_task_id") or ""))
-    if not providers:
-        return payload
+    missing = [task for task in tasks if isinstance(task, dict) and not _carried_selector(task)]
+    providers = conversation_task_providers(conversation_id, last_task_id=str(payload.get("last_task_id") or "")) if missing else {}
     for task in tasks:
-        if not isinstance(task, dict) or task.get("requested_provider"):
+        if not isinstance(task, dict):
             continue
-        provider = providers.get(str(task.get("task_id") or ""))
-        if provider:
-            task["requested_provider"] = provider
+        options = task.get("request_options")
+        config_id = task.get("request_llm_config_id") or (options.get("llm_config_id") if isinstance(options, dict) else None)
+        if config_id:
+            task["request_provider"] = str(config_id).strip()
+            task["requested_provider"] = str(config_id).strip()
+        elif not _carried_selector(task):
+            provider = providers.get(str(task.get("task_id") or ""))
+            if provider:
+                task["requested_provider"] = provider
     return payload
 
 
@@ -1250,9 +1253,8 @@ def create_app(*, data_dir: Path | None = None, dist_dir: Path | None = None) ->
             response.headers["ETag"] = etag
             return response
 
-        # The runtime API never exposes the provider a task ran with, so the phone
-        # would have to guess it from the coarse `provider_key`. PATCH answers with
-        # the same record (the first-message rename reads it back), same fill-in.
+        # Bridge modern record IDs to legacy phones and recover missing selectors
+        # for old runtimes. PATCH rename returns the same conversation shape.
         if request.method in {"GET", "PATCH"} and upstream_response.is_success and _is_conversation_detail(path):
             raw, payload = await read_upstream_json()
             if payload is None:

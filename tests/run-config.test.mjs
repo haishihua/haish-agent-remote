@@ -177,7 +177,7 @@ test('the adapter can hand the recorded selector over as a flat field', () => {
   );
 });
 
-test('a recorded selector that no longer exists falls back to key and model matching', () => {
+test('a deleted recorded selector stays unavailable instead of switching credentials', () => {
   const providers = providerOptionsFromSettings({
     chat: { provider: 'custom', name: 'opencode_go', model: 'deepseek-v4-flash' },
     profiles: [{ id: 'llm-profile-router', provider: 'custom', name: 'ai rounter', model: 'deepseek-v4-flash' }],
@@ -187,7 +187,7 @@ test('a recorded selector that no longer exists falls back to key and model matc
     tasks: [{ task_id: 't', provider_key: 'custom', model: 'deepseek-v4-flash', request_options: { provider: 'llm-profile-deleted' } }],
   }, providers, []), {
     agentId: '',
-    providerId: 'chat:custom:opencode_go',
+    providerId: 'llm-profile-deleted',
     modelId: 'deepseek-v4-flash',
     thinking: 'high',
   });

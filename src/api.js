@@ -167,6 +167,17 @@ export const api = {
   },
   projects: () => requestWithEtag('/api/projects?execution_mode=chat'),
   conversation: (id) => request(`/api/conversations/${encodeURIComponent(id)}`),
+  conversationRunConfig: async (id) => {
+    try {
+      return await request(`/api/conversations/${encodeURIComponent(id)}/run-config`);
+    } catch (error) {
+      // Old adapters/runtimes do not expose this read. Only that explicit
+      // compatibility case may fall back to task history; connection failures
+      // must not turn a missing authoritative selection into a guessed route.
+      if (error.status === 403 || error.status === 404) return null;
+      throw error;
+    }
+  },
   // `afterEventId` is the desktop's incremental protocol: the runtime answers
   // with `events_delta: true` and only the events after the cursor, or with the
   // whole log (`false`) when the cursor is too old to resolve.
@@ -185,6 +196,7 @@ export const api = {
   llmSettings: () => request('/api/settings/llm'),
   providerModels: async (provider) => {
     const body = {
+      ...(provider.llmConfigId ? { llm_config_id: provider.llmConfigId } : {}),
       provider: provider.provider,
       auth_mode: provider.authMode,
       custom_provider: provider.customProvider,

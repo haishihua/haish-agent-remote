@@ -114,6 +114,7 @@ import {
   rememberConversationRunConfig,
   forgetRunConfigCache,
   resolveRunConfig,
+  runConfigForSend,
   taskOptionsForRunConfig,
 } from './run-config.js';
 import { isCurrentTaskRunning, isFailureStatus, isTaskRunning } from './task-stream.js';
@@ -856,6 +857,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   const [agents, setAgents] = useState([]);
   const [providers, setProviders] = useState([]);
   const [runConfig, setRunConfig] = useState(null);
+  const [persistedRunConfig, setPersistedRunConfig] = useState(undefined);
   const [lastRunConfig] = useState(() => loadLastRunConfig());
   const [models, setModels] = useState([]);
   const [modelLoading, setModelLoading] = useState(false);
@@ -895,6 +897,9 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   const liveRunFrameRef = useRef(0);
   const liveRunQuietTimerRef = useRef(0);
   const runConfigRef = useRef(null);
+  const runConfigExplicitRef = useRef(false);
+  const runConfigPreparingRef = useRef(false);
+  const runConfigScopeRef = useRef(null);
   const retriedTaskIdsRef = useRef(new Set());
   const loadedTraceIdsRef = useRef(new Set());
   const hasMessageRef = useRef(false);
@@ -942,11 +947,12 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     if (!liveRunFrameRef.current && !liveRunQuietTimerRef.current) liveRunRef.current = liveRun;
   }, [liveRun]);
   useEffect(() => { runConfigRef.current = runConfig; }, [runConfig]);
-  // 一次改动同时落在三处：本轮的 state、这台手机的上次配置、这个会话的缓存。关面板
-  // 再回来、回到列表再进来都还是这一套；桌面客户端的 setings/llm 一动不动（适配器也
-  // 不允许写）。
+  // Picker changes are explicit intent for this screen, not inferred cache.
+  // Reopening still restores the authoritative route; global settings stay read-only.
   const commitRunConfig = useCallback((next) => {
     if (!next) return;
+    runConfigExplicitRef.current = true;
+    runConfigRef.current = next;
     setRunConfig(next);
     saveLastRunConfig(next);
     rememberConversationRunConfig(id, next);
@@ -1197,27 +1203,36 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
 
   useEffect(() => {
     let cancelled = false;
+    const scope = { id };
+    runConfigScopeRef.current = scope;
     setRunConfig(null);
+    runConfigRef.current = null;
+    runConfigExplicitRef.current = false;
+    setPersistedRunConfig(undefined);
     setShowReasoningPicker(false);
     setShowRunConfig(false);
-    Promise.all([api.agents(), api.llmSettings()])
-      .then(([agentPayload, llmPayload]) => {
+    Promise.all([api.agents(), api.llmSettings(), api.conversationRunConfig(id)])
+      .then(([agentPayload, llmPayload, savedConfig]) => {
         if (cancelled) return;
         setAgents(agentOptionsFromPayload(agentPayload));
         setProviders(providerOptionsFromSettings(llmPayload));
+        setPersistedRunConfig(savedConfig);
       })
       .catch((nextError) => {
         if (!cancelled) setError(nextError.message);
       });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      if (runConfigScopeRef.current === scope) runConfigScopeRef.current = null;
+    };
   }, [id]);
 
   useEffect(() => {
-    if (!conversationHydrated || !conversation || !providers.length || runConfig) return;
-    // 这台手机在这个会话里选过的那套优先（见 run-config.js 的缓存）；没选过才是
-    // 「会话任务记录的那套 / 客户端上次的配置」。
-    setRunConfig(resolveRunConfig(conversation, providers, agents, lastRunConfig, loadConversationRunConfig(id)));
-  }, [agents, conversation, conversationHydrated, id, lastRunConfig, providers, runConfig]);
+    if (!conversationHydrated || !conversation || !providers.length || runConfig || persistedRunConfig === undefined) return;
+    // Server current route / exact task identity wins over old inferred phone
+    // caches. Explicit changes made in this screen still apply to the next send.
+    setRunConfig(resolveRunConfig({ ...conversation, run_config: persistedRunConfig || conversation.run_config }, providers, agents, lastRunConfig, loadConversationRunConfig(id)));
+  }, [agents, conversation, conversationHydrated, id, lastRunConfig, persistedRunConfig, providers, runConfig]);
 
   useEffect(() => {
     const provider = providers.find((item) => item.id === runConfigRef.current?.providerId);
@@ -1248,6 +1263,23 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
       });
     return () => { cancelled = true; };
   }, [providers, runConfig?.providerId, modelCatalogTasks]);
+
+  const prepareRunConfig = useCallback(async () => {
+    const scope = runConfigScopeRef.current;
+    const selected = await runConfigForSend({
+      conversation, providers, agents, lastRunConfig,
+      rememberedConfig: loadConversationRunConfig(id),
+      loadSavedConfig: () => api.conversationRunConfig(id),
+      getSelection: () => ({ config: runConfigRef.current, explicit: runConfigExplicitRef.current }),
+    });
+    if (!scope || scope.id !== id || runConfigScopeRef.current !== scope) {
+      throw new Error('Conversation changed. Send again in the current conversation.');
+    }
+    const options = taskOptionsForRunConfig(selected, providers);
+    runConfigRef.current = selected;
+    setRunConfig(selected);
+    return options;
+  }, [agents, conversation, id, lastRunConfig, providers]);
 
   const activeTask = useMemo(() => {
     const tasks = conversation?.tasks || [];
@@ -1327,6 +1359,8 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     const liveRunBeforeRetry = liveRunRef.current;
     let accepted = false;
     try {
+      const runOptions = await prepareRunConfig();
+      const submittedRunConfig = runConfigRef.current;
       interruptedRunRef.current = null;
       localStreamRef.current = true;
       const initialRun = draftRuntimeTask();
@@ -1335,7 +1369,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
       await api.retryTask(
         conversation.conversation_id,
         sourceTaskId,
-        taskOptionsForRunConfig(runConfig, providers),
+        runOptions,
         (streamEvent) => {
           const nextRun = runtimeTaskWithEvent(liveRunRef.current, streamEvent);
           if (!liveRunRef.current?.taskId && nextRun?.taskId) {
@@ -1345,6 +1379,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
         },
         () => {
           accepted = true;
+          if (runConfigRef.current === submittedRunConfig) runConfigExplicitRef.current = false;
           setBusy(false);
           // 接单之后才顶掉旧行（桌面也是等 run_started）：在那之前，用户看到的还是
           // 那一张失败卡片，只是按钮转着圈。
@@ -1417,7 +1452,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
       setRetryPendingTaskId('');
       setBusy(false);
     }
-  }, [busy, conversation, flushLiveRun, providers, pushToast, refresh, retryPendingTaskId, runConfig, running, scheduleLiveRun]);
+  }, [busy, conversation, flushLiveRun, prepareRunConfig, pushToast, refresh, retryPendingTaskId, runConfig, running, scheduleLiveRun]);
   // 行组件按 prop 身份 memo（ChatMessageRow）：重跑回调走一层 ref 转发，轮询换掉
   // conversation 对象时整条线程不该跟着重渲染。
   const retryRef = useRef(retryFailedRun);
@@ -1603,7 +1638,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   async function submit(event) {
     event.preventDefault();
     // Guard the handler as well as the button/IME path; never filter failed attachments out of a send.
-    if (busy || composerPending || hasBlockedImageUploads(composerImagesRef.current)) return;
+    if (busy || runConfigPreparingRef.current || composerPending || hasBlockedImageUploads(composerImagesRef.current)) return;
     const nextMessage = String(messageInputRef.current?.value || '').trim();
     const imageAttachments = composerImagesRef.current.map((image) => ({
       image_id: image.imageId,
@@ -1622,6 +1657,21 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
       pushToast('error', commentsError);
       return;
     }
+    let runOptions;
+    if (!steering) {
+      runConfigPreparingRef.current = true;
+      setBusy(true);
+      try {
+        runOptions = await prepareRunConfig();
+      } catch (configError) {
+        setBusy(false);
+        pushToast('error', configError.message);
+        return;
+      } finally {
+        runConfigPreparingRef.current = false;
+      }
+    }
+    const submittedRunConfig = runConfigRef.current;
     const optimisticId = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const existingOccurrence = optimisticUserMessagesRef.current
       .filter((item) => item.text === nextMessage)
@@ -1686,7 +1736,8 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
       }
 
       interruptedRunRef.current = null;
-      commitRunConfig(runConfig);
+      saveLastRunConfig(runConfigRef.current);
+      rememberConversationRunConfig(id, runConfigRef.current);
       localStreamRef.current = true;
       // 第一条消息给会话起名：`New Chat` 这种占位名 + 还没跑过任务时，换成 `titleFromTaskText` 的
       // 一句话摘要（桌面在提交那一趟里做的是同一件事：`startDeploy` 算名字 + 客户端 PATCH）。
@@ -1710,7 +1761,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
         conversation,
         nextMessage,
         imageAttachments,
-        taskOptionsForRunConfig(runConfig, providers),
+        runOptions,
         (streamEvent) => {
           // 每个 token 一条事件：折进 ref，每帧最多往 React 递一次（见 `scheduleLiveRun`）。
           const nextRun = runtimeTaskWithEvent(liveRunRef.current, streamEvent);
@@ -1721,6 +1772,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
         },
         () => {
           accepted = true;
+          if (runConfigRef.current === submittedRunConfig) runConfigExplicitRef.current = false;
           releaseSubmittedImages();
           setBusy(false);
         },

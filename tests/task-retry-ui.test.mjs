@@ -54,6 +54,6 @@ test('重跑走适配器的 rerun 路由，而不是再发一条消息', async (
   assert.match(server, /operation="rerun"/);
   assert.match(server, /if self\.task_id:\n\s+command\["task_id"\] = self\.task_id/);
   // rerun 的 body 只有 request_id + 路线选择：多一个 message 会被 runtime 400。
-  assert.match(server, /for key in \("provider", "model_id", "reasoning_effort"\):/);
+  assert.match(server, /for key in \("llm_config_id", "provider", "model_id", "reasoning_effort"\):/);
   assert.doesNotMatch(server, /_retry_payload[\s\S]{0,400}"message"/);
 });

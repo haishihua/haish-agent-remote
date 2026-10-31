@@ -21,10 +21,9 @@ export const THINKING_OPTIONS = [
 
 export const LAST_RUN_CONFIG_STORAGE_KEY = 'haish_remote_last_run_config_v1';
 
-// 每个会话在**这台手机**上用过的那套运行配置。会话本身只记下任务是怎么跑的
-// （runtime 的 `request_options`），手机自己改过的 provider / model / thinking 没有
-// 任何服务端字段可放——桌面那边也不会被改（适配器压根不允许写 settings/llm）。
-// 不缓存的话，一离开会话再回来就只剩「桌面最后一次跑的那套」，用户每次都得重选一遍。
+// Legacy runtimes without a saved configuration identity can use this phone's
+// cache. A server run_config or recorded configuration ID is authoritative: an
+// old inferred API selection must never replace an OAuth record on reopen.
 export const CONVERSATION_RUN_CONFIG_STORAGE_KEY = 'haish_remote_conversation_run_config_v1';
 // 会话 id 是 runtime 侧生成的字符串，每台手机都可能有上千条历史；留最近用过的这些就够，
 // 超出的按最后写入时间淘汰（localStorage 是同步的，不能让它无限长）。
@@ -145,14 +144,17 @@ export function providerOptionsFromSettings(settings) {
       const id = String(config.id || (index === 0 ? `chat:${selector}` : `profile:${selector}:${index}`));
       const customName = String(config.name || config.custom_provider || '').trim();
       const defaultModelId = String(config.model || '').trim();
+      const authMode = String(config.auth_mode || '').trim();
+      const authLabel = authMode === 'oauth' || authMode === 'oauth_token' ? 'OAuth'
+        : authMode === 'api_key' ? 'API Key' : '';
+      const label = provider === 'custom' ? (customName || PROVIDER_LABELS.custom) : (PROVIDER_LABELS[provider] || provider);
       return {
         id,
-        label: provider === 'custom'
-          ? (customName || PROVIDER_LABELS.custom)
-          : (PROVIDER_LABELS[provider] || provider),
+        label: authLabel ? `${label} · ${authLabel}` : label,
         provider,
         requestProvider: String(config.id || selector),
-        authMode: String(config.auth_mode || '').trim(),
+        llmConfigId: String(config.id || '').trim(),
+        authMode,
         customProvider: provider === 'custom' ? customName : '',
         baseUrl: provider === 'custom' ? String(config.base_url || '').trim() : '',
         defaultModelId,
@@ -226,14 +228,16 @@ function taskRequestOptions(task) {
   return options && typeof options === 'object' ? options : null;
 }
 
-// The raw selector the client sent with the task, e.g. `llm-profile-1783479743079`
-// for a saved provider entry or `custom:opencode_go` for the chat-level provider.
-// The runtime records it per task as `request_options.provider` and hands it back as
-// the flat `request_provider`; older runtimes leave the adapter to provide
-// `requested_provider` from the state the runtime keeps on disk.
+function taskConfigId(task) {
+  return String(task?.request_llm_config_id || taskRequestOptions(task)?.llm_config_id || '').trim();
+}
+
+// Modern record IDs take precedence over every legacy provider alias. Provider
+// keys and models identify capabilities, not an OAuth/API credential record.
 function taskProviderSelector(task) {
   const options = taskRequestOptions(task);
-  return String(task?.request_provider || task?.requested_provider || task?.provider_selector || options?.provider || '').trim();
+  return taskConfigId(task)
+    || String(task?.request_provider || task?.requested_provider || task?.provider_selector || options?.provider || '').trim();
 }
 
 function providerSelectorMatches(provider, selector) {
@@ -263,9 +267,8 @@ function providerFromSelector(providers, selector, taskModel) {
   return matches.find((item) => modelMatches(item, taskModel)) || matches[0];
 }
 
-// `provider_key`, `model` and `reasoning_effort` live on the task (the runtime
-// stores nothing of the sort on the conversation), so the latest task that recorded
-// how it ran is the only record of what the conversation was configured with.
+// Prefer the persisted current route, then the exact identity on the latest task.
+// Provider/model inference and the phone cache are legacy-only recovery paths.
 export function resolveRunConfig(conversation, providers, agents, lastRunConfig = null, rememberedConfig = null) {
   const tasks = Array.isArray(conversation?.tasks) ? conversation.tasks : [];
   const latestTask = tasks.find((task) => task?.task_id === conversation?.last_task_id) || tasks.at(-1) || null;
@@ -273,9 +276,36 @@ export function resolveRunConfig(conversation, providers, agents, lastRunConfig 
     ? latestTask
     : [...tasks].reverse().find((task) => taskProviderSelector(task)) || latestTask;
   const taskOptions = taskRequestOptions(recordedTask);
+  const saved = conversation?.run_config;
+  const savedSelector = String(saved?.llm_config_id || saved?.provider || '').trim();
+  const selector = taskProviderSelector(recordedTask);
+  const legacyRecord = providers.find((item) => item.llmConfigId && (item.id === selector || item.requestProvider === selector));
+  const hasSavedConfig = saved && typeof saved === 'object';
+  const exactId = hasSavedConfig ? savedSelector : taskConfigId(recordedTask) || legacyRecord?.id;
+  if (hasSavedConfig || exactId) {
+    const exactProvider = providers.find((item) => item.id === exactId || item.requestProvider === exactId);
+    return {
+      agentId: String(conversation?.agent_id || conversation?.profile_id || recordedTask?.agent_id || recordedTask?.profile_id || saved?.agent_id || agents[0]?.id || '').trim(),
+      // Keep a deleted/unavailable ID visible. Serialization blocks it instead of
+      // silently substituting an available record with different credentials.
+      providerId: exactProvider?.id || exactId || '',
+      modelId: hasSavedConfig ? String(saved.model_id || '').trim()
+        : String(recordedTask?.request_model_id || taskOptions?.model_id || recordedTask?.model || exactProvider?.defaultModelId || '').trim(),
+      thinking: [hasSavedConfig ? saved?.reasoning_effort : null, hasSavedConfig ? null : recordedTask?.reasoning_effort, hasSavedConfig ? null : taskOptions?.reasoning_effort, exactProvider?.reasoningEffort]
+        .find((value) => THINKING_OPTIONS.some((item) => item.id === value)) || 'high',
+    };
+  }
+  if (selector && !providerFromSelector(providers, selector, '')) {
+    return {
+      agentId: String(recordedTask?.agent_id || recordedTask?.profile_id || conversation?.agent_id || conversation?.profile_id || '').trim(),
+      providerId: selector,
+      modelId: String(recordedTask?.request_model_id || taskOptions?.model_id || recordedTask?.model || '').trim(),
+      thinking: recordedTask?.reasoning_effort || taskOptions?.reasoning_effort || 'high',
+    };
+  }
   const taskProvider = recordedTask?.provider_key || recordedTask?.provider || '';
   const taskModel = recordedTask?.model || taskOptions?.model_id || recordedTask?.request_model_id || '';
-  const provider = providerFromSelector(providers, taskProviderSelector(recordedTask), taskModel)
+  const provider = providerFromSelector(providers, selector, taskModel)
     || providers.find((item) => providerKeyMatches(item, taskProvider) && modelMatches(item, taskModel))
     || providers.find((item) => modelMatches(item, taskModel))
     || providers.find((item) => providerKeyMatches(item, taskProvider))
@@ -285,9 +315,8 @@ export function resolveRunConfig(conversation, providers, agents, lastRunConfig 
     ? providers.find((item) => item.id === lastRunConfig.providerId) : null;
   const selectedProvider = rememberedProvider || provider;
   const conversationAgentId = String(recordedTask?.agent_id || recordedTask?.profile_id || conversation?.agent_id || conversation?.profile_id || '').trim();
-  // 这台手机在这个会话里手动选过的 provider 优先于「任务记录那套」（那是桌面/上一次
-  // 跑出来的结果）：不然用户每换一次会话就得把 provider、model、thinking 重新挑一遍。
-  // 记录里的 agent 仍然优先——首个 chat 轮之后 runtime 写死了绑定，换它一定 400。
+  // Compatibility only: without a saved route or exact recorded identity, use
+  // the legacy phone preference. A bound conversation agent still wins.
   const cachedProvider = rememberedConfig?.providerId
     ? providers.find((item) => item.id === rememberedConfig.providerId) : null;
   const agentId = conversationAgentId || String(rememberedConfig?.agentId || '').trim()
@@ -323,10 +352,25 @@ export function withCurrentModel(models, modelId) {
   return [{ id, label: id }, ...list];
 }
 
+// Re-read the current route immediately before start/retry. A user selection
+// made in this screen (even while the read is pending) is deliberate, unlike an
+// inferred cache entry. Read failures propagate: never send a guessed identity.
+export async function runConfigForSend({ conversation, providers, agents, lastRunConfig, rememberedConfig, loadSavedConfig, getSelection }) {
+  const selection = getSelection();
+  if (selection.explicit) return selection.config;
+  const saved = await loadSavedConfig();
+  const current = getSelection();
+  if (current.explicit) return current.config;
+  return resolveRunConfig({ ...conversation, run_config: saved || conversation?.run_config }, providers, agents, lastRunConfig, rememberedConfig);
+}
+
 export function taskOptionsForRunConfig(config, providers) {
   const provider = providers.find((item) => item.id === config?.providerId);
+  if (!provider || !config?.modelId) {
+    throw new Error('The selected LLM configuration is unavailable. Reselect a configuration before sending.');
+  }
   return {
-    provider: provider?.requestProvider || null,
+    ...(provider.llmConfigId ? { llm_config_id: provider.llmConfigId } : { provider: provider.requestProvider }),
     model_id: config?.modelId || null,
     agent_id: config?.agentId || null,
     reasoning_effort: config?.thinking || 'high',
