@@ -1312,7 +1312,6 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     } catch (nextError) {
       loadedTraceIdsRef.current.delete(taskId);
       setError(nextError.message);
-      throw nextError;
     }
   }, []);
 

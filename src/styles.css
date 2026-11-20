@@ -339,7 +339,7 @@ html.detail-closing .app-shell > :not(.detail-screen):not(.app-toast-stack) * { 
   padding-left: 0;
 }
 /* No identity and no trace toggle means there is no metadata row to reserve. */
-.message-scroll .agent-response > .chat-bubble-meta:not(:has(.chat-timeline-collapsed)):not(:has(.chat-timeline-elapsed-pill)) {
+.message-scroll .chat-row:not(.has-execution-trace) .agent-response > .chat-bubble-meta {
   display: none;
 }
 .message-scroll .agent-response .haish-markdown { --markdown-content-size: 15px; line-height: 1.6; }

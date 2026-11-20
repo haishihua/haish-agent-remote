@@ -212,7 +212,7 @@ function ChatThreadComponent({ conversationId = '', rows = [], loadTaskTrace, an
     const retryable = Boolean(onRetryTask) && row.role === 'agent' && row.status === 'failed'
       && row.taskId && row.taskId === retryableTaskId;
     return (
-      <div className="chat-row" key={row.id} ref={needsTrace ? (node) => attachRow(node, row.taskId) : undefined}>
+      <div className={`chat-row${row.role === 'agent' && (row.traceTimeline?.length || row.streaming) ? ' has-execution-trace' : ''}`} key={row.id} ref={needsTrace ? (node) => attachRow(node, row.taskId) : undefined}>
         <ChatMessageRow
           message={row.role === 'agent' && row.status === 'failed'
             ? { ...row, text: userErrorMessage({}), error: userErrorMessage({}) } : row}
