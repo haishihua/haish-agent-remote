@@ -328,6 +328,26 @@ html.detail-closing .app-shell > :not(.detail-screen):not(.app-toast-stack) * { 
 .chat-message-row.user .chat-bubble,
 .chat-message-row.agent .chat-bubble { max-width: 100%; }
 .chat-message-row.agent .chat-message-images { max-width: 100%; }
+/* Mobile answers read as a document, not an inset speech bubble. Keep the
+   avatar gutter in the metadata only; user bubbles and tool cards are unchanged. */
+.message-scroll .chat-message-row.agent .chat-bubble.agent-response {
+  width: 100%;
+  min-width: 0;
+  padding: 4px 0 0;
+}
+.message-scroll .agent-response > .chat-bubble-meta {
+  padding-left: 38px;
+}
+.message-scroll .chat-message-row.agent .agent-response > .message-speech-body {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.message-scroll .agent-response ~ .chat-message-actions { margin-left: 0; }
 /* 桌面那句「Steps load when you scroll up.」（行上的 `.chat-trace-pending`）不画：它写的是
    桌面那种「要自己往上滚，那一轮的执行记录才会去读」的读法，而中文界面里冒出一句英文、又没有
    任何容器，看着就是一条没头没尾的字（用户：「怎么还有这个啊，给我去掉」）。手机这头执行记录
