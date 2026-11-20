@@ -342,10 +342,10 @@ html.detail-closing .app-shell > :not(.detail-screen):not(.app-toast-stack) * { 
 .message-scroll .agent-response > .chat-bubble-meta:not(:has(.chat-timeline-collapsed)):not(:has(.chat-timeline-elapsed-pill)) {
   display: none;
 }
-.message-scroll .agent-response .haish-markdown { --markdown-content-size: 16px; line-height: 1.6; }
-.composer textarea { font-size: 17px; line-height: 24px; }
+.message-scroll .agent-response .haish-markdown { --markdown-content-size: 15px; line-height: 1.6; }
+.message-scroll .chat-message-row.user .chat-bubble-text { font-size: 15px; }
 .message-scroll .haish-user-input-textarea {
-  font-size: 17px;
+  font-size: 16px;
   line-height: 1.5;
   min-height: 88px;
   color: var(--text);
