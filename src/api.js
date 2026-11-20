@@ -181,9 +181,17 @@ export const api = {
   // `afterEventId` is the desktop's incremental protocol: the runtime answers
   // with `events_delta: true` and only the events after the cursor, or with the
   // whole log (`false`) when the cursor is too old to resolve.
-  task: (id, { afterEventId = null } = {}) => {
+  task: async (id, { afterEventId = null } = {}) => {
     const cursor = afterEventId ? `&after_event_id=${encodeURIComponent(afterEventId)}` : '';
-    return request(`/api/tasks/${encodeURIComponent(id)}?event_view=runtime${cursor}`);
+    let task = await request(`/api/tasks/${encodeURIComponent(id)}?event_view=runtime${cursor}`);
+    // Match desktop restore: bounded snapshots can omit all early tool calls.
+    // A truncated page must never be treated as a fully hydrated transcript.
+    if (task.truncated) {
+      task = await request(`/api/tasks/${encodeURIComponent(id)}?event_view=full`);
+      if (task.truncated) throw new Error('Task history is incomplete. Please try again.');
+      task = { ...task, events_delta: false };
+    }
+    return task;
   },
   agents: async () => {
     try {
