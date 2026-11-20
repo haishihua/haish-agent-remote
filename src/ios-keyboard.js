@@ -104,6 +104,24 @@ export function createKeyboardInsetController({
     return { dock: surface?.dockRef?.current || null };
   }
 
+  function syncQuestionEditor(height = inset) {
+    const surface = getSurface?.();
+    const scroller = surface?.scrollerRef?.current;
+    const dock = surface?.dockRef?.current;
+    const editor = viewport?.document?.activeElement;
+    const editingQuestion = Boolean(editor?.matches?.('.haish-user-input-textarea'));
+    if (dock) dock.hidden = editingQuestion && height > 0;
+    if (scroller) {
+      scroller.style.height = editingQuestion && height ? `calc(100% - ${height}px)` : '';
+      if (editingQuestion) {
+        editor.style.scrollMarginBlock = '16px';
+        scheduleTimer(() => editor.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' }), 50);
+      }
+    }
+  }
+
+  function onEditorFocus() { syncQuestionEditor(); }
+
   function applyFrame(event) {
     const detail = event?.detail || {};
     const dismissal = Boolean(detail.dismissal);
@@ -138,9 +156,9 @@ export function createKeyboardInsetController({
       previous?.cancel?.();
     }
 
-    // Never mutate the long message scroller from a keyboard callback. Its fixed reserve already
-    // keeps the latest row clear of the composer; changing padding here invalidated every skipped
-    // content-visibility row and woke Mutation/Resize observers during IME work.
+    // Only the inline question editor needs a keyboard-sized reading viewport.
+    // Ordinary composer input retains the non-reflowing long-thread path.
+    syncQuestionEditor(nextInset);
     inset = nextInset;
     lift = nextLift;
     markMoving(remaining);
@@ -149,6 +167,7 @@ export function createKeyboardInsetController({
   function start() {
     if (stopped || !native) return stop;
     viewport?.addEventListener?.(KEYBOARD_FRAME_EVENT, applyFrame);
+    viewport?.document?.addEventListener?.('focusin', onEditorFocus);
     return stop;
   }
 
@@ -156,6 +175,10 @@ export function createKeyboardInsetController({
     if (stopped) return;
     stopped = true;
     viewport?.removeEventListener?.(KEYBOARD_FRAME_EVENT, applyFrame);
+    viewport?.document?.removeEventListener?.('focusin', onEditorFocus);
+    const surface = getSurface?.();
+    if (surface?.dockRef?.current) surface.dockRef.current.hidden = false;
+    if (surface?.scrollerRef?.current) surface.scrollerRef.current.style.height = '';
     clearMotionTimer();
     const { dock } = pieces();
     dockAnimation?.cancel?.();

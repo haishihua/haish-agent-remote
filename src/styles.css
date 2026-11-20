@@ -338,6 +338,26 @@ html.detail-closing .app-shell > :not(.detail-screen):not(.app-toast-stack) * { 
 .message-scroll .agent-response > .chat-bubble-meta {
   padding-left: 0;
 }
+/* No identity and no trace toggle means there is no metadata row to reserve. */
+.message-scroll .agent-response > .chat-bubble-meta:not(:has(.chat-timeline-collapsed)):not(:has(.chat-timeline-elapsed-pill)) {
+  display: none;
+}
+.message-scroll .agent-response .haish-markdown { --markdown-content-size: 16px; line-height: 1.6; }
+.composer textarea { font-size: 17px; line-height: 24px; }
+.message-scroll .haish-user-input-textarea {
+  font-size: 17px;
+  line-height: 1.5;
+  min-height: 88px;
+  color: var(--text);
+  -webkit-tap-highlight-color: transparent;
+}
+.message-scroll .haish-user-input-textarea:focus,
+.message-scroll .haish-user-input-textarea:focus-visible {
+  outline: none;
+  box-shadow: none;
+  border-color: var(--border);
+}
+.composer-dock[hidden] { display: none; }
 .message-scroll .agent-response > .chat-bubble-meta > .chat-bubble-meta-main {
   display: none;
 }

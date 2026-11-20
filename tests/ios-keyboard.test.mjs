@@ -50,6 +50,27 @@ test('duration and remaining time stay on the UIKit timeline', () => {
   assert.equal(keyboardRemainingMs({ at: null, now: 1000, duration: 250 }), 250);
 });
 
+test('inline question editor clears the composer and keeps a keyboard-sized reading viewport', () => {
+  const dock = fakeDock();
+  const scroller = { style: {} };
+  let visible = 0;
+  const editor = { style: {}, matches: () => true, scrollIntoView: () => visible++ };
+  const viewport = fakeViewport();
+  viewport.document = { activeElement: editor };
+  const controller = createKeyboardInsetController({ native: true, viewport,
+    getSurface: () => ({ dockRef: { current: dock }, scrollerRef: { current: scroller } }),
+    scheduleTimer: (callback) => { callback(); return 0; },
+  });
+  controller.applyFrame({ detail: { height: 336, lift: 306 } });
+  assert.equal(dock.hidden, true);
+  assert.equal(scroller.style.height, 'calc(100% - 336px)');
+  assert.equal(visible, 1);
+  controller.applyFrame({ detail: { dismissal: true } });
+  assert.equal(dock.hidden, false);
+  assert.equal(scroller.style.height, '');
+  controller.stop();
+});
+
 function fakeViewport() {
   const handlers = new Map();
   return {
