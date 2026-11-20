@@ -1,3 +1,4 @@
+import { mobileTraceControls } from './scripts/mobile-trace-controls.mjs';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
@@ -67,7 +68,7 @@ function desktopMarkdownSeam() {
 }
 
 export default defineConfig({
-  plugins: [desktopMarkdownSeam(), react(), tailwindcss()],
+  plugins: [mobileTraceControls(), desktopMarkdownSeam(), react(), tailwindcss()],
   resolve: { dedupe: desktopPackages },
   // 桌面文件在项目根之外，dev / preview 的静态服务要放行上一级目录。
   server: {

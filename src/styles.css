@@ -357,7 +357,7 @@ html.detail-closing .app-shell > :not(.detail-screen):not(.app-toast-stack) * { 
   box-shadow: none;
   border-color: var(--border);
 }
-.trace-load-button { margin-top: 8px; padding: 6px 0; border: 0; background: transparent; color: var(--muted); font-size: 13px; }
+.message-scroll .chat-timeline-time-icon { color: #8e9ab8; flex-shrink: 0; }
 .composer-dock[hidden] { display: none; }
 .message-scroll .agent-response > .chat-bubble-meta > .chat-bubble-meta-main {
   display: none;
