@@ -1,0 +1,16 @@
+# iOS build 100 regression delivery — partial real-device verification
+
+- Source: `18ae6a39aed093be971dd6dba33918ca8a29a974`.
+- Actions: https://github.com/haishihua/haish-agent-remote/actions/runs/44669157080 — success.
+- Artifact ID: `14598683642`; IPA version 1.100 / build 100.
+- Downloaded IPA SHA256: `f944f5921c03e51c7811497893256c2bac69de70cc725b2f7898450e7cc3ac38`.
+- Sideloadly reached Done / 100%; device application listing independently confirms Haish 1.100. Upgrade without uninstall.
+- Initial launch rejected: device log explicitly reports `Profile Needs Network Validation`. With user-authorized temporary VPN disable, launch succeeded. VPN was switched back on (WDA observed switch value 1, connecting); subsequent Haish requests worked. This was not evidence of damaged IPA.
+- Local isolated verification uses the Actions-pinned desktop source `97aaa54a359eabd4f2a225868df5e19aac8baf9e`; existing desktop worktree was not altered. 415 JS tests pass; web production build passes (bundle-size warnings).
+- WDA real iPhone / iOS17.5.1: cold launch -> directory visible by 2.15 seconds; entering sample existing conversation -> history visible by 3.12 seconds. These are upper bounds including WDA action and accessibility snapshot overhead, one measured sample, not network-only latency or a broad performance guarantee.
+- Existing conversation history rendered, back navigation and second conversation history rendered successfully.
+- Initial build100 lacked full task-card redaction; real-device failure revealed it. Follow-up source `26a7d2087a09aed2780949035d55beab18915846`, Actions https://github.com/haishihua/haish-agent-remote/actions/runs/44673232910 succeeded. IPA 1.101/build101 SHA256 `8c8f49618a6c1ffc1b912a6f1406942866b6b387799a9c3b83df8c3d606596a5`; Sideloadly Done/100%, device listing confirms 1.101, launch succeeded.
+- User authorized a disposable no-tool conversation and specified ai rounter-ds/deepseek-v4-flash. WDA selected provider/model, submitted no-tool OK request, got OK. A temporary invalid model was applied only to that disposable conversation via local core run-config; sending through WDA produced a real failed task. Restored specified model, clicked Retry through WDA: old failure count 0, Retry count 0, Stop task visible; completion returned OK with no old failure. On build100, leaving and reentering also preserved the collapsed attempt.
+- Repeated real failure/Retry on final build101: failure card text is `Could not complete the request. Please try again.`, no upstream channel or request-id leakage. Retry accepted with zero old failure cards and completed successfully. Disposable run-config restored to specified provider/model. No user project task was rerun.
+- Remaining coverage limit: transient request-error toast automatic dismissal has unit/source coverage but was not separately induced on the real phone. Do not describe all error paths or global performance as fully accepted.
+- Fixes: read receipts no longer gate directory first paint; HTTP diagnostics retained as metadata but not appended to UI message; detail request errors go to toast, failure empty-state remains; retry lineage from `source_task_id` collapses orphan and persisted assistant responses and survives reload, excluding workflow-node reruns.
