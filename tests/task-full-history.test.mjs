@@ -22,6 +22,24 @@ test('truncated runtime history restores durable full log including early tools'
   } finally { globalThis.fetch = previous; }
 });
 
+test('paged runtime history restores full log even without truncated flag', async () => {
+  const previous = globalThis.fetch;
+  const paths = [];
+  globalThis.fetch = async (path) => {
+    paths.push(String(path));
+    return new Response(JSON.stringify(String(path).includes('event_view=full')
+      ? { task_id: 'task', events: [{ type: 'tool_call' }] }
+      : { task_id: 'task', events_delta: false, next_cursor: 'more', events: [] }),
+    { headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    const task = await api.task('task');
+    assert.equal(paths.length, 2);
+    assert.equal(task.events[0].type, 'tool_call');
+    assert.equal(task.events_delta, false);
+  } finally { globalThis.fetch = previous; }
+});
+
 test('incomplete full log is not accepted as hydrated history', async () => {
   const previous = globalThis.fetch;
   globalThis.fetch = async () => new Response(JSON.stringify({ truncated: true }),

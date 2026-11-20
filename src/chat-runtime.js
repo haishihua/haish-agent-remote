@@ -442,7 +442,7 @@ export function buildChatRows({
   const firstUserByTask = firstUserMessageIds(messages);
   const taskByAssistantMessage = new Map();
   for (const task of tasksById?.values?.() || []) {
-    if (task.assistant_message_id) taskByAssistantMessage.set(String(task.assistant_message_id), String(task.task_id));
+    if (task.assistant_message_id && task.task_id) taskByAssistantMessage.set(String(task.assistant_message_id), String(task.task_id));
   }
   messages.forEach((item, index) => {
     const taskId = String(item?.task_id || taskByAssistantMessage.get(String(item?.message_id || item?.id || '')) || '');
