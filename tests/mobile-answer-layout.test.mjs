@@ -15,7 +15,10 @@ test('Streamdown inline code is excluded from mobile gold code override', () => 
 });
 
 test('trace observer watches full message row, not an empty trailing sentinel', () => {
-  assert.match(view, /className="chat-row" key=\{row.id\} ref=\{needsTrace/);
+  assert.match(view, /key=\{row.id\} ref=\{needsTrace/);
+  assert.match(view, /has-execution-trace/);
+  assert.match(css, /\.chat-row:not\(\.has-execution-trace\) \.agent-response > \.chat-bubble-meta/);
+  assert.doesNotMatch(css, /chat-bubble-meta:not\(:has/);
   assert.doesNotMatch(view, /<span ref=\{\(node\) => attachRow/);
   assert.match(view, /requestedTracesRef.current.get\(taskId\) === node/);
 });
