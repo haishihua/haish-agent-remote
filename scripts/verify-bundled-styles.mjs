@@ -49,7 +49,7 @@ const REQUIRED_OVERRIDES = [
   ['-webkit-text-size-adjust:100%;text-size-adjust:100%', 'diff 固定文字缩放，避免 iOS 将部分长行自动放大'],
   ['.aui-tool-detail.haish-tool-elements[data-slot=code-diff]>div:last-child>div{width:max-content;min-width:100%}', 'diff 的代码画布容纳最长行并至少铺满面板'],
   ['.aui-tool-detail.haish-tool-elements[data-slot=code-diff]>div:last-child>div>div>span{flex:0 0 auto;font:inherit}', 'diff 文本与符号不压缩且统一继承行字体'],
-  ['code:not([data-streamdown=code-block-body]code){padding:2px 6px', '代码块正文不继承全局行内 code 的方框样式'],
+  ['code:not([data-streamdown=code-block-body]code):not([data-streamdown=inline-code]){padding:2px 6px', 'Markdown 代码块与行内代码均不继承手机全局 code 覆盖'],
   ['.reasoning-sheet-scrim{z-index:130;align-items:center', '思考强度使用居中弹层而不是 composer 内联滑杆'],
   ['.reasoning-sheet.run-config-summary{display:flex', '思考强度弹层保留原来的模型、档位和配置入口'],
   ['.reasoning-sliderinput::-webkit-slider-runnable-track{height:40px', '思考强度弹层复用原来的四档滑杆样式'],
