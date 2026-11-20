@@ -46,7 +46,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
 .screen-header h1 { margin: 2px 0 0; font-size: 28px; line-height: 1.1; letter-spacing: -0.035em; }
 .eyebrow { margin: 0; color: var(--accent); font-size: 11px; font-weight: 750; letter-spacing: 0.14em; }
 .supporting { color: var(--muted); line-height: 1.55; }
-code:not([data-streamdown="code-block-body"] code) { padding: 2px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--accent-strong); }
+code:not([data-streamdown="code-block-body"] code):not([data-streamdown="inline-code"]) { padding: 2px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--accent-strong); }
 
 .icon-button { display: grid; width: 48px; height: 48px; place-items: center; border: 1px solid var(--border); border-radius: 14px; background: var(--surface-raised); color: var(--text); }
 .icon-button:active, .conversation-row:active, .row-action:active, .project-options button:active { background: color-mix(in srgb, var(--surface-raised) 82%, var(--accent)); }
@@ -336,7 +336,10 @@ html.detail-closing .app-shell > :not(.detail-screen):not(.app-toast-stack) * { 
   padding: 4px 0 0;
 }
 .message-scroll .agent-response > .chat-bubble-meta {
-  padding-left: 38px;
+  padding-left: 0;
+}
+.message-scroll .agent-response > .chat-bubble-meta > .chat-bubble-meta-main {
+  display: none;
 }
 .message-scroll .chat-message-row.agent .agent-response > .message-speech-body {
   padding: 0;

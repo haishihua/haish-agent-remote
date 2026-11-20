@@ -150,7 +150,7 @@ function ChatThreadComponent({ conversationId = '', rows = [], loadTaskTrace, an
   const [imageVersion, bumpImageVersion] = React.useReducer((value) => value + 1, 0);
   const observerRef = React.useRef(null);
   const observerRowsRef = React.useRef(new Set());
-  const requestedTracesRef = React.useRef(new Set());
+  const requestedTracesRef = React.useRef(new Map());
 
   const baseRows = React.useMemo(() => stabilizeRows(rowCacheRef.current, rows), [rows]);
   const withImages = React.useMemo(
@@ -198,8 +198,8 @@ function ChatThreadComponent({ conversationId = '', rows = [], loadTaskTrace, an
 
   const attachRow = React.useCallback((node, taskId) => {
     if (!node || !taskId) return;
-    if (requestedTracesRef.current.has(taskId)) return;
-    requestedTracesRef.current.add(taskId);
+    if (requestedTracesRef.current.get(taskId) === node) return;
+    requestedTracesRef.current.set(taskId, node);
     node.setAttribute('data-trace-task-id', taskId);
     observerRowsRef.current.add(node);
     observerRef.current?.observe(node);
@@ -212,7 +212,7 @@ function ChatThreadComponent({ conversationId = '', rows = [], loadTaskTrace, an
     const retryable = Boolean(onRetryTask) && row.role === 'agent' && row.status === 'failed'
       && row.taskId && row.taskId === retryableTaskId;
     return (
-      <div className="chat-row" key={row.id}>
+      <div className="chat-row" key={row.id} ref={needsTrace ? (node) => attachRow(node, row.taskId) : undefined}>
         <ChatMessageRow
           message={row.role === 'agent' && row.status === 'failed'
             ? { ...row, text: userErrorMessage({}), error: userErrorMessage({}) } : row}
@@ -223,7 +223,6 @@ function ChatThreadComponent({ conversationId = '', rows = [], loadTaskTrace, an
           retryPending={Boolean(retryPendingTaskId) && row.taskId === retryPendingTaskId}
           actionsDisabled={Boolean(row.streaming) || retryBlocked}
         />
-        {needsTrace ? <span ref={(node) => attachRow(node, row.taskId)} aria-hidden="true" /> : null}
       </div>
     );
   });
