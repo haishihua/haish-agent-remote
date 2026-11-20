@@ -17,7 +17,7 @@ async function withFetch(fetch, run) {
 function check(stage, inspect = () => {}) {
   return (error) => {
     assert.equal(error.requestDiagnostic.stage, stage);
-    assert.match(error.message, /req-[a-z0-9]+-[a-z0-9]+/);
+    assert.doesNotMatch(error.message, /req-|\/api\/|HTTP|SyntaxError/);
     assert.match(error.requestDiagnostic.time, /^\d{4}-/);
     inspect(error, error.requestDiagnostic);
     return true;
@@ -31,7 +31,7 @@ test('occasional WebKit fetch exception identifies request and stage', async () 
       assert.equal(record.method, 'GET');
       assert.equal(record.status, null);
       assert.equal(record.type, 'SyntaxError');
-      assert.match(error.message, /The string did not match the expected pattern/);
+      assert.match(error.message, /Could not complete/);
     }));
   });
 });
@@ -78,7 +78,7 @@ test('HTTP status is preserved for existing model fallback and retry logic', asy
   await withFetch(async () => new Response('{"detail":"Forbidden"}', { status: 403 }), async () => {
     await assert.rejects(api.projects(), check('http', (error) => {
       assert.equal(error.status, 403);
-      assert.match(error.message, /^Forbidden \[/);
+      assert.match(error.message, /^Please reconnect/);
     }));
   });
 });

@@ -13,6 +13,14 @@ export function isReplylessTask(task) {
   return taskHasNoAssistantMessage(task) && isFailureStatus(task?.status);
 }
 
+export function replacedTaskIds(conversation, accepted = new Set()) {
+  const replaced = new Set(accepted);
+  for (const task of conversation?.tasks || []) {
+    if (task.source_task_id && !task.rerun_from_node_id) replaced.add(task.source_task_id);
+  }
+  return replaced;
+}
+
 export function orphanTaskReplies(conversation) {
   const replies = new Map();
   const answered = new Set(

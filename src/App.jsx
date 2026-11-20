@@ -151,6 +151,7 @@ import {
 import {
   orphanReplyAnchors,
   orphanTaskReplies,
+  replacedTaskIds,
 } from './task-replies.js';
 import { createDismissHandoff, DIRECTORY_HOLD_CLASS } from './dismiss-handoff.js';
 
@@ -1888,6 +1889,9 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   const agentLocked = conversationHasSentMessage({ tasks: conversation?.tasks, messages: conversation?.messages });
   // A detail that never loaded is a dead end on its own — a banner over an empty thread.
   // The card below owns the way out, and the pull-to-refresh handler above retries it.
+  useEffect(() => {
+    if (error) pushToast('error', error);
+  }, [error, pushToast]);
   const detailLoadFailed = !conversationHydrated && Boolean(error || connection) && !liveRun;
   // 取会话失败时没有「线程渲染完」这回事（错误卡已经占住了线程），别把输入框一起扣着。
   useEffect(() => {
@@ -1898,9 +1902,11 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
   // so typing, the elapsed timer, polls and streamed events only redraw the parts
   // they actually change.
   const hidingLiveTask = Boolean(running && liveRun && activeTaskId);
+  const replacedIds = useMemo(() => replacedTaskIds(conversation, retriedTaskIds), [conversation, retriedTaskIds]);
   const visibleMessages = useMemo(() => (conversation?.messages || []).filter((item) => !(
-    hidingLiveTask && item.role !== 'user' && item.task_id === activeTaskId
-  )), [activeTaskId, conversation, hidingLiveTask]);
+    item.role !== 'user' && (replacedIds.has(item.task_id)
+      || (hidingLiveTask && item.task_id === activeTaskId))
+  )), [activeTaskId, conversation, hidingLiveTask, replacedIds]);
   const visibleOptimisticMessages = useMemo(() => optimisticUserMessages.filter((item) => (
     userMessageOccurrenceCount(visibleMessages, item.text, userMessageTextOf) < item.occurrence
   )), [optimisticUserMessages, userMessageTextOf, visibleMessages]);
@@ -1908,9 +1914,9 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
     const replies = orphanTaskReplies(conversation);
     // 已重跑过的那一轮失败由新任务顶掉（桌面的 pendingReplacesSource 同理）：
     // 否则同一句用户消息下面会挂出两条助手行。
-    for (const taskId of retriedTaskIds) replies.delete(taskId);
+    for (const taskId of replacedIds) replies.delete(taskId);
     return replies;
-  }, [conversation, retriedTaskIds]);
+  }, [conversation, replacedIds]);
   const orphanReplyByAnchor = useMemo(() => orphanReplyAnchors(visibleMessages, orphanReplies), [orphanReplies, visibleMessages]);
   // Keep the live trace on screen between "stop" and the refreshed conversation
   // snapshot that carries the local reply for the cancelled task.
@@ -2010,7 +2016,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
           <div><strong>{conversation?.title || 'Task'}</strong><span>{projectName || 'Project'}</span></div>
           <span className="header-spacer" />
         </header>
-        {connection || error ? <div className={`detail-error-banner ${reconnecting ? 'connecting' : ''}`} role={reconnecting ? 'status' : 'alert'}>
+        {connection ? <div className={`detail-error-banner ${reconnecting ? 'connecting' : ''}`} role={reconnecting ? 'status' : 'alert'}>
           {reconnecting ? <RefreshCw className="spin" size={17} aria-hidden="true" /> : <CircleAlert size={17} aria-hidden="true" />}
           <span>{connection?.message || error}</span>
         </div> : null}
@@ -2297,11 +2303,9 @@ export default function App() {
 
   const loadTasks = useCallback(async () => {
     try {
-      const [projectsResponse, readResponse] = await Promise.all([
-        api.projects(),
-        api.conversationReads().catch(() => null),
-      ]);
-      applySeenAt(readResponse?.seen_at);
+      // Read receipts are auxiliary: a slow request must not block the first list.
+      void api.conversationReads().then((response) => applySeenAt(response?.seen_at)).catch(() => {});
+      const projectsResponse = await api.projects();
       // The directory answered: whatever the previous attempt reported is stale now.
       directoryErrorRef.current = false;
       setFatalError('');

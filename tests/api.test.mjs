@@ -24,7 +24,7 @@ test('startup status requests time out instead of leaving the app loading foreve
 
   try {
     await assert.rejects(requestWithTimeout('/remote/status', 5), {
-      message: /^Connection timed out\. Make sure Haish is running on your computer\. \[GET \/remote\/status · timeout · AbortError/,
+      message: /^Connection timed out\./,
     });
   } finally {
     globalThis.fetch = originalFetch;
@@ -39,7 +39,7 @@ test('server errors become reconnecting state when the Haish runtime is offline'
 
   try {
     await assert.rejects(api.projects(), {
-      message: /^Reconnecting to Haish… \[GET \/api\/projects · http · Error · HTTP 500/,
+      message: /^Haish is temporarily unavailable\./,
       status: 500,
     });
   } finally {
@@ -115,7 +115,7 @@ test('only unsupported current-route reads allow compatibility fallback, not aut
       else await assert.rejects(api.conversationRunConfig('conv'), (error) => error.status === status);
     }
     globalThis.fetch = async () => { throw new TypeError('test offline'); };
-    await assert.rejects(api.conversationRunConfig('conv'), /Network request failed/);
+    await assert.rejects(api.conversationRunConfig('conv'), /Could not complete the request/);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -384,7 +384,7 @@ test('a rejected retry keeps the runtime verdict for the row', async () => {
 
   try {
     await assert.rejects(api.retryTask('conversation-1', 'task-1', {}, () => {}), {
-      message: /Only the latest turn can be retried\./,
+      message: /This task has changed\./,
       status: 409,
     });
   } finally {

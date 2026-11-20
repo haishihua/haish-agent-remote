@@ -1,3 +1,4 @@
+import { userErrorMessage } from './user-error.js';
 // Metadata only: never retain request headers/bodies, response bodies, pairing
 // addresses, URL queries (image paths/cursors), or arbitrary exception text.
 export const REQUEST_DIAGNOSTICS_KEY = 'haish_remote_request_diagnostics_v1';
@@ -80,7 +81,7 @@ export function diagnoseRequestError(error, context) {
     record.streamLine === undefined ? '' : `line ${record.streamLine}`,
     `${record.elapsedMs}ms`, record.time, record.id,
   ].filter(Boolean).join(' · ');
-  const next = new Error(`${summary} [${details}]`, { cause: error });
+  const next = new Error(userErrorMessage({ status: error?.status ?? record.status, requestDiagnostic: record }), { cause: error });
   next.status = stage === 'timeout' ? 0 : error?.status ?? record.status ?? undefined;
   next.requestDiagnostic = record;
   return next;

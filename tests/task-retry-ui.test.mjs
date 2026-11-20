@@ -40,7 +40,7 @@ test('App 用会话的最后一轮判定重跑资格并转发给线程', async (
   // 过了接单这一关再顶掉旧行：runtime 拒了（409）就要放回去。
   assert.match(source, /retriedTaskIdsRef\.current = previousRetried;/);
   assert.match(source, /pushToast\('error', nextError\.message\)/);
-  assert.match(source, /for \(const taskId of retriedTaskIds\) replies\.delete\(taskId\);/);
+  assert.match(source, /for \(const taskId of replacedIds\) replies\.delete\(taskId\);/);
 });
 
 test('重跑走适配器的 rerun 路由，而不是再发一条消息', async () => {
