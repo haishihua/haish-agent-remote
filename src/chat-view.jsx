@@ -8,6 +8,7 @@
 //   2) 执行记录按需加载：历史轮次的 eventLog 只有滚到眼前才值得下载。桌面端自己
 //      在滚动加载更早的轮次，手机这边用 IntersectionObserver 触发（行上会说
 //      「Steps load when you scroll up.」）。
+import { userErrorMessage } from './user-error.js';
 import React from 'react';
 // 桌面那几份带前缀的全局样式段（chat / approvals / workflow-runtime / delegation）
 // 和 base.css 摘出来的 token：桌面组件自己只 import 组件级样式，这几段得由这一层
@@ -213,7 +214,8 @@ function ChatThreadComponent({ conversationId = '', rows = [], loadTaskTrace, an
     return (
       <div className="chat-row" key={row.id}>
         <ChatMessageRow
-          message={row}
+          message={row.role === 'agent' && row.status === 'failed'
+            ? { ...row, text: userErrorMessage({}), error: userErrorMessage({}) } : row}
           annotationNumbers={annotationNumbers || undefined}
           onAnnotationJump={onAnnotationJump}
           onPreviewImage={onPreviewImage}
