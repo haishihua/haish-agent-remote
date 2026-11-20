@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import RemoteDesktop from './remote-desktop.jsx';
+import { LoadingState } from '../../haish-agent/app-web/src/shared/ui/agent-elements/LoadingState.jsx';
 import SettingsScreen from './settings-screen.jsx';
 import {
   ArrowLeft,
@@ -785,7 +786,7 @@ const ConversationList = React.memo(function ConversationList({ projects, conver
       </div>
       <div className="remote-body" ref={bodyRef}>
         <span className="pull-refresh" ref={refreshIndicatorRef} aria-hidden="true"><LoaderCircle size={21} /></span>
-        {loading && conversations.length === 0 ? <div className="center-state"><LoaderCircle className="spin" /><span>Syncing…</span></div> : null}
+        {loading && conversations.length === 0 ? <div className="center-state"><LoadingState role="status" label="Loading conversations…" /></div> : null}
         {!loading && conversations.length === 0 && loadFailed ? (
           <div className="load-failed tall"><CircleAlert size={28} aria-hidden="true" /><h2>Couldn’t load conversations</h2><p>Pull down to try again.</p></div>
         ) : null}
@@ -2049,7 +2050,7 @@ function ConversationDetail({ id, projectName, initialConversation, modelCatalog
             {/* 目录里那行不带 messages（只有 message_count），所以首次进会话的线程真就是空的：
                 在 hydrate 之前得画出加载态，否则用户看到的是「整屏空白」（看起来像没反应）。
                 有行就不挡——那可能是同一条详情被换成了另一个会话，旧行让位即可。 */}
-            {!conversationHydrated && !detailLoadFailed && !rows.length ? <div className="center-state"><LoaderCircle className="spin" /><span>Loading conversation…</span></div> : null}
+            {!conversationHydrated && !detailLoadFailed && !rows.length ? <div className="center-state"><LoadingState role="status" label="Loading conversation…" /></div> : null}
           </div>
         </div>
       </div>

@@ -186,7 +186,7 @@ export const api = {
     let task = await request(`/api/tasks/${encodeURIComponent(id)}?event_view=runtime${cursor}`);
     // Match desktop restore: bounded snapshots can omit all early tool calls.
     // A truncated page must never be treated as a fully hydrated transcript.
-    if (task.truncated) {
+    if (task.truncated || (task.events_delta === false && task.next_cursor)) {
       task = await request(`/api/tasks/${encodeURIComponent(id)}?event_view=full`);
       if (task.truncated) throw new Error('Task history is incomplete. Please try again.');
       task = { ...task, events_delta: false };

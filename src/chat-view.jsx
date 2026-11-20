@@ -223,6 +223,7 @@ function ChatThreadComponent({ conversationId = '', rows = [], loadTaskTrace, an
           retryPending={Boolean(retryPendingTaskId) && row.taskId === retryPendingTaskId}
           actionsDisabled={Boolean(row.streaming) || retryBlocked}
         />
+        {needsTrace ? <button type="button" className="trace-load-button" onClick={() => loadTaskTrace?.(row.taskId)}>加载执行过程</button> : null}
       </div>
     );
   });
