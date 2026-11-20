@@ -1,0 +1,9 @@
+# Historical trace regression — iPhone 1.109
+
+- User reported missing execution history after spacing changes. 1.108 did not fix the observed regression; do not count its compatibility changes as device acceptance.
+- Read-only inspection of existing 设置列表删除入口改为左滑删除 found 821 durable events, including 15 tool starts and 15 completions. No persisted history was deleted. Folding that actual payload using pinned desktop sources produced commentary and a tool group.
+- Removed metadata hiding based on dynamic `:has` descendants. ChatThread now assigns `has-execution-trace` from row data; metadata is hidden only for rows without trace items or streaming. This restored the control on the same iPhone and same conversation.
+- Actions 44709701865 succeeded, source f506d717228afa410710c55b667a06d1033d649e. IPA plist and independent device listing confirmed 1.109. Scoped installation was authorized by user; Sideloadly overwrite retained data.
+- Actual device screenshots inspected: `/tmp/haish109-trace.png` shows 1m 06s disclosure; `/tmp/haish109-expanded.png` shows commentary and read 8 files / searched 5 times / browser 2 summary; `/tmp/haish109-tools.png` shows expanded List dir, Glob files, Browser use, Search text and Read cards. No model request, Retry or message submission used.
+- Six history/layout tests passed after updating the row-class assertion. Earlier keyboard/history/layout suite passed 16 tests. Local chat-runtime suite cannot import the adjacent unpinned desktop source; actual historical payload was separately folded against a temporary git archive of the pinned source without modifying that checkout.
+- Conversation list and detail initial loading directly reuse desktop LoadingState (nine animated dots, shared CSS). Actions verified bundling. Transient initial loading was not captured on device; pull-to-refresh remains its separate gesture spinner and was not replaced.
